@@ -1,0 +1,7 @@
+{
+  "provider": "The Movie Database (TMDB API v3)",
+  "tmdb_api_key": "8bbf9bcc418b752d137d973fd97fcb0f",
+  "tmdb_base_url": "https://api.themoviedb.org/3/",
+  "vixsrc_base_url": "https://vixsrc.to",
+  "language": "it-IT"
+}

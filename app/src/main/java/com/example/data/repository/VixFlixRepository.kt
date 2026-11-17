@@ -10,6 +10,7 @@ import com.example.data.remote.GitHubUpdateService
 import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.ResolvedStream
+import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbApiService
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbSeasonDetailsDto
@@ -51,7 +52,7 @@ class VixFlixRepository(
     private val tmdbOkHttpClient: OkHttpClient = rawOkHttpClient.newBuilder()
         .addInterceptor { chain ->
             val original = chain.request()
-            val apiKey = BuildConfig.TMDB_API_KEY.trim()
+            val apiKey = TmdbApiConfig.currentApiKey.trim().ifBlank { TmdbApiConfig.INTEGRATED_TMDB_API_KEY }
             val newUrl = original.url.newBuilder()
                 .addQueryParameter("api_key", apiKey)
                 .build()
@@ -88,9 +89,9 @@ class VixFlixRepository(
      * Nessun contenuto di fallback statico viene mai restituito.
      */
     suspend fun fetchLiveCatalogFeed(): Result<CatalogFeed> = runCatching {
-        val apiKey = BuildConfig.TMDB_API_KEY.trim()
-        if (apiKey.isBlank() || apiKey == "MY_TMDB_API_KEY") {
-            throw IllegalStateException("Chiave API TMDB mancante in BuildConfig. Configura TMDB_API_KEY nel pannello Secrets.")
+        val apiKey = TmdbApiConfig.currentApiKey.trim().ifBlank { TmdbApiConfig.INTEGRATED_TMDB_API_KEY }
+        if (apiKey.isBlank()) {
+            throw IllegalStateException("Chiave API TMDB mancante.")
         }
 
         coroutineScope {

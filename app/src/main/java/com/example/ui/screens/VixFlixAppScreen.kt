@@ -223,6 +223,8 @@ fun VixFlixAppScreen(
                     onRepoSlugChange = viewModel::updateGitHubRepoSlug,
                     onCheckUpdates = { slug -> viewModel.checkForGitHubUpdates(slug, showPopupIfAvailable = false) },
                     onTriggerUpdate = { viewModel.performInAppUpdate(context) },
+                    onUpdateTmdbKey = viewModel::updateTmdbApiKey,
+                    onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
                     contentPadding = PaddingValues(
                         top = 118.dp,
                         bottom = innerPadding.calculateBottomPadding()

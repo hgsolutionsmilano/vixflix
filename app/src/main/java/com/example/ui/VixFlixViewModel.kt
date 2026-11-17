@@ -13,6 +13,7 @@ import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.ResolvedStream
+import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
@@ -73,7 +74,11 @@ data class GitHubUpdateUiState(
     val isChecking: Boolean = false,
     val releaseInfo: GitHubReleaseInfo? = null,
     val errorMessage: String? = null,
-    val showUpdateDialog: Boolean = false
+    val showUpdateDialog: Boolean = false,
+    val tmdbApiKey: String = TmdbApiConfig.INTEGRATED_TMDB_API_KEY,
+    val bundledConfigFilePath: String = TmdbApiConfig.BUNDLED_FILE_PATH,
+    val kotlinConfigFilePath: String = TmdbApiConfig.KOTLIN_CONFIG_PATH,
+    val bundledConfigJson: String = ""
 )
 
 class VixFlixViewModel(application: Application) : AndroidViewModel(application) {
@@ -473,12 +478,42 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun initGitHubUpdateChecker() {
+        val rawPreview = TmdbApiConfig.readBundledJsonPreview(getApplication())
+        _gitHubState.value = _gitHubState.value.copy(
+            tmdbApiKey = TmdbApiConfig.currentApiKey,
+            bundledConfigJson = rawPreview
+        )
         viewModelScope.launch {
+            val savedTmdbKey = preferences.tmdbApiKeyFlow.first()
+            TmdbApiConfig.updateApiKey(savedTmdbKey)
             val savedRepo = preferences.githubRepoFlow.first()
-            _gitHubState.value = _gitHubState.value.copy(repoSlug = savedRepo)
+            _gitHubState.value = _gitHubState.value.copy(
+                repoSlug = savedRepo,
+                tmdbApiKey = TmdbApiConfig.currentApiKey,
+                bundledConfigJson = rawPreview
+            )
             if (savedRepo.isNotBlank()) {
                 checkForGitHubUpdates(savedRepo, showPopupIfAvailable = true)
             }
+        }
+    }
+
+    fun updateTmdbApiKey(newKey: String) {
+        val cleaned = newKey.trim().ifBlank { TmdbApiConfig.INTEGRATED_TMDB_API_KEY }
+        TmdbApiConfig.updateApiKey(cleaned)
+        _gitHubState.value = _gitHubState.value.copy(tmdbApiKey = cleaned)
+        viewModelScope.launch {
+            preferences.setTmdbApiKey(cleaned)
+            loadCatalog()
+        }
+    }
+
+    fun resetTmdbApiKeyToDefault() {
+        val defaultKey = TmdbApiConfig.resetToDefault()
+        _gitHubState.value = _gitHubState.value.copy(tmdbApiKey = defaultKey)
+        viewModelScope.launch {
+            preferences.setTmdbApiKey(defaultKey)
+            loadCatalog()
         }
     }
 
