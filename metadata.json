@@ -1,0 +1,6 @@
+{
+  "name": "VixFlix",
+  "description": "Piattaforma di streaming in stile Netflix con catalogo live TMDB, riproduzione fluida Media3 ExoPlayer + VixSrc API, Continua a guardare con Room Database e aggiornamento automatico via GitHub Releases.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

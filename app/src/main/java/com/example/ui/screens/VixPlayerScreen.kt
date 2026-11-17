@@ -1,0 +1,688 @@
+package com.example.ui.screens
+
+import android.content.Intent
+import android.net.Uri
+import android.view.ViewGroup
+import androidx.activity.compose.BackHandler
+import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem as ExoMediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import com.example.data.remote.ResolvedStream
+import com.example.data.remote.VixSrcStreamResolver
+import com.example.ui.PlaybackSession
+import com.example.ui.components.formatSecondsToMmSs
+import com.example.ui.theme.NetflixBlack
+import com.example.ui.theme.NetflixCardSurface
+import com.example.ui.theme.NetflixElevatedSurface
+import com.example.ui.theme.NetflixLightGray
+import com.example.ui.theme.NetflixMatchGreen
+import com.example.ui.theme.NetflixRed
+import com.example.ui.theme.NetflixWhite
+import kotlinx.coroutines.delay
+
+@OptIn(UnstableApi::class)
+@Composable
+fun VixPlayerScreen(
+    session: PlaybackSession,
+    streamLang: String,
+    vixSrcResolver: VixSrcStreamResolver,
+    onDynamicHlsFound: (String) -> Unit,
+    onTogglePlayerMode: (Boolean) -> Unit,
+    onToggleLanguage: (String) -> Unit,
+    onProgressUpdate: (positionMs: Long, durationMs: Long) -> Unit,
+    onNextEpisode: () -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    val resolvedStream = session.resolvedStream
+
+    var isPlaying by remember { mutableStateOf(true) }
+    var isBuffering by remember { mutableStateOf(true) }
+    var playerErrorMessage by remember(session.errorMessage) { mutableStateOf(session.errorMessage) }
+    var currentPositionMs by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableLongStateOf(session.startPositionMs)
+    }
+    var durationMs by remember { mutableLongStateOf(0L) }
+    var hasSeekedInitial by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+
+    // Usa OkHttpDataSource.Factory con l'interceptor VixSrc per gestire playlist HLS,
+    // chiave AES-128 (/storage/enc.key) e segmenti MPEG-TS direttamente da vixsrc.to
+    val okHttpDataSourceFactory = remember(vixSrcResolver, resolvedStream?.referer) {
+        val headers = mapOf(
+            "Referer" to (resolvedStream?.referer ?: "https://vixsrc.to/"),
+            "Origin" to "https://vixsrc.to"
+        )
+        OkHttpDataSource.Factory(vixSrcResolver.exoOkHttpClient)
+            .setUserAgent(resolvedStream?.userAgent ?: ResolvedStream.DEFAULT_USER_AGENT)
+            .setDefaultRequestProperties(headers)
+    }
+
+    val exoPlayer = remember(context) {
+        ExoPlayer.Builder(context)
+            .setSeekBackIncrementMs(10_000L)
+            .setSeekForwardIncrementMs(10_000L)
+            .build()
+            .apply {
+                playWhenReady = true
+            }
+    }
+
+    // Imposta la lingua audio preferita (ita / eng) nel selettore tracce di ExoPlayer
+    LaunchedEffect(streamLang) {
+        val preferredIso = if (streamLang.equals("it", ignoreCase = true)) "ita" else "eng"
+        exoPlayer.trackSelectionParameters = TrackSelectionParameters.Builder(context)
+            .setPreferredAudioLanguage(preferredIso)
+            .build()
+    }
+
+    BackHandler {
+        if (currentPositionMs > 0L) {
+            onProgressUpdate(currentPositionMs, durationMs)
+        }
+        onClose()
+    }
+
+    // Configura HlsMediaSource in Media3 ExoPlayer quando lo stream reale di vixsrc.to è risolto
+    LaunchedEffect(resolvedStream?.streamUrl, session.isResolvingStream) {
+        if (session.isResolvingStream) return@LaunchedEffect
+        val stream = resolvedStream
+        if (stream == null || !stream.isDirectHls) {
+            isBuffering = false
+            return@LaunchedEffect
+        }
+
+        playerErrorMessage = null
+        isBuffering = true
+        val targetUri = Uri.parse(stream.streamUrl)
+        val mediaItem = ExoMediaItem.Builder()
+            .setUri(targetUri)
+            .setMimeType(MimeTypes.APPLICATION_M3U8)
+            .build()
+
+        val mediaSource = HlsMediaSource.Factory(okHttpDataSourceFactory)
+            .setAllowChunklessPreparation(true)
+            .createMediaSource(mediaItem)
+
+        exoPlayer.setMediaSource(mediaSource)
+        if (session.startPositionMs > 0L && !hasSeekedInitial) {
+            exoPlayer.seekTo(session.startPositionMs)
+            hasSeekedInitial = true
+        }
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = true
+    }
+
+    // Listener eventi Player + salvataggio su Room Database
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                isBuffering = playbackState == Player.STATE_BUFFERING
+                if (playbackState == Player.STATE_READY) {
+                    playerErrorMessage = null
+                    val d = exoPlayer.duration
+                    if (d != C.TIME_UNSET && d > 0L) {
+                        durationMs = d
+                    }
+                    if (session.startPositionMs > 0L && !hasSeekedInitial) {
+                        val safeSeek = if (durationMs > 0L) {
+                            session.startPositionMs.coerceAtMost((durationMs - 5_000L).coerceAtLeast(0L))
+                        } else {
+                            session.startPositionMs
+                        }
+                        exoPlayer.seekTo(safeSeek)
+                        currentPositionMs = safeSeek
+                        hasSeekedInitial = true
+                    }
+                }
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+                if (!playing && exoPlayer.currentPosition > 0L) {
+                    onProgressUpdate(exoPlayer.currentPosition, exoPlayer.duration.coerceAtLeast(0L))
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                isBuffering = false
+                playerErrorMessage = "Errore stream VixSrc: ${error.errorCodeName} (${error.localizedMessage ?: "connessione interrotta"})"
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            val finalPos = currentPositionMs.coerceAtLeast(exoPlayer.currentPosition)
+            val finalDur = durationMs.coerceAtLeast(exoPlayer.duration.coerceAtLeast(0L))
+            if (finalPos > 0L) {
+                onProgressUpdate(finalPos, finalDur)
+            }
+            exoPlayer.removeListener(listener)
+            exoPlayer.release()
+        }
+    }
+
+    // Loop di aggiornamento UI + persistenza su Room ogni 3 secondi
+    LaunchedEffect(exoPlayer) {
+        var tick = 0
+        while (true) {
+            if (exoPlayer.isPlaying) {
+                val pos = exoPlayer.currentPosition
+                val dur = exoPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: durationMs
+                if (pos > 0L) {
+                    currentPositionMs = pos
+                    durationMs = dur
+                    if (tick % 3 == 0) {
+                        onProgressUpdate(pos, dur)
+                    }
+                    tick++
+                }
+            }
+            delay(1_000L)
+        }
+    }
+
+    // Auto-hide dei controlli dopo 4.5 secondi durante la riproduzione ExoPlayer
+    LaunchedEffect(controlsVisible, isPlaying, playerErrorMessage) {
+        if (controlsVisible && isPlaying && playerErrorMessage == null) {
+            delay(4_500L)
+            controlsVisible = false
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .testTag("vix_player_screen")
+    ) {
+        // Vista nativa 100% Media3 ExoPlayer
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = false
+                    this.resizeMode = resizeMode
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+            },
+            update = { view ->
+                view.player = exoPlayer
+                view.resizeMode = resizeMode
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
+                    controlsVisible = !controlsVisible
+                }
+        )
+
+        val currentError = playerErrorMessage ?: session.errorMessage
+        if (currentError != null && !session.isResolvingStream) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(28.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(NetflixCardSurface.copy(alpha = 0.95f))
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    tint = NetflixRed,
+                    modifier = Modifier.size(44.dp)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = currentError,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NetflixWhite,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                Button(
+                    onClick = { onToggleLanguage(streamLang) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NetflixRed,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Riprova Connessione VixSrc")
+                }
+            }
+        } else if (isBuffering || session.isResolvingStream) {
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(color = NetflixRed)
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Avvio stream HLS reale da vixsrc.to (startAt=${session.startSeconds}s)…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NetflixLightGray
+                )
+            }
+        }
+
+        // Overlay Top Bar
+        AnimatedVisibility(
+            visible = controlsVisible || currentError != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                NetflixBlack.copy(alpha = 0.88f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+                    .statusBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    IconButton(
+                        onClick = {
+                            if (currentPositionMs > 0L) {
+                                onProgressUpdate(currentPositionMs, durationMs)
+                            }
+                            onClose()
+                        },
+                        modifier = Modifier.testTag("player_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Indietro",
+                            tint = NetflixWhite
+                        )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = session.mediaItem.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val subText = buildString {
+                            if (session.mediaItem.isSeries && session.seasonNumber != null && session.episodeNumber != null) {
+                                append("S${session.seasonNumber}:E${session.episodeNumber}")
+                                if (!session.episodeTitle.isNullOrBlank()) {
+                                    append(" - ${session.episodeTitle}")
+                                }
+                                append(" • ")
+                            }
+                            append("VixSrc HLS 1080p • startAt=${currentPositionMs / 1000L}s (min ${currentPositionMs / 60_000L})")
+                        }
+                        Text(
+                            text = subText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NetflixMatchGreen,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Selettore Lingua Audio (ITA / ENG)
+                    Surface(
+                        color = NetflixCardSurface.copy(alpha = 0.9f),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                        modifier = Modifier.clickable {
+                            onToggleLanguage(if (streamLang == "it") "en" else "it")
+                        }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = null,
+                                tint = NetflixRed,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Audio: ${streamLang.uppercase()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = NetflixWhite
+                            )
+                        }
+                    }
+
+                    // Link diretto esterno VixSrc con startAt
+                    val vixEmbedUrl = resolvedStream?.embedUrl
+                    if (!vixEmbedUrl.isNullOrBlank()) {
+                        Surface(
+                            color = NetflixCardSurface.copy(alpha = 0.9f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, NetflixElevatedSurface),
+                            modifier = Modifier
+                                .clickable {
+                                    runCatching {
+                                        val liveUrl = vixSrcResolver.buildVixSrcApiUrl(
+                                            tmdbId = session.mediaItem.id,
+                                            mediaType = session.mediaItem.mediaType,
+                                            season = session.seasonNumber,
+                                            episode = session.episodeNumber,
+                                            startSeconds = currentPositionMs / 1000L,
+                                            lang = streamLang
+                                        )
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(liveUrl)).apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                        )
+                                    }
+                                }
+                                .testTag("open_external_vixsrc_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                    contentDescription = "Apri URL VixSrc",
+                                    tint = NetflixWhite,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "VixSrc Link",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NetflixWhite
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Controlli centrali e barra inferiore per ExoPlayer Nativo
+        AnimatedVisibility(
+            visible = controlsVisible && currentError == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                // Pulsanti centrali -10s / Play-Pause / +10s
+                Row(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalArrangement = Arrangement.spacedBy(36.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = {
+                            val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
+                            onProgressUpdate(currentPositionMs, durationMs)
+                        },
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .background(NetflixBlack.copy(alpha = 0.65f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Replay10,
+                            contentDescription = "Indietro 10 secondi",
+                            tint = NetflixWhite,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                        },
+                        modifier = Modifier
+                            .size(70.dp)
+                            .clip(CircleShape)
+                            .background(NetflixRed)
+                            .testTag("exo_play_pause_button")
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pausa" else "Riproduci",
+                            tint = Color.White,
+                            modifier = Modifier.size(40.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            val target = exoPlayer.currentPosition + 10_000L
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
+                            onProgressUpdate(currentPositionMs, durationMs)
+                        },
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .background(NetflixBlack.copy(alpha = 0.65f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Forward10,
+                            contentDescription = "Avanti 10 secondi",
+                            tint = NetflixWhite,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+
+                // Barra inferiore con Slider rosso Netflix, timestamp salvato su Room e Prossimo Episodio
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    NetflixBlack.copy(alpha = 0.92f)
+                                )
+                            )
+                        )
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    val sliderMax = durationMs.coerceAtLeast(currentPositionMs + 60_000L).toFloat()
+                    Slider(
+                        value = currentPositionMs.toFloat().coerceIn(0f, sliderMax),
+                        onValueChange = { newVal ->
+                            currentPositionMs = newVal.toLong()
+                            exoPlayer.seekTo(currentPositionMs)
+                            onProgressUpdate(currentPositionMs, durationMs)
+                        },
+                        valueRange = 0f..sliderMax,
+                        colors = SliderDefaults.colors(
+                            thumbColor = NetflixRed,
+                            activeTrackColor = NetflixRed,
+                            inactiveTrackColor = NetflixElevatedSurface
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${formatSecondsToMmSs(currentPositionMs / 1000L)} / ${
+                                    if (durationMs > 0L) formatSecondsToMmSs(durationMs / 1000L) else "HLS STREAM"
+                                } • Salvato in Room (min ${currentPositionMs / 60_000L})",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NetflixWhite
+                            )
+                            Text(
+                                text = "VixSrc Direct MasterPlaylist • Audio ${streamLang.uppercase()} • startAt=${currentPositionMs / 1000L}s",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NetflixLightGray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    resizeMode = if (resizeMode == AspectRatioFrameLayout.RESIZE_MODE_FIT) {
+                                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    } else {
+                                        AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AspectRatio,
+                                    contentDescription = "Cambia proporzioni schermo",
+                                    tint = NetflixWhite
+                                )
+                            }
+
+                            if (session.mediaItem.isSeries) {
+                                Button(
+                                    onClick = onNextEpisode,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NetflixWhite,
+                                        contentColor = NetflixBlack
+                                    ),
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier.testTag("next_episode_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipNext,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Prossimo Ep.",
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

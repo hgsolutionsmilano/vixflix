@@ -1,0 +1,200 @@
+package com.example.data.remote
+
+import com.squareup.moshi.Json
+
+data class TmdbPagedResponse<T>(
+    @Json(name = "page") val page: Int = 1,
+    @Json(name = "results") val results: List<T> = emptyList(),
+    @Json(name = "total_pages") val totalPages: Int = 1,
+    @Json(name = "total_results") val totalResults: Int = 0
+)
+
+data class TmdbMediaItemDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "media_type") val mediaType: String? = null,
+    @Json(name = "title") val title: String? = null,
+    @Json(name = "name") val name: String? = null,
+    @Json(name = "original_title") val originalTitle: String? = null,
+    @Json(name = "original_name") val originalName: String? = null,
+    @Json(name = "overview") val overview: String? = null,
+    @Json(name = "poster_path") val posterPath: String? = null,
+    @Json(name = "backdrop_path") val backdropPath: String? = null,
+    @Json(name = "vote_average") val voteAverage: Double? = null,
+    @Json(name = "vote_count") val voteCount: Int? = null,
+    @Json(name = "release_date") val releaseDate: String? = null,
+    @Json(name = "first_air_date") val firstAirDate: String? = null,
+    @Json(name = "genre_ids") val genreIds: List<Int>? = null,
+    @Json(name = "popularity") val popularity: Double? = null
+)
+
+data class MediaItem(
+    val id: Int,
+    val mediaType: String, // "movie" or "tv"
+    val title: String,
+    val overview: String,
+    val posterPath: String?,
+    val backdropPath: String?,
+    val voteAverage: Double,
+    val releaseYear: String,
+    val genreIds: List<Int> = emptyList()
+) {
+    val uniqueKey: String get() = "${mediaType}_${id}"
+
+    val posterUrl: String?
+        get() = posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+            ?: backdropPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+
+    val backdropUrl: String?
+        get() = backdropPath?.let { "https://image.tmdb.org/t/p/w1280$it" }
+            ?: posterPath?.let { "https://image.tmdb.org/t/p/w780$it" }
+
+    val matchPercentage: Int
+        get() = ((voteAverage * 10).toInt()).coerceIn(68, 99)
+
+    val isSeries: Boolean
+        get() = mediaType == "tv"
+}
+
+fun TmdbMediaItemDto.toDomain(defaultMediaType: String = "movie"): MediaItem? {
+    val resolvedType = when (mediaType) {
+        "movie", "tv" -> mediaType
+        "person" -> return null
+        else -> if (!firstAirDate.isNullOrBlank() || (!name.isNullOrBlank() && title.isNullOrBlank())) "tv" else defaultMediaType
+    }
+    val resolvedTitle = (title ?: name ?: originalTitle ?: originalName)?.trim().orEmpty()
+    if (resolvedTitle.isBlank() || (posterPath == null && backdropPath == null)) return null
+    val rawDate = releaseDate ?: firstAirDate ?: ""
+    val year = if (rawDate.length >= 4) rawDate.take(4) else ""
+    return MediaItem(
+        id = id,
+        mediaType = resolvedType,
+        title = resolvedTitle,
+        overview = overview?.trim().orEmpty(),
+        posterPath = posterPath,
+        backdropPath = backdropPath,
+        voteAverage = voteAverage ?: 0.0,
+        releaseYear = year,
+        genreIds = genreIds ?: emptyList()
+    )
+}
+
+data class TmdbGenreDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "name") val name: String
+)
+
+data class TmdbCastMemberDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "name") val name: String,
+    @Json(name = "character") val character: String? = null,
+    @Json(name = "profile_path") val profilePath: String? = null
+) {
+    val profileUrl: String?
+        get() = profilePath?.let { "https://image.tmdb.org/t/p/w300$it" }
+}
+
+data class TmdbCreditsDto(
+    @Json(name = "cast") val cast: List<TmdbCastMemberDto> = emptyList()
+)
+
+data class TmdbSeasonSummaryDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "season_number") val seasonNumber: Int,
+    @Json(name = "name") val name: String,
+    @Json(name = "episode_count") val episodeCount: Int = 0,
+    @Json(name = "poster_path") val posterPath: String? = null,
+    @Json(name = "air_date") val airDate: String? = null
+)
+
+data class TmdbMovieDetailsDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "title") val title: String? = null,
+    @Json(name = "overview") val overview: String? = null,
+    @Json(name = "poster_path") val posterPath: String? = null,
+    @Json(name = "backdrop_path") val backdropPath: String? = null,
+    @Json(name = "vote_average") val voteAverage: Double? = null,
+    @Json(name = "release_date") val releaseDate: String? = null,
+    @Json(name = "runtime") val runtime: Int? = null,
+    @Json(name = "tagline") val tagline: String? = null,
+    @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
+    @Json(name = "credits") val credits: TmdbCreditsDto? = null,
+    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null
+)
+
+data class TmdbTvDetailsDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "name") val name: String? = null,
+    @Json(name = "overview") val overview: String? = null,
+    @Json(name = "poster_path") val posterPath: String? = null,
+    @Json(name = "backdrop_path") val backdropPath: String? = null,
+    @Json(name = "vote_average") val voteAverage: Double? = null,
+    @Json(name = "first_air_date") val firstAirDate: String? = null,
+    @Json(name = "number_of_seasons") val numberOfSeasons: Int? = null,
+    @Json(name = "number_of_episodes") val numberOfEpisodes: Int? = null,
+    @Json(name = "tagline") val tagline: String? = null,
+    @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
+    @Json(name = "seasons") val seasons: List<TmdbSeasonSummaryDto> = emptyList(),
+    @Json(name = "credits") val credits: TmdbCreditsDto? = null,
+    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null
+)
+
+data class TmdbEpisodeDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "episode_number") val episodeNumber: Int,
+    @Json(name = "season_number") val seasonNumber: Int,
+    @Json(name = "name") val name: String? = null,
+    @Json(name = "overview") val overview: String? = null,
+    @Json(name = "still_path") val stillPath: String? = null,
+    @Json(name = "runtime") val runtime: Int? = null,
+    @Json(name = "air_date") val airDate: String? = null,
+    @Json(name = "vote_average") val voteAverage: Double? = null
+) {
+    val stillUrl: String?
+        get() = stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+}
+
+data class TmdbSeasonDetailsDto(
+    @Json(name = "id") val id: Int,
+    @Json(name = "season_number") val seasonNumber: Int,
+    @Json(name = "name") val name: String? = null,
+    @Json(name = "episodes") val episodes: List<TmdbEpisodeDto> = emptyList()
+)
+
+data class MediaDetails(
+    val item: MediaItem,
+    val tagline: String,
+    val runtimeMinutes: Int?,
+    val genres: List<String>,
+    val cast: List<TmdbCastMemberDto>,
+    val similar: List<MediaItem>,
+    val seasons: List<TmdbSeasonSummaryDto> = emptyList(),
+    val numberOfSeasons: Int = 0
+)
+
+object TmdbGenreMap {
+    private val genres = mapOf(
+        28 to "Azione",
+        12 to "Avventura",
+        16 to "Animazione",
+        35 to "Commedia",
+        80 to "Crime",
+        99 to "Documentario",
+        18 to "Dramma",
+        10751 to "Famiglia",
+        14 to "Fantasy",
+        36 to "Storia",
+        27 to "Horror",
+        10402 to "Musica",
+        9648 to "Mistero",
+        10749 to "Romantico",
+        878 to "Fantascienza",
+        53 to "Thriller",
+        10752 to "Guerra",
+        37 to "Western",
+        10759 to "Action & Adventure",
+        10765 to "Sci-Fi & Fantasy",
+        10768 to "War & Politics"
+    )
+
+    fun namesFor(ids: List<Int>): List<String> = ids.mapNotNull { genres[it] }.take(3)
+}

@@ -1,0 +1,26 @@
+<resources>
+    <string name="app_name">VixFlix</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_series">Serie TV</string>
+    <string name="nav_movies">Film</string>
+    <string name="nav_new_popular">Nuovi e Popolari</string>
+    <string name="nav_my_list">La Mia Lista</string>
+    <string name="nav_updates">GitHub &amp; Info</string>
+    <string name="section_continue_watching">Continua a guardare</string>
+    <string name="section_top_10">Top 10 in Italia Oggi</string>
+    <string name="section_trending">Tendenze del Momento</string>
+    <string name="section_popular_movies">Film Popolari su VixFlix</string>
+    <string name="section_popular_tv">Serie TV Acclamate</string>
+    <string name="section_now_playing">Ora al Cinema</string>
+    <string name="section_top_rated">Più Votati dalla Critica</string>
+    <string name="section_action">Azione &amp; Adrenalina</string>
+    <string name="section_scifi">Fantascienza &amp; Mondi Futuri</string>
+    <string name="action_play">Riproduci</string>
+    <string name="action_resume">Riprendi</string>
+    <string name="action_my_list">La mia lista</string>
+    <string name="action_info">Info</string>
+    <string name="action_search_hint">Cerca film, serie TV, attori su TMDB…</string>
+    <string name="action_retry">Riprova Connessione TMDB</string>
+    <string name="update_available_title">Nuova Versione Disponibile su GitHub</string>
+    <string name="update_now_button">Scarica e Aggiorna APK</string>
+</resources>

@@ -1,0 +1,83 @@
+name: VixFlix Android CI & Versioned Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Versioned APK & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Compute Automatic Version on Check-in
+        id: version
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          RUN_NUM=${{ github.run_number }}
+          VERSION_CODE=$((100 + RUN_NUM))
+          VERSION_NAME="1.0.${RUN_NUM}"
+          echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "Building VixFlix v${VERSION_NAME} (code ${VERSION_CODE}, commit ${SHORT_SHA})"
+
+      - name: Configure .env with TMDB_API_KEY
+        run: |
+          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" > .env
+
+      - name: Generate Debug Keystore if Missing
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build Versioned APK with Gradle
+        env:
+          CI_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          CI_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          gradle assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk "VixFlix-v${{ steps.version.outputs.version_name }}.apk"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VixFlix-v${{ steps.version.outputs.version_name }}
+          path: VixFlix-v${{ steps.version.outputs.version_name }}.apk
+
+      - name: Publish Versioned GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version_name }}
+          name: "VixFlix v${{ steps.version.outputs.version_name }} (Build #${{ steps.version.outputs.version_code }})"
+          body: |
+            ### VixFlix Streaming Release v${{ steps.version.outputs.version_name }}
+            - **Version Code:** `${{ steps.version.outputs.version_code }}`
+            - **Commit:** `${{ steps.version.outputs.short_sha }}`
+            - **Changelog:** Compilazione automatica generata al check-in su `${{ github.ref_name }}`.
+            - Scarica il file `VixFlix-v${{ steps.version.outputs.version_name }}.apk` allegato o aggiorna direttamente dall'app VixFlix!
+          files: |
+            VixFlix-v${{ steps.version.outputs.version_name }}.apk
+          draft: false
+          prerelease: false
