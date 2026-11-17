@@ -128,6 +128,11 @@ fun GitHubUpdateSectionScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = NetflixLightGray
                                 )
+                                Text(
+                                    text = "Firma Keystore Unificata: SHA1 96:99:D9:34…BB:7C",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NetflixMatchGreen
+                                )
                             }
                         }
 

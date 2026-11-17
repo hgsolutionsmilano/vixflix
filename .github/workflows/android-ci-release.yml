@@ -40,10 +40,10 @@ jobs:
       - name: Compute Automatic Version on Check-in
         id: version
         run: |
-          COMMIT_COUNT=$(git rev-list --count HEAD)
           SHORT_SHA=$(git rev-parse --short HEAD)
           RUN_NUM=${{ github.run_number }}
-          VERSION_CODE=$((100 + RUN_NUM))
+          TIMESTAMP_MIN=$(( $(date +%s) / 60 ))
+          VERSION_CODE=${TIMESTAMP_MIN}
           VERSION_NAME="1.0.${RUN_NUM}"
           echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
           echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
@@ -56,16 +56,20 @@ jobs:
         run: |
           if [ -n "$SECRET_TMDB_KEY" ]; then
             echo "TMDB_API_KEY=$SECRET_TMDB_KEY" > .env
-          else
+          elif [ -f .env.example ]; then
             cp .env.example .env
+          else
+            echo "TMDB_API_KEY=8bbf9bcc418b752d137d973fd97fcb0f" > .env
           fi
 
-      - name: Prepare Debug Keystore
+      - name: Prepare Persistent Signing Keystore
         run: |
           if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
             base64 -d debug.keystore.base64 > debug.keystore
           elif [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            cat << 'EOF' | base64 -d > debug.keystore
+          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
+          EOF
           fi
 
       - name: Build Versioned APK with Gradle
@@ -92,6 +96,7 @@ jobs:
             ### VixFlix Streaming Release v${{ steps.version.outputs.version_name }}
             - **Version Code:** `${{ steps.version.outputs.version_code }}`
             - **Commit:** `${{ steps.version.outputs.short_sha }}`
+            - **Firma APK:** Persistente (`SHA1: 96:99:D9:34:15:C0:F4:69:1D:C9:C3:5D:8E:80:55:BF:63:73:BB:7C`)
             - **Changelog:** Compilazione automatica generata al check-in su `${{ github.ref_name }}`.
             - Scarica il file `VixFlix-v${{ steps.version.outputs.version_name }}.apk` allegato o aggiorna direttamente dall'app VixFlix!
           files: |
