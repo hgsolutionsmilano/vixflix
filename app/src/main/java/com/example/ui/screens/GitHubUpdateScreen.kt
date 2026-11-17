@@ -32,6 +32,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -299,10 +300,41 @@ fun GitHubUpdateSectionScreen(
                             )
                         }
 
+                        if (state.isDownloadingApk) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            val pct = (state.downloadProgress * 100).toInt()
+                            val dlMb = String.format("%.1f", state.downloadedBytes / (1024.0 * 1024.0))
+                            val totMb = if (state.totalBytes > 0) {
+                                String.format("%.1f MB", state.totalBytes / (1024.0 * 1024.0))
+                            } else "..."
+                            Text(
+                                text = "Download automatico in background: $pct% ($dlMb / $totMb)…",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = NetflixMatchGreen
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = { state.downloadProgress.coerceIn(0f, 1f) },
+                                color = NetflixMatchGreen,
+                                trackColor = NetflixElevatedSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                            )
+                        } else if (state.autoInstallTriggered) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Download completato! Installazione avviata automaticamente.",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = NetflixMatchGreen
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(14.dp))
 
                         Button(
                             onClick = onTriggerUpdate,
+                            enabled = !state.isDownloadingApk,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (release.isUpdateAvailable) NetflixMatchGreen else NetflixElevatedSurface,
                                 contentColor = if (release.isUpdateAvailable) NetflixBlack else NetflixWhite
@@ -316,10 +348,11 @@ fun GitHubUpdateSectionScreen(
                             Icon(imageVector = Icons.Default.CloudDownload, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (release.isUpdateAvailable) {
-                                    "Scarica e Aggiorna Ora (${release.tagName})"
-                                } else {
-                                    "Riscarica APK Release (${release.tagName})"
+                                text = when {
+                                    state.isDownloadingApk -> "Scaricamento in background (${(state.downloadProgress * 100).toInt()}%)…"
+                                    state.downloadedApkPath != null -> "Installa Aggiornamento Scaricato (${release.tagName})"
+                                    release.isUpdateAvailable -> "Scarica e Aggiorna Ora (${release.tagName})"
+                                    else -> "Riscarica APK Release (${release.tagName})"
                                 },
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold
@@ -634,20 +667,51 @@ fun GitHubUpdateDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = NetflixWhite
                 )
+                if (state.isDownloadingApk) {
+                    val pct = (state.downloadProgress * 100).toInt()
+                    Text(
+                        text = "Scaricamento automatico in background in corso ($pct%)… L'installazione partirà al termine.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixMatchGreen
+                    )
+                    LinearProgressIndicator(
+                        progress = { state.downloadProgress.coerceIn(0f, 1f) },
+                        color = NetflixMatchGreen,
+                        trackColor = NetflixElevatedSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                    )
+                } else if (state.autoInstallTriggered) {
+                    Text(
+                        text = "Download completato! Apertura installer pacchetto Android…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixMatchGreen
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
                     onConfirmUpdate()
-                    onDismiss()
+                    if (!state.isDownloadingApk) {
+                        onDismiss()
+                    }
                 },
+                enabled = !state.isDownloadingApk,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = NetflixRed,
                     contentColor = Color.White
                 )
             ) {
-                Text("Scarica e Aggiorna")
+                Text(
+                    if (state.isDownloadingApk) {
+                        "Download ${(state.downloadProgress * 100).toInt()}%…"
+                    } else {
+                        "Installa Ora"
+                    }
+                )
             }
         },
         dismissButton = {
