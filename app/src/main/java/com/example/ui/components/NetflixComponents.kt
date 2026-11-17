@@ -44,6 +44,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -91,9 +93,11 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -136,6 +140,8 @@ fun NetflixTopBar(
     downToContentFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -399,6 +405,15 @@ fun NetflixTopBar(
                     }
                 },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        keyboardController?.hide()
+                        downToContentFocusRequester?.let {
+                            runCatching { it.requestFocus() }
+                        }
+                    }
+                ),
                 shape = RoundedCornerShape(10.dp),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = NetflixCardSurface,
@@ -432,6 +447,7 @@ fun NetflixTopBar(
                             keyEvent.key == Key.DirectionDown &&
                             downToContentFocusRequester != null
                         ) {
+                            keyboardController?.hide()
                             runCatching { downToContentFocusRequester.requestFocus() }
                             true
                         } else {
@@ -822,6 +838,8 @@ fun ContinueWatchingSection(
     onResumeClick: (WatchProgressEntity) -> Unit,
     onInfoClick: (WatchProgressEntity) -> Unit,
     onRemoveClick: (WatchProgressEntity) -> Unit,
+    onTvLongPress: ((WatchProgressEntity) -> Unit)? = null,
+    onItemFocused: ((FocusRequester) -> Unit)? = null,
     isTvLayout: Boolean = false,
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
@@ -841,7 +859,7 @@ fun ContinueWatchingSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
+                .padding(horizontal = if (isTvLayout) 24.dp else 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -861,7 +879,7 @@ fun ContinueWatchingSection(
                 )
             }
             Text(
-                text = "Room DB • ${entries.size} in corso",
+                text = if (isTvLayout) "${entries.size} in corso • Tieni premuto OK per opzioni" else "Room DB • ${entries.size} in corso",
                 style = MaterialTheme.typography.labelSmall,
                 color = NetflixLightGray
             )
@@ -869,10 +887,15 @@ fun ContinueWatchingSection(
 
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+            contentPadding = PaddingValues(horizontal = if (isTvLayout) 24.dp else 20.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             itemsIndexed(entries, key = { _, it -> it.id }) { index, entry ->
+                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                    firstItemFocusRequester
+                } else {
+                    remember(entry.id) { FocusRequester() }
+                }
                 ContinueWatchingCard(
                     entry = entry,
                     itemIndex = index,
@@ -881,14 +904,10 @@ fun ContinueWatchingSection(
                     onResume = { onResumeClick(entry) },
                     onInfo = { onInfoClick(entry) },
                     onRemove = { onRemoveClick(entry) },
+                    onLongPress = onTvLongPress?.let { handler -> { handler(entry) } },
+                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
-                        .then(
-                            if (index == 0 && firstItemFocusRequester != null) {
-                                Modifier.focusRequester(firstItemFocusRequester)
-                            } else {
-                                Modifier
-                            }
-                        )
+                        .focusRequester(itemFocusRequester)
                         .focusProperties {
                             if (index == 0 && navRailFocusRequester != null) {
                                 left = navRailFocusRequester
@@ -917,6 +936,8 @@ private fun ContinueWatchingCard(
     onResume: () -> Unit,
     onInfo: () -> Unit,
     onRemove: () -> Unit,
+    onLongPress: (() -> Unit)? = null,
+    onFocused: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val imageUrl = entry.backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" }
@@ -934,7 +955,12 @@ private fun ContinueWatchingCard(
                 isFocused = isFocused,
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.07f,
-                onFocusedChanged = { isFocused = it },
+                onFocusedChanged = { focused ->
+                    isFocused = focused
+                    if (focused) onFocused()
+                },
+                onLongClick = onLongPress,
+                onQuickPlay = onResume,
                 onClick = onResume
             )
             .testTag("continue_watching_card_${entry.id}")
@@ -1032,14 +1058,15 @@ private fun ContinueWatchingCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (entry.remainingMinutes > 0) {
-                            "-${entry.remainingMinutes} min • startAt=${entry.startSeconds}s"
-                        } else {
-                            "startAt=${entry.startSeconds}s"
+                        text = when {
+                            isTvLayout && isFocused -> "OK Riprendi • Tieni premuto Opzioni"
+                            entry.remainingMinutes > 0 -> "-${entry.remainingMinutes} min • dal ${entry.startMinutes}°m"
+                            else -> "Riprendi da ${formatSecondsToMmSs(entry.startSeconds)}"
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = NetflixLightGray,
-                        maxLines = 1
+                        color = if (isTvLayout && isFocused) NetflixMatchGreen else NetflixLightGray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
@@ -1082,6 +1109,9 @@ fun Top10Section(
     title: String,
     items: List<MediaItem>,
     onItemClick: (MediaItem) -> Unit,
+    onItemQuickPlay: ((MediaItem) -> Unit)? = null,
+    onItemLongClick: ((MediaItem) -> Unit)? = null,
+    onItemFocused: ((FocusRequester) -> Unit)? = null,
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
@@ -1100,29 +1130,31 @@ fun Top10Section(
             text = title,
             style = MaterialTheme.typography.titleLarge,
             color = NetflixWhite,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
         )
 
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             itemsIndexed(items, key = { _, item -> "top10_${item.uniqueKey}" }) { index, item ->
+                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                    firstItemFocusRequester
+                } else {
+                    remember(item.uniqueKey) { FocusRequester() }
+                }
                 Top10PosterCard(
                     rank = index + 1,
                     itemIndex = index,
                     listState = listState,
                     item = item,
                     onClick = { onItemClick(item) },
+                    onQuickPlay = onItemQuickPlay?.let { handler -> { handler(item) } },
+                    onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
+                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
-                        .then(
-                            if (index == 0 && firstItemFocusRequester != null) {
-                                Modifier.focusRequester(firstItemFocusRequester)
-                            } else {
-                                Modifier
-                            }
-                        )
+                        .focusRequester(itemFocusRequester)
                         .focusProperties {
                             if (index == 0 && navRailFocusRequester != null) {
                                 left = navRailFocusRequester
@@ -1149,6 +1181,9 @@ private fun Top10PosterCard(
     listState: LazyListState,
     item: MediaItem,
     onClick: () -> Unit,
+    onQuickPlay: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    onFocused: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
@@ -1163,7 +1198,12 @@ private fun Top10PosterCard(
                 isFocused = isFocused,
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.10f,
-                onFocusedChanged = { isFocused = it },
+                onFocusedChanged = { focused ->
+                    isFocused = focused
+                    if (focused) onFocused()
+                },
+                onLongClick = onLongClick,
+                onQuickPlay = onQuickPlay,
                 onClick = onClick
             )
             .testTag("top10_card_$rank")
@@ -1266,6 +1306,9 @@ fun MediaCatalogRow(
     title: String,
     items: List<MediaItem>,
     onItemClick: (MediaItem) -> Unit,
+    onItemQuickPlay: ((MediaItem) -> Unit)? = null,
+    onItemLongClick: ((MediaItem) -> Unit)? = null,
+    onItemFocused: ((FocusRequester) -> Unit)? = null,
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
@@ -1284,28 +1327,30 @@ fun MediaCatalogRow(
             text = title,
             style = MaterialTheme.typography.titleLarge,
             color = NetflixWhite,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
         )
 
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             itemsIndexed(items, key = { _, item -> "${title}_${item.uniqueKey}" }) { index, item ->
+                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                    firstItemFocusRequester
+                } else {
+                    remember("${title}_${item.uniqueKey}") { FocusRequester() }
+                }
                 MediaPosterCard(
                     item = item,
                     itemIndex = index,
                     listState = listState,
                     onClick = { onItemClick(item) },
+                    onQuickPlay = onItemQuickPlay?.let { handler -> { handler(item) } },
+                    onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
+                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
-                        .then(
-                            if (index == 0 && firstItemFocusRequester != null) {
-                                Modifier.focusRequester(firstItemFocusRequester)
-                            } else {
-                                Modifier
-                            }
-                        )
+                        .focusRequester(itemFocusRequester)
                         .focusProperties {
                             if (index == 0 && navRailFocusRequester != null) {
                                 left = navRailFocusRequester
@@ -1331,7 +1376,10 @@ fun MediaPosterCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     itemIndex: Int = 0,
-    listState: LazyListState? = null
+    listState: LazyListState? = null,
+    onQuickPlay: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    onFocused: () -> Unit = {}
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
@@ -1347,7 +1395,12 @@ fun MediaPosterCard(
                 isFocused = isFocused,
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.12f,
-                onFocusedChanged = { isFocused = it },
+                onFocusedChanged = { focused ->
+                    isFocused = focused
+                    if (focused) onFocused()
+                },
+                onLongClick = onLongClick,
+                onQuickPlay = onQuickPlay,
                 onClick = onClick
             )
             .testTag("poster_card_${item.uniqueKey}")

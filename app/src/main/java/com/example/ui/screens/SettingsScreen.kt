@@ -33,6 +33,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
@@ -82,11 +84,18 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -564,6 +573,8 @@ private fun UpdatesSettingsPanel(
     navRailFocusRequester: FocusRequester?
 ) {
     var inputRepo by remember(state.repoSlug) { mutableStateOf(state.repoSlug) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val checkUpdatesFocusRequester = remember { FocusRequester() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SettingsSectionCard(
@@ -599,6 +610,13 @@ private fun UpdatesSettingsPanel(
                 label = { Text("Repository GitHub (owner/repo)") },
                 placeholder = { Text("es. hgsolutions/vixflix-android") },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        keyboardController?.hide()
+                        runCatching { checkUpdatesFocusRequester.requestFocus() }
+                    }
+                ),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = NetflixRed,
                     unfocusedBorderColor = NetflixElevatedSurface,
@@ -612,6 +630,16 @@ private fun UpdatesSettingsPanel(
                     .focusProperties {
                         if (navRailFocusRequester != null) {
                             left = navRailFocusRequester
+                        }
+                        down = checkUpdatesFocusRequester
+                    }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                            keyboardController?.hide()
+                            runCatching { checkUpdatesFocusRequester.requestFocus() }
+                            true
+                        } else {
+                            false
                         }
                     }
                     .testTag("github_repo_input")
@@ -630,6 +658,7 @@ private fun UpdatesSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
+                    .focusRequester(checkUpdatesFocusRequester)
                     .focusProperties {
                         if (navRailFocusRequester != null) {
                             left = navRailFocusRequester
@@ -812,6 +841,8 @@ private fun ApiSourcesSettingsPanel(
     var copiedFeedback by remember { mutableStateOf(false) }
     var showTechnicalDetails by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val saveKeyFocusRequester = remember { FocusRequester() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SettingsSectionCard(
@@ -855,6 +886,13 @@ private fun ApiSourcesSettingsPanel(
                 },
                 label = { Text("Chiave API TMDB personalizzata") },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        keyboardController?.hide()
+                        runCatching { saveKeyFocusRequester.requestFocus() }
+                    }
+                ),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = NetflixRed,
                     unfocusedBorderColor = NetflixElevatedSurface,
@@ -868,6 +906,16 @@ private fun ApiSourcesSettingsPanel(
                     .focusProperties {
                         if (navRailFocusRequester != null) {
                             left = navRailFocusRequester
+                        }
+                        down = saveKeyFocusRequester
+                    }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                            keyboardController?.hide()
+                            runCatching { saveKeyFocusRequester.requestFocus() }
+                            true
+                        } else {
+                            false
                         }
                     }
                     .testTag("tmdb_api_key_input")
@@ -891,6 +939,7 @@ private fun ApiSourcesSettingsPanel(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
+                        .focusRequester(saveKeyFocusRequester)
                         .focusProperties {
                             if (navRailFocusRequester != null) {
                                 left = navRailFocusRequester

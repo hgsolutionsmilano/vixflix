@@ -16,7 +16,10 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
@@ -41,6 +45,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -68,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -114,6 +120,9 @@ fun MediaDetailScreen(
     isInWatchlist: Boolean,
     bufferPreset: StreamingBufferPreset = StreamingBufferPreset.DEFAULT,
     isInteractive: Boolean = true,
+    detailStackDepth: Int = 1,
+    previousDetailTitle: String? = null,
+    onBack: () -> Unit = {},
     onClose: () -> Unit,
     onPlayMain: (restartFromZero: Boolean) -> Unit,
     onPlayEpisode: (season: Int, episode: Int, title: String?) -> Unit,
@@ -125,22 +134,35 @@ fun MediaDetailScreen(
     onToggleWatchlist: () -> Unit,
     onSelectSimilar: (MediaItem) -> Unit
 ) {
+    val backAction = if (detailStackDepth > 1) onBack else onClose
+
     BackHandler(enabled = isInteractive) {
         if (state.activeTrailer != null) {
             onCloseTrailer()
         } else {
-            onClose()
+            backAction()
         }
     }
 
     val item = state.mediaItem
     val isTvDevice = rememberIsTvDevice()
     val detailPlayFocusRequester = remember { FocusRequester() }
+    val detailTrailerFocusRequester = remember { FocusRequester() }
+    val detailCloseFocusRequester = remember { FocusRequester() }
+    val detailBackFocusRequester = remember { FocusRequester() }
+    var wasTrailerOpen by remember { mutableStateOf(false) }
 
-    LaunchedEffect(item.id, state.activeTrailer, isInteractive) {
-        if (isInteractive && isTvDevice && state.activeTrailer == null) {
-            runCatching { detailPlayFocusRequester.requestFocus() }
+    LaunchedEffect(item.uniqueKey, state.activeTrailer, isInteractive) {
+        val isTrailerOpen = state.activeTrailer != null
+        if (isInteractive && isTvDevice && !isTrailerOpen) {
+            kotlinx.coroutines.delay(50L)
+            if (wasTrailerOpen) {
+                runCatching { detailTrailerFocusRequester.requestFocus() }
+            } else {
+                runCatching { detailPlayFocusRequester.requestFocus() }
+            }
         }
+        wasTrailerOpen = isTrailerOpen
     }
 
     Box(
@@ -167,6 +189,17 @@ fun MediaDetailScreen(
             val currentItem = currentState.mediaItem
             val details = currentState.details
             val trailers = details?.trailers.orEmpty()
+            val firstTrailerFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            val firstSeasonFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            val firstEpisodeFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            val firstSimilarFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            val downTargetFromActions: FocusRequester? = when {
+                trailers.isNotEmpty() -> firstTrailerFocus
+                currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
+                currentItem.isSeries && currentState.episodes.isNotEmpty() -> firstEpisodeFocus
+                !details?.similar.isNullOrEmpty() -> firstSimilarFocus
+                else -> null
+            }
 
             var backdropRevealStarted by remember(currentItem.uniqueKey) { mutableStateOf(false) }
             LaunchedEffect(currentItem.uniqueKey) {
@@ -216,46 +249,106 @@ fun MediaDetailScreen(
                                 )
                         )
 
-                        // Icona Play grande al centro dell'anteprima
-                        Box(
-                            modifier = Modifier
-                                .size(64.dp)
-                                .align(Alignment.Center)
-                                .tvFocusableControl(
-                                    shape = CircleShape,
-                                    focusedScale = 1.12f,
-                                    onClick = { onPlayMain(false) }
+                        // Su Touch mostra Play sul backdrop; su Android TV evita il doppio bottone Play per non creare trappole D-pad
+                        if (!isTvDevice) {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .align(Alignment.Center)
+                                    .focusProperties { canFocus = false }
+                                    .clip(CircleShape)
+                                    .background(NetflixRed.copy(alpha = 0.9f))
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = { onPlayMain(false) }
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Avvia Streaming",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(38.dp)
                                 )
-                                .clip(CircleShape)
-                                .background(NetflixRed.copy(alpha = 0.9f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Avvia Streaming",
-                                tint = Color.White,
-                                modifier = Modifier.size(38.dp)
-                            )
+                            }
                         }
 
-                        // Pulsante Chiudi in alto a destra
-                        IconButton(
-                            onClick = onClose,
+                        // Barra superiore: Torna al titolo precedente (se stack > 1) e Chiudi scheda
+                        Row(
+                            horizontalArrangement = if (detailStackDepth > 1) Arrangement.SpaceBetween else Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
+                                .fillMaxWidth()
+                                .align(Alignment.TopCenter)
                                 .statusBarsPadding()
-                                .padding(12.dp)
-                                .size(38.dp)
-                                .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
-                                .clip(CircleShape)
-                                .background(NetflixBlack.copy(alpha = 0.75f))
-                                .testTag("detail_close_button")
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                                .focusGroup()
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Chiudi",
-                                tint = NetflixWhite
-                            )
+                            if (detailStackDepth > 1) {
+                                Surface(
+                                    color = NetflixBlack.copy(alpha = 0.8f),
+                                    shape = RoundedCornerShape(50),
+                                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                                    modifier = Modifier
+                                        .focusRequester(detailBackFocusRequester)
+                                        .focusProperties {
+                                            down = detailPlayFocusRequester
+                                            right = detailCloseFocusRequester
+                                        }
+                                        .tvFocusableControl(
+                                            shape = RoundedCornerShape(50),
+                                            focusedBorderColor = NetflixWhite,
+                                            focusedScale = 1.08f,
+                                            onClick = onBack
+                                        )
+                                        .testTag("detail_back_button")
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "Torna al titolo precedente",
+                                            tint = NetflixWhite,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = previousDetailTitle?.let { "Torna a $it" } ?: "Indietro",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = NetflixWhite,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 220.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            IconButton(
+                                onClick = onClose,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .focusRequester(detailCloseFocusRequester)
+                                    .focusProperties {
+                                        down = detailPlayFocusRequester
+                                        if (detailStackDepth > 1) {
+                                            left = detailBackFocusRequester
+                                        }
+                                    }
+                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
+                                    .clip(CircleShape)
+                                    .background(NetflixBlack.copy(alpha = 0.78f))
+                                    .testTag("detail_close_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Chiudi",
+                                    tint = NetflixWhite
+                                )
+                            }
                         }
                     }
                 }
@@ -411,8 +504,11 @@ fun MediaDetailScreen(
                     )
 
                     // Riga unica con icone rotonde: Riproduci, Trailer YouTube, La Mia Lista (+ Dall'inizio se presente)
+                    val topReturnTarget = if (detailStackDepth > 1) detailBackFocusRequester else detailCloseFocusRequester
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusGroup(),
                         horizontalArrangement = Arrangement.spacedBy(if (hasResumeProgress) 18.dp else 24.dp),
                         verticalAlignment = Alignment.Top
                     ) {
@@ -424,6 +520,8 @@ fun MediaDetailScreen(
                             contentColor = NetflixBlack,
                             focusedBorderColor = NetflixRed,
                             focusRequester = if (currentItem.uniqueKey == item.uniqueKey) detailPlayFocusRequester else null,
+                            upFocusRequester = topReturnTarget,
+                            downFocusRequester = downTargetFromActions,
                             testTag = "detail_play_button",
                             onClick = { onPlayMain(false) }
                         )
@@ -435,6 +533,9 @@ fun MediaDetailScreen(
                             containerColor = NetflixRed,
                             contentColor = Color.White,
                             focusedBorderColor = NetflixWhite,
+                            focusRequester = if (currentItem.uniqueKey == item.uniqueKey) detailTrailerFocusRequester else null,
+                            upFocusRequester = topReturnTarget,
+                            downFocusRequester = downTargetFromActions,
                             testTag = "detail_watch_trailer_button",
                             onClick = onOpenYouTubeTrailerPopup
                         )
@@ -447,6 +548,8 @@ fun MediaDetailScreen(
                             contentColor = watchlistTint,
                             borderColor = watchlistBorder,
                             focusedBorderColor = NetflixWhite,
+                            upFocusRequester = topReturnTarget,
+                            downFocusRequester = downTargetFromActions,
                             testTag = "detail_watchlist_button",
                             onClick = onToggleWatchlist
                         )
@@ -460,6 +563,8 @@ fun MediaDetailScreen(
                                 contentColor = NetflixWhite,
                                 borderColor = NetflixElevatedSurface,
                                 focusedBorderColor = NetflixWhite,
+                                upFocusRequester = topReturnTarget,
+                                downFocusRequester = downTargetFromActions,
                                 testTag = "detail_restart_button",
                                 onClick = { onPlayMain(true) }
                             )
@@ -553,10 +658,19 @@ fun MediaDetailScreen(
                                     itemIndex = index,
                                     listState = trailersListState,
                                     onClick = onOpenYouTubeTrailerPopup,
-                                    modifier = Modifier.animateItem(
-                                        fadeInSpec = tween(250),
-                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                    )
+                                    modifier = Modifier
+                                        .then(
+                                            if (index == 0) Modifier.focusRequester(firstTrailerFocus) else Modifier
+                                        )
+                                        .focusProperties {
+                                            if (index == 0) {
+                                                up = detailPlayFocusRequester
+                                            }
+                                        }
+                                        .animateItem(
+                                            fadeInSpec = tween(250),
+                                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                        )
                                 )
                             }
                         }
@@ -608,10 +722,11 @@ fun MediaDetailScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
+                                    .horizontalScroll(rememberScrollState())
+                                    .focusGroup(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                seasons.forEach { season ->
+                                seasons.forEachIndexed { sIndex, season ->
                                     val isSelected = currentState.selectedSeason == season.seasonNumber
                                     val seasonBg by animateColorAsState(
                                         targetValue = if (isSelected) NetflixRed else NetflixCardSurface,
@@ -627,11 +742,20 @@ fun MediaDetailScreen(
                                         color = seasonBg,
                                         shape = RoundedCornerShape(8.dp),
                                         border = BorderStroke(1.dp, seasonBorder),
-                                        modifier = Modifier.tvFocusableControl(
-                                            shape = RoundedCornerShape(8.dp),
-                                            focusedScale = 1.06f,
-                                            onClick = { onSelectSeason(season.seasonNumber) }
-                                        )
+                                        modifier = Modifier
+                                            .then(
+                                                if (sIndex == 0) Modifier.focusRequester(firstSeasonFocus) else Modifier
+                                            )
+                                            .focusProperties {
+                                                if (sIndex == 0 && trailers.isEmpty()) {
+                                                    up = detailPlayFocusRequester
+                                                }
+                                            }
+                                            .tvFocusableControl(
+                                                shape = RoundedCornerShape(8.dp),
+                                                focusedScale = 1.06f,
+                                                onClick = { onSelectSeason(season.seasonNumber) }
+                                            )
                                     ) {
                                         Text(
                                             text = "Stagione ${season.seasonNumber} (${season.episodeCount})",
@@ -659,7 +783,10 @@ fun MediaDetailScreen(
                         }
                     }
                 } else {
-                    items(currentState.episodes, key = { "ep_${it.seasonNumber}_${it.episodeNumber}" }) { ep ->
+                    itemsIndexed(
+                        currentState.episodes,
+                        key = { _, ep -> "ep_${ep.seasonNumber}_${ep.episodeNumber}" }
+                    ) { epIndex, ep ->
                         EpisodeRowItem(
                             episode = ep,
                             savedEpProgress = currentState.episodeProgressMap[ep.episodeNumber],
@@ -667,11 +794,20 @@ fun MediaDetailScreen(
                             onPlayEpisode = {
                                 onPlayEpisode(ep.seasonNumber, ep.episodeNumber, ep.name)
                             },
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(240),
-                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                fadeOutSpec = tween(180)
-                            )
+                            modifier = Modifier
+                                .then(
+                                    if (epIndex == 0) Modifier.focusRequester(firstEpisodeFocus) else Modifier
+                                )
+                                .focusProperties {
+                                    if (epIndex == 0 && !details?.seasons.isNullOrEmpty()) {
+                                        up = firstSeasonFocus
+                                    }
+                                }
+                                .animateItem(
+                                    fadeInSpec = tween(240),
+                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                    fadeOutSpec = tween(180)
+                                )
                         )
                     }
                 }
@@ -679,12 +815,20 @@ fun MediaDetailScreen(
 
             // Contenuti simili da TMDB
             if (!details?.similar.isNullOrEmpty()) {
+                val upToBeforeSimilar = when {
+                    currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
+                    trailers.isNotEmpty() -> firstTrailerFocus
+                    else -> detailPlayFocusRequester
+                }
                 item {
                     Spacer(modifier = Modifier.height(20.dp))
                     MediaCatalogRow(
                         title = "Titoli Simili su TMDB",
                         items = details?.similar.orEmpty(),
-                        onItemClick = onSelectSimilar
+                        onItemClick = onSelectSimilar,
+                        onItemQuickPlay = { sim -> onSelectSimilar(sim) },
+                        firstItemFocusRequester = firstSimilarFocus,
+                        upFocusRequester = if (currentItem.isSeries && currentState.episodes.isNotEmpty()) null else upToBeforeSimilar
                     )
                 }
             }
@@ -716,6 +860,8 @@ private fun DetailRoundActionButton(
     borderColor: Color = Color.Transparent,
     focusedBorderColor: Color = NetflixWhite,
     focusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
     testTag: String,
     onClick: () -> Unit
 ) {
@@ -737,6 +883,10 @@ private fun DetailRoundActionButton(
                         Modifier
                     }
                 )
+                .focusProperties {
+                    if (upFocusRequester != null) up = upFocusRequester
+                    if (downFocusRequester != null) down = downFocusRequester
+                }
                 .tvFocusableControl(
                     shape = CircleShape,
                     focusedScale = 1.12f,

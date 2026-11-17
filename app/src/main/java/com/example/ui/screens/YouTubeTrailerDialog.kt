@@ -30,6 +30,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -91,6 +92,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -184,10 +186,16 @@ fun YouTubeTrailerDialog(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     val isTvDevice = rememberIsTvDevice()
+    val modalPlayerFocusRequester = remember { FocusRequester() }
     val playPauseFocusRequester = remember { FocusRequester() }
+    val trailerTimeBarFocusRequester = remember { FocusRequester() }
+    val firstPlaylistFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
     val closeFocusRequester = remember { FocusRequester() }
     val playlistState = rememberLazyListState()
+    var isTimeBarFocused by remember { mutableStateOf(false) }
+    var focusTimeBarOnReveal by remember { mutableStateOf(false) }
+    var wasControlsVisible by remember { mutableStateOf(false) }
 
     val trailerOkHttpClient = remember {
         OkHttpClient.Builder()
@@ -400,18 +408,35 @@ fun YouTubeTrailerDialog(
         if (showControls && isPlaying && !isBuffering && !isRemoteScrubbing && !trailerState.isSearching && !trailerState.isLoadingStream) {
             delay(3800L)
             showControls = false
+            if (isTvDevice) {
+                runCatching { modalPlayerFocusRequester.requestFocus() }
+            }
         }
     }
 
-    // Focus automatico Android TV su Errore o Chiudi / Play
-    LaunchedEffect(playbackError, trailerState.isSearching, trailerState.isLoadingStream) {
+    // Focus automatico Android TV solo alla comparsa controlli / cambio stato
+    LaunchedEffect(activeKey, showControls, playbackError, trailerState.isSearching, trailerState.isLoadingStream) {
         if (!isTvDevice) return@LaunchedEffect
         if (!playbackError.isNullOrBlank()) {
+            wasControlsVisible = false
             runCatching { retryFocusRequester.requestFocus() }
-        } else if (!trailerState.isSearching && !trailerState.isLoadingStream) {
-            runCatching { playPauseFocusRequester.requestFocus() }
-        } else {
+        } else if (trailerState.isSearching || trailerState.isLoadingStream || isBuffering) {
+            wasControlsVisible = false
             runCatching { closeFocusRequester.requestFocus() }
+        } else if (showControls) {
+            if (!wasControlsVisible && !isTimeBarFocused) {
+                if (focusTimeBarOnReveal && durationMs > 0L) {
+                    focusTimeBarOnReveal = false
+                    runCatching { trailerTimeBarFocusRequester.requestFocus() }
+                } else {
+                    focusTimeBarOnReveal = false
+                    runCatching { playPauseFocusRequester.requestFocus() }
+                }
+            }
+            wasControlsVisible = true
+        } else {
+            wasControlsVisible = false
+            focusTimeBarOnReveal = false
         }
     }
 
@@ -460,8 +485,24 @@ fun YouTubeTrailerDialog(
         }
     }
 
+    val canHideOverlayFirst = showControls &&
+        isPlaying &&
+        playbackError.isNullOrBlank() &&
+        !trailerState.isSearching &&
+        !trailerState.isLoadingStream &&
+        !isBuffering
+
     Dialog(
-        onDismissRequest = onClose,
+        onDismissRequest = {
+            if (canHideOverlayFirst) {
+                showControls = false
+                if (isTvDevice) {
+                    runCatching { modalPlayerFocusRequester.requestFocus() }
+                }
+            } else {
+                onClose()
+            }
+        },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false,
@@ -479,6 +520,8 @@ fun YouTubeTrailerDialog(
                     indication = null,
                     onClick = onClose
                 )
+                .focusRequester(modalPlayerFocusRequester)
+                .focusable()
                 .onPreviewKeyEvent { keyEvent ->
                     interactionTick++
                     if (keyEvent.type == KeyEventType.KeyDown) {
@@ -509,6 +552,42 @@ fun YouTubeTrailerDialog(
                                 return@onPreviewKeyEvent true
                             }
                             else -> Unit
+                        }
+
+                        val canRevealOrSeek = !showControls &&
+                            playbackError.isNullOrBlank() &&
+                            !trailerState.isSearching &&
+                            !trailerState.isLoadingStream &&
+                            !isBuffering
+                        if (canRevealOrSeek) {
+                            when (keyEvent.key) {
+                                Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
+                                Key.DirectionUp -> {
+                                    focusTimeBarOnReveal = false
+                                    showControls = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                Key.DirectionDown -> {
+                                    showControls = true
+                                    if (trailerState.trailers.isNotEmpty()) {
+                                        runCatching { firstPlaylistFocusRequester.requestFocus() }
+                                    }
+                                    return@onPreviewKeyEvent true
+                                }
+                                Key.DirectionLeft -> {
+                                    seekToAction(currentPosMs - 10_000L)
+                                    focusTimeBarOnReveal = durationMs > 0L
+                                    showControls = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                Key.DirectionRight -> {
+                                    seekToAction(currentPosMs + 10_000L)
+                                    focusTimeBarOnReveal = durationMs > 0L
+                                    showControls = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                else -> Unit
+                            }
                         }
                     }
                     false
@@ -716,8 +795,17 @@ fun YouTubeTrailerDialog(
                             IconButton(
                                 onClick = onClose,
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(44.dp)
                                     .focusRequester(closeFocusRequester)
+                                    .focusProperties {
+                                        if (!playbackError.isNullOrBlank()) {
+                                            down = retryFocusRequester
+                                        } else if ((showControls || !isPlaying) && !trailerState.isSearching && !trailerState.isLoadingStream && !isBuffering) {
+                                            down = playPauseFocusRequester
+                                        } else if (trailerState.trailers.isNotEmpty()) {
+                                            down = firstPlaylistFocusRequester
+                                        }
+                                    }
                                     .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
                                     .clip(CircleShape)
                                     .background(NetflixDarkSurface)
@@ -860,7 +948,8 @@ fun YouTubeTrailerDialog(
                                     }
                                     Row(
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.focusGroup()
                                     ) {
                                         Button(
                                             onClick = {
@@ -876,6 +965,12 @@ fun YouTubeTrailerDialog(
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier
                                                 .focusRequester(retryFocusRequester)
+                                                .focusProperties {
+                                                    up = closeFocusRequester
+                                                    if (trailerState.trailers.isNotEmpty()) {
+                                                        down = firstPlaylistFocusRequester
+                                                    }
+                                                }
                                                 .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
                                                 .testTag("retry_trailer_button")
                                         ) {
@@ -896,10 +991,17 @@ fun YouTubeTrailerDialog(
                                                 contentColor = NetflixWhite
                                             ),
                                             shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.tvFocusableControl(
-                                                shape = RoundedCornerShape(8.dp),
-                                                focusedScale = 1.06f
-                                            )
+                                            modifier = Modifier
+                                                .focusProperties {
+                                                    up = closeFocusRequester
+                                                    if (trailerState.trailers.isNotEmpty()) {
+                                                        down = firstPlaylistFocusRequester
+                                                    }
+                                                }
+                                                .tvFocusableControl(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    focusedScale = 1.06f
+                                                )
                                         ) {
                                             Text("Chiudi")
                                         }
@@ -958,17 +1060,28 @@ fun YouTubeTrailerDialog(
                                 exit = fadeOut(),
                                 modifier = Modifier.fillMaxSize()
                             ) {
+                                val centerDownTarget: FocusRequester? = when {
+                                    durationMs > 0L -> trailerTimeBarFocusRequester
+                                    trailerState.trailers.isNotEmpty() -> firstPlaylistFocusRequester
+                                    else -> null
+                                }
                                 Box(modifier = Modifier.fillMaxSize()) {
                                     // Controlli centrali (-10s / Play-Pausa / +10s)
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(22.dp),
-                                        modifier = Modifier.align(Alignment.Center)
+                                        modifier = Modifier
+                                            .align(Alignment.Center)
+                                            .focusGroup()
                                     ) {
                                         IconButton(
                                             onClick = { seekToAction(currentPosMs - 10_000L) },
                                             modifier = Modifier
-                                                .size(46.dp)
+                                                .size(48.dp)
+                                                .focusProperties {
+                                                    up = closeFocusRequester
+                                                    if (centerDownTarget != null) down = centerDownTarget
+                                                }
                                                 .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                                                 .clip(CircleShape)
                                                 .background(NetflixBlack.copy(alpha = 0.68f))
@@ -986,6 +1099,10 @@ fun YouTubeTrailerDialog(
                                             modifier = Modifier
                                                 .size(62.dp)
                                                 .focusRequester(playPauseFocusRequester)
+                                                .focusProperties {
+                                                    up = closeFocusRequester
+                                                    if (centerDownTarget != null) down = centerDownTarget
+                                                }
                                                 .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                                                 .clip(CircleShape)
                                                 .background(NetflixRed.copy(alpha = 0.92f))
@@ -1001,7 +1118,11 @@ fun YouTubeTrailerDialog(
                                         IconButton(
                                             onClick = { seekToAction(currentPosMs + 10_000L) },
                                             modifier = Modifier
-                                                .size(46.dp)
+                                                .size(48.dp)
+                                                .focusProperties {
+                                                    up = closeFocusRequester
+                                                    if (centerDownTarget != null) down = centerDownTarget
+                                                }
                                                 .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                                                 .clip(CircleShape)
                                                 .background(NetflixBlack.copy(alpha = 0.68f))
@@ -1041,7 +1162,11 @@ fun YouTubeTrailerDialog(
                                                 },
                                                 onTogglePlayPause = togglePlayPause,
                                                 onInteraction = { interactionTick++ },
+                                                onFocusChanged = { isTimeBarFocused = it },
                                                 onScrubbingChanged = { isRemoteScrubbing = it },
+                                                focusRequester = trailerTimeBarFocusRequester,
+                                                upFocusRequester = playPauseFocusRequester,
+                                                downFocusRequester = if (trailerState.trailers.isNotEmpty()) firstPlaylistFocusRequester else null,
                                                 compact = true,
                                                 modifier = Modifier
                                                     .fillMaxWidth()
@@ -1103,10 +1228,25 @@ fun YouTubeTrailerDialog(
                                         itemIndex = index,
                                         listState = playlistState,
                                         onClick = { onSelectTrailer(candidate) },
-                                        modifier = Modifier.animateItem(
-                                            fadeInSpec = tween(220),
-                                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                        )
+                                        modifier = Modifier
+                                            .then(
+                                                if (index == 0) Modifier.focusRequester(firstPlaylistFocusRequester) else Modifier
+                                            )
+                                            .focusProperties {
+                                                if (index == 0) {
+                                                    up = when {
+                                                        !playbackError.isNullOrBlank() -> retryFocusRequester
+                                                        (showControls || !isPlaying) && !trailerState.isSearching && !trailerState.isLoadingStream && !isBuffering -> {
+                                                            if (durationMs > 0L) trailerTimeBarFocusRequester else playPauseFocusRequester
+                                                        }
+                                                        else -> closeFocusRequester
+                                                    }
+                                                }
+                                            }
+                                            .animateItem(
+                                                fadeInSpec = tween(220),
+                                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                            )
                                     )
                                 }
                             }

@@ -139,8 +139,16 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     private val _searchResults = MutableStateFlow<List<MediaItem>>(emptyList())
     val searchResults: StateFlow<List<MediaItem>> = _searchResults.asStateFlow()
 
+    private val _detailBackStack = MutableStateFlow<List<DetailUiState>>(emptyList())
+
     private val _detailState = MutableStateFlow<DetailUiState?>(null)
     val detailState: StateFlow<DetailUiState?> = _detailState.asStateFlow()
+
+    private val _detailStackSize = MutableStateFlow(0)
+    val detailStackSize: StateFlow<Int> = _detailStackSize.asStateFlow()
+
+    private val _previousDetailTitle = MutableStateFlow<String?>(null)
+    val previousDetailTitle: StateFlow<String?> = _previousDetailTitle.asStateFlow()
 
     private val _playbackSession = MutableStateFlow<PlaybackSession?>(null)
     val playbackSession: StateFlow<PlaybackSession?> = _playbackSession.asStateFlow()
@@ -151,6 +159,21 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     private var searchJob: Job? = null
     private var seasonProgressJob: Job? = null
     private var trailerJob: Job? = null
+    private var detailLoadJob: Job? = null
+
+    private fun updateDetailStack(newStack: List<DetailUiState>) {
+        _detailBackStack.value = newStack
+        _detailState.value = newStack.lastOrNull()
+        _detailStackSize.value = newStack.size
+        _previousDetailTitle.value = if (newStack.size > 1) newStack[newStack.size - 2].mediaItem.title else null
+    }
+
+    private fun updateTopDetail(transform: (DetailUiState) -> DetailUiState) {
+        val currentStack = _detailBackStack.value
+        val top = currentStack.lastOrNull() ?: return
+        val updated = transform(top)
+        updateDetailStack(currentStack.dropLast(1) + updated)
+    }
 
     init {
         loadCatalog()
@@ -208,16 +231,27 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun openDetails(item: MediaItem) {
-        viewModelScope.launch {
+        detailLoadJob?.cancel()
+        trailerJob?.cancel()
+        seasonProgressJob?.cancel()
+
+        detailLoadJob = viewModelScope.launch {
             // Controlla se abbiamo una stagione salvata in "Continua a guardare"
             val savedProgress = database.vixFlixDao().getWatchProgress(item.uniqueKey)
             val initialSeason = savedProgress?.seasonNumber ?: 1
-
-            _detailState.value = DetailUiState(
+            val newEntry = DetailUiState(
                 mediaItem = item,
                 isLoading = true,
                 selectedSeason = initialSeason
             )
+
+            val currentStack = _detailBackStack.value
+            val updatedStack = if (currentStack.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
+                currentStack.dropLast(1) + newEntry
+            } else {
+                (currentStack + newEntry).takeLast(12)
+            }
+            updateDetailStack(updatedStack)
 
             repository.fetchMediaDetails(item).fold(
                 onSuccess = { details ->
@@ -226,31 +260,58 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         details.seasons.firstOrNull()?.seasonNumber ?: 1
                     }
-                    _detailState.value = _detailState.value?.copy(
-                        mediaItem = details.item,
-                        isLoading = false,
-                        details = details,
-                        selectedSeason = targetSeason,
-                        errorMessage = null
-                    )
-                    if (details.item.isSeries) {
-                        selectSeason(details.item.id, targetSeason)
+                    if (_detailBackStack.value.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
+                        updateTopDetail { top ->
+                            top.copy(
+                                mediaItem = details.item,
+                                isLoading = false,
+                                details = details,
+                                selectedSeason = targetSeason,
+                                errorMessage = null
+                            )
+                        }
+                        if (details.item.isSeries) {
+                            selectSeason(details.item.id, targetSeason)
+                        }
                     }
                 },
                 onFailure = { err ->
-                    _detailState.value = _detailState.value?.copy(
-                        isLoading = false,
-                        errorMessage = err.localizedMessage ?: "Errore caricamento dettagli da TMDB"
-                    )
+                    if (_detailBackStack.value.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
+                        updateTopDetail { top ->
+                            top.copy(
+                                isLoading = false,
+                                errorMessage = err.localizedMessage ?: "Errore caricamento dettagli da TMDB"
+                            )
+                        }
+                    }
                 }
             )
         }
     }
 
-    fun closeDetails() {
+    fun navigateBackDetail() {
+        detailLoadJob?.cancel()
         trailerJob?.cancel()
         seasonProgressJob?.cancel()
-        _detailState.value = null
+
+        val currentStack = _detailBackStack.value
+        if (currentStack.size > 1) {
+            val popped = currentStack.dropLast(1)
+            updateDetailStack(popped)
+            val top = popped.lastOrNull()
+            if (top != null && top.mediaItem.isSeries) {
+                observeSeasonProgressForTop(top.mediaItem.id, top.selectedSeason)
+            }
+        } else {
+            closeDetails()
+        }
+    }
+
+    fun closeDetails() {
+        detailLoadJob?.cancel()
+        trailerJob?.cancel()
+        seasonProgressJob?.cancel()
+        updateDetailStack(emptyList())
     }
 
     /**
@@ -261,12 +322,14 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         val current = _detailState.value ?: return
         trailerJob?.cancel()
 
-        _detailState.value = current.copy(
-            activeTrailer = TrailerPlaybackState(
-                isSearching = true,
-                isLoadingStream = false
+        updateTopDetail {
+            it.copy(
+                activeTrailer = TrailerPlaybackState(
+                    isSearching = true,
+                    isLoadingStream = false
+                )
             )
-        )
+        }
 
         trailerJob = viewModelScope.launch {
             repository.searchYouTubeTrailers(current.mediaItem).fold(
@@ -275,38 +338,44 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                     if (latest.mediaItem.id != current.mediaItem.id || latest.activeTrailer == null) return@fold
                     val first = results.firstOrNull()
                     if (first == null) {
-                        _detailState.value = latest.copy(
-                            activeTrailer = TrailerPlaybackState(
-                                trailers = emptyList(),
-                                isSearching = false,
-                                isLoadingStream = false,
-                                errorMessage = "Nessun trailer trovato su YouTube per \"${current.mediaItem.title}\"."
+                        updateTopDetail { top ->
+                            top.copy(
+                                activeTrailer = TrailerPlaybackState(
+                                    trailers = emptyList(),
+                                    isSearching = false,
+                                    isLoadingStream = false,
+                                    errorMessage = "Nessun trailer trovato su YouTube per \"${current.mediaItem.title}\"."
+                                )
                             )
-                        )
+                        }
                     } else {
-                        _detailState.value = latest.copy(
-                            activeTrailer = TrailerPlaybackState(
-                                trailers = results,
-                                selectedVideo = first,
-                                isSearching = false,
-                                isLoadingStream = true
+                        updateTopDetail { top ->
+                            top.copy(
+                                activeTrailer = TrailerPlaybackState(
+                                    trailers = results,
+                                    selectedVideo = first,
+                                    isSearching = false,
+                                    isLoadingStream = true
+                                )
                             )
-                        )
+                        }
                         resolveSelectedYouTubeCandidate(current.mediaItem.id, first)
                     }
                 },
                 onFailure = { err ->
                     val latest = _detailState.value ?: return@fold
                     if (latest.mediaItem.id != current.mediaItem.id || latest.activeTrailer == null) return@fold
-                    _detailState.value = latest.copy(
-                        activeTrailer = TrailerPlaybackState(
-                            trailers = emptyList(),
-                            isSearching = false,
-                            isLoadingStream = false,
-                            errorMessage = err.localizedMessage
-                                ?: "Impossibile cercare i trailer su YouTube in questo momento."
+                    updateTopDetail { top ->
+                        top.copy(
+                            activeTrailer = TrailerPlaybackState(
+                                trailers = emptyList(),
+                                isSearching = false,
+                                isLoadingStream = false,
+                                errorMessage = err.localizedMessage
+                                    ?: "Impossibile cercare i trailer su YouTube in questo momento."
+                            )
                         )
-                    )
+                    }
                 }
             )
         }
@@ -317,15 +386,17 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         val currentPopup = current.activeTrailer ?: return
         trailerJob?.cancel()
 
-        _detailState.value = current.copy(
-            activeTrailer = currentPopup.copy(
-                selectedVideo = candidate,
-                isSearching = false,
-                isLoadingStream = true,
-                resolvedTrailer = null,
-                errorMessage = null
+        updateTopDetail { top ->
+            top.copy(
+                activeTrailer = currentPopup.copy(
+                    selectedVideo = candidate,
+                    isSearching = false,
+                    isLoadingStream = true,
+                    resolvedTrailer = null,
+                    errorMessage = null
+                )
             )
-        )
+        }
 
         trailerJob = viewModelScope.launch {
             resolveSelectedYouTubeCandidate(current.mediaItem.id, candidate)
@@ -352,29 +423,33 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                 val latest = _detailState.value ?: return@fold
                 val popup = latest.activeTrailer ?: return@fold
                 if (latest.mediaItem.id == mediaId && popup.selectedVideo?.videoId == candidate.videoId) {
-                    _detailState.value = latest.copy(
-                        activeTrailer = popup.copy(
-                            isSearching = false,
-                            isLoadingStream = false,
-                            resolvedTrailer = resolved,
-                            errorMessage = null
+                    updateTopDetail { top ->
+                        top.copy(
+                            activeTrailer = popup.copy(
+                                isSearching = false,
+                                isLoadingStream = false,
+                                resolvedTrailer = resolved,
+                                errorMessage = null
+                            )
                         )
-                    )
+                    }
                 }
             },
             onFailure = { err ->
                 val latest = _detailState.value ?: return@fold
                 val popup = latest.activeTrailer ?: return@fold
                 if (latest.mediaItem.id == mediaId && popup.selectedVideo?.videoId == candidate.videoId) {
-                    _detailState.value = latest.copy(
-                        activeTrailer = popup.copy(
-                            isSearching = false,
-                            isLoadingStream = false,
-                            resolvedTrailer = null,
-                            errorMessage = err.localizedMessage
-                                ?: "Impossibile riprodurre questo trailer YouTube."
+                    updateTopDetail { top ->
+                        top.copy(
+                            activeTrailer = popup.copy(
+                                isSearching = false,
+                                isLoadingStream = false,
+                                resolvedTrailer = null,
+                                errorMessage = err.localizedMessage
+                                    ?: "Impossibile riprodurre questo trailer YouTube."
+                            )
                         )
-                    )
+                    }
                 }
             }
         )
@@ -382,37 +457,51 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
 
     fun closeTrailerPlayer() {
         trailerJob?.cancel()
-        val current = _detailState.value ?: return
-        _detailState.value = current.copy(activeTrailer = null)
+        if (_detailState.value == null) return
+        updateTopDetail { top -> top.copy(activeTrailer = null) }
     }
 
-    fun selectSeason(tvId: Int, seasonNumber: Int) {
-        val current = _detailState.value ?: return
-        _detailState.value = current.copy(
-            selectedSeason = seasonNumber,
-            isLoadingEpisodes = true
-        )
-
+    private fun observeSeasonProgressForTop(tvId: Int, seasonNumber: Int) {
         seasonProgressJob?.cancel()
         seasonProgressJob = viewModelScope.launch {
             repository.observeSeasonProgress(tvId, seasonNumber).collect { progressList ->
                 val map = progressList.associateBy { it.episodeNumber }
-                _detailState.value = _detailState.value?.copy(episodeProgressMap = map)
+                if (_detailState.value?.mediaItem?.id == tvId) {
+                    updateTopDetail { top -> top.copy(episodeProgressMap = map) }
+                }
             }
         }
+    }
+
+    fun selectSeason(tvId: Int, seasonNumber: Int) {
+        if (_detailState.value == null) return
+        updateTopDetail { top ->
+            top.copy(
+                selectedSeason = seasonNumber,
+                isLoadingEpisodes = true
+            )
+        }
+
+        observeSeasonProgressForTop(tvId, seasonNumber)
 
         viewModelScope.launch {
             repository.fetchSeasonEpisodes(tvId, seasonNumber).fold(
                 onSuccess = { episodes ->
-                    _detailState.value = _detailState.value?.copy(
-                        episodes = episodes,
-                        isLoadingEpisodes = false
-                    )
+                    if (_detailState.value?.mediaItem?.id == tvId) {
+                        updateTopDetail { top ->
+                            top.copy(
+                                episodes = episodes,
+                                isLoadingEpisodes = false
+                            )
+                        }
+                    }
                 },
                 onFailure = {
-                    _detailState.value = _detailState.value?.copy(
-                        isLoadingEpisodes = false
-                    )
+                    if (_detailState.value?.mediaItem?.id == tvId) {
+                        updateTopDetail { top ->
+                            top.copy(isLoadingEpisodes = false)
+                        }
+                    }
                 }
             )
         }
@@ -437,13 +526,18 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
             var targetEpTitle = episodeTitle
             var seasonEpisodes = _detailState.value?.takeIf { it.mediaItem.id == item.id }?.episodes.orEmpty()
 
-            if (item.isSeries && (targetSeason == null || targetEpisode == null)) {
-                val saved = database.vixFlixDao().getWatchProgress(item.uniqueKey)
-                targetSeason = saved?.seasonNumber ?: 1
-                targetEpisode = saved?.episodeNumber ?: 1
-                targetEpTitle = saved?.episodeTitle
-                if (seasonEpisodes.isEmpty()) {
-                    seasonEpisodes = repository.fetchSeasonEpisodes(item.id, targetSeason).getOrDefault(emptyList())
+            if (item.isSeries) {
+                if (targetSeason == null || targetEpisode == null) {
+                    val saved = database.vixFlixDao().getWatchProgress(item.uniqueKey)
+                    targetSeason = saved?.seasonNumber ?: 1
+                    targetEpisode = saved?.episodeNumber ?: 1
+                    if (targetEpTitle.isNullOrBlank()) {
+                        targetEpTitle = saved?.episodeTitle
+                    }
+                }
+                val resolvedSeason = targetSeason ?: 1
+                if (seasonEpisodes.isEmpty() || seasonEpisodes.firstOrNull()?.seasonNumber != resolvedSeason) {
+                    seasonEpisodes = repository.fetchSeasonEpisodes(item.id, resolvedSeason).getOrDefault(emptyList())
                 }
                 if (targetEpTitle.isNullOrBlank()) {
                     targetEpTitle = seasonEpisodes.firstOrNull { it.episodeNumber == targetEpisode }?.name

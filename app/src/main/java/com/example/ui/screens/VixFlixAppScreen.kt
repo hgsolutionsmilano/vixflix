@@ -1,18 +1,23 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -20,7 +25,11 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -38,31 +47,39 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.NewReleases
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -70,17 +87,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -88,8 +110,13 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -106,13 +133,16 @@ import com.example.ui.components.MediaPosterCard
 import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
 import com.example.ui.components.Top10Section
+import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.tvFocusableControl
+import com.example.ui.theme.BebasNeueFontFamily
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
 import com.example.ui.theme.NetflixDarkSurface
 import com.example.ui.theme.NetflixElevatedSurface
 import com.example.ui.theme.NetflixLightGray
+import com.example.ui.theme.NetflixMatchGreen
 import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
@@ -136,12 +166,20 @@ fun VixFlixAppScreen(
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
+    val detailStackSize by viewModel.detailStackSize.collectAsStateWithLifecycle()
+    val previousDetailTitle by viewModel.previousDetailTitle.collectAsStateWithLifecycle()
     val playbackSession by viewModel.playbackSession.collectAsStateWithLifecycle()
     val gitHubState by viewModel.gitHubState.collectAsStateWithLifecycle()
 
     var isSearchBarVisible by remember { mutableStateOf(false) }
     var requestedSettingsCategory by remember { mutableStateOf(SettingsCategory.PLAYBACK) }
     var requestedSettingsNonce by remember { mutableIntStateOf(0) }
+    var isRailFocused by remember { mutableStateOf(false) }
+    var tvQuickActionEntry by remember { mutableStateOf<WatchProgressEntity?>(null) }
+    var tvQuickActionItem by remember { mutableStateOf<MediaItem?>(null) }
+    var lastBackPressMs by remember { mutableLongStateOf(0L) }
+    var showExitHintBanner by remember { mutableStateOf(false) }
+
     val heroPlayFocusRequester = remember { FocusRequester() }
     val firstRowFocusRequester = remember { FocusRequester() }
     val navRailSelectedFocusRequester = remember { FocusRequester() }
@@ -150,6 +188,10 @@ fun VixFlixAppScreen(
     val searchFirstItemFocusRequester = remember { FocusRequester() }
     val settingsFirstControlFocusRequester = remember { FocusRequester() }
     val retryButtonFocusRequester = remember { FocusRequester() }
+
+    // Memoria del focus TV per evitare di tornare sempre in cima all'Hero chiudendo una locandina
+    var lastFocusedContentRequester by remember(selectedTab) { mutableStateOf<FocusRequester?>(null) }
+    var wasOverlayActive by remember { mutableStateOf(false) }
 
     // Memorizza l'ultimo DetailUiState per animarne l'uscita fluida verso il basso senza scatti
     var lastDetailSnapshot by remember { mutableStateOf<DetailUiState?>(null) }
@@ -177,16 +219,13 @@ fun VixFlixAppScreen(
         isSearchBarVisible && searchQuery.isNotBlank() -> {
             if (searchResults.isNotEmpty() && !isSearching) searchFirstItemFocusRequester else null
         }
-        else -> tabContentEntryFocusRequester
+        else -> lastFocusedContentRequester ?: tabContentEntryFocusRequester
     }
 
-    // Gestione tasto INDIETRO del telecomando Android TV / Google TV quando si è nel catalogo principale
-    BackHandler(enabled = isCatalogInteractive && (isSearchBarVisible || selectedTab != NavTab.HOME)) {
-        if (isSearchBarVisible) {
-            isSearchBarVisible = false
-            viewModel.clearSearch()
-        } else if (selectedTab != NavTab.HOME) {
-            viewModel.selectTab(NavTab.HOME)
+    LaunchedEffect(showExitHintBanner) {
+        if (showExitHintBanner) {
+            delay(2_400L)
+            showExitHintBanner = false
         }
     }
 
@@ -197,11 +236,10 @@ fun VixFlixAppScreen(
         }
     }
 
+    // Focus iniziale per cambio scheda / caricamento completato
     LaunchedEffect(
         isTvDevice,
-        isCatalogInteractive,
         selectedTab,
-        isSearchBarVisible,
         catalogState is CatalogUiState.Success,
         catalogState is CatalogUiState.Error
     ) {
@@ -210,6 +248,18 @@ fun VixFlixAppScreen(
             delay(140L)
             runCatching { target.requestFocus() }
         }
+    }
+
+    // Ripristino focus sull'ultima locandina alla chiusura di Dettagli / Player
+    LaunchedEffect(isCatalogInteractive, isTvDevice) {
+        if (wasOverlayActive && isCatalogInteractive && isTvDevice && !isSearchBarVisible) {
+            val target = lastFocusedContentRequester ?: tabContentEntryFocusRequester
+            if (target != null) {
+                delay(120L)
+                runCatching { target.requestFocus() }
+            }
+        }
+        wasOverlayActive = !isCatalogInteractive
     }
 
     // Popup automatico se GitHub Releases segnala una nuova versione
@@ -252,6 +302,41 @@ fun VixFlixAppScreen(
             .background(NetflixBlack)
     ) {
         val useTvNavigationRail = isTvDevice || maxWidth >= 840.dp
+
+        // Gestione tasto INDIETRO ottimale per Android TV / Google TV nel catalogo principale:
+        // 1. Chiude menu rapido o ricerca se aperti
+        // 2. Sposta prima il fuoco sulla barra laterale compatta se l'utente è sui contenuti
+        // 3. Su schede secondarie torna alla Home; sulla Home chiede doppia pressione entro 2.4s
+        BackHandler(enabled = isCatalogInteractive) {
+            when {
+                tvQuickActionEntry != null -> tvQuickActionEntry = null
+                tvQuickActionItem != null -> tvQuickActionItem = null
+                isSearchBarVisible -> {
+                    isSearchBarVisible = false
+                    viewModel.clearSearch()
+                    val restoreTarget = lastFocusedContentRequester ?: tabContentEntryFocusRequester
+                    if (restoreTarget != null) {
+                        runCatching { restoreTarget.requestFocus() }
+                    }
+                }
+                useTvNavigationRail && !isRailFocused -> {
+                    runCatching { navRailSelectedFocusRequester.requestFocus() }
+                }
+                selectedTab != NavTab.HOME -> {
+                    viewModel.selectTab(NavTab.HOME)
+                }
+                else -> {
+                    val now = System.currentTimeMillis()
+                    if (now - lastBackPressMs <= 2_400L) {
+                        showExitHintBanner = false
+                        (context as? Activity)?.finish()
+                    } else {
+                        lastBackPressMs = now
+                        showExitHintBanner = true
+                    }
+                }
+            }
+        }
 
         // 1. LIVELLO BASE: Catalogo Principale (mantiene posizione di scorrimento e stato TV dietro ai dettagli)
         Scaffold(
@@ -303,94 +388,15 @@ fun VixFlixAppScreen(
                 }
             }
         ) { innerPadding ->
-            Row(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(NetflixBlack)
             ) {
-                // NavigationRail laterale stile Google TV / Android TV navigabile comodamente con il telecomando
-                if (useTvNavigationRail) {
-                    NavigationRail(
-                        containerColor = NetflixDarkSurface,
-                        contentColor = NetflixWhite,
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .statusBarsPadding()
-                            .padding(top = 12.dp, bottom = 12.dp)
-                            .focusGroup()
-                            .focusProperties {
-                                if (activeContentEntryFocusRequester != null) {
-                                    right = activeContentEntryFocusRequester
-                                }
-                            }
-                            .testTag("tv_navigation_rail")
-                    ) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        navItems.forEach { (tab, label, icon) ->
-                            var itemFocused by remember { mutableStateOf(false) }
-                            val onSelectNavTab = {
-                                isSearchBarVisible = false
-                                viewModel.clearSearch()
-                                viewModel.selectTab(tab)
-                            }
-                            NavigationRailItem(
-                                selected = selectedTab == tab,
-                                onClick = onSelectNavTab,
-                                icon = {
-                                    Icon(imageVector = icon, contentDescription = label)
-                                },
-                                label = {
-                                    Text(text = label, maxLines = 1)
-                                },
-                                colors = NavigationRailItemDefaults.colors(
-                                    selectedIconColor = NetflixRed,
-                                    selectedTextColor = NetflixWhite,
-                                    indicatorColor = if (itemFocused) NetflixRed.copy(alpha = 0.35f) else NetflixElevatedSurface,
-                                    unselectedIconColor = if (itemFocused) NetflixWhite else NetflixMutedGray,
-                                    unselectedTextColor = if (itemFocused) NetflixWhite else NetflixMutedGray
-                                ),
-                                modifier = Modifier
-                                    .then(
-                                        if (selectedTab == tab) {
-                                            Modifier.focusRequester(navRailSelectedFocusRequester)
-                                        } else {
-                                            Modifier
-                                        }
-                                    )
-                                    .focusProperties {
-                                        if (activeContentEntryFocusRequester != null) {
-                                            right = activeContentEntryFocusRequester
-                                        }
-                                    }
-                                    .onPreviewKeyEvent { keyEvent ->
-                                        if (keyEvent.type == KeyEventType.KeyDown &&
-                                            keyEvent.key == Key.DirectionRight &&
-                                            activeContentEntryFocusRequester != null
-                                        ) {
-                                            runCatching { activeContentEntryFocusRequester.requestFocus() }
-                                            true
-                                        } else if (keyEvent.type == KeyEventType.KeyUp &&
-                                            (keyEvent.key == Key.DirectionCenter ||
-                                                keyEvent.key == Key.Enter ||
-                                                keyEvent.key == Key.NumPadEnter)
-                                        ) {
-                                            onSelectNavTab()
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    }
-                                    .onFocusChanged { itemFocused = it.isFocused }
-                                    .testTag("tv_rail_${tab.name.lowercase()}")
-                            )
-                        }
-                    }
-                }
-
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
+                        .fillMaxSize()
+                        .padding(start = if (useTvNavigationRail) 72.dp else 0.dp)
                         .background(NetflixBlack)
                 ) {
                     val topBarOffset = if (useTvNavigationRail) 78.dp else 122.dp
@@ -442,12 +448,15 @@ fun VixFlixAppScreen(
                                 firstItemFocusRequester = searchFirstItemFocusRequester,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = searchInputFocusRequester,
+                                onItemFocused = { lastFocusedContentRequester = it },
+                                onItemQuickPlay = { item -> viewModel.startPlayback(item) },
+                                onItemLongClick = { item -> tvQuickActionItem = item },
                                 onItemClick = viewModel::openDetails,
                                 contentPadding = PaddingValues(
                                     top = topBarOffset + 46.dp,
                                     bottom = innerPadding.calculateBottomPadding() + 24.dp,
-                                    start = 16.dp,
-                                    end = 16.dp
+                                    start = if (useTvNavigationRail) 24.dp else 16.dp,
+                                    end = if (useTvNavigationRail) 24.dp else 16.dp
                                 )
                             )
                         } else if (currentSection.tab == NavTab.SETTINGS) {
@@ -491,8 +500,12 @@ fun VixFlixAppScreen(
                                 topBarFocusRequester = topBarBrandFocusRequester,
                                 onBrowseCatalog = { viewModel.selectTab(NavTab.HOME) },
                                 onOpenItem = viewModel::openDetails,
+                                onPlayItem = { viewModel.startPlayback(it) },
                                 onResumeContinueWatching = viewModel::resumeFromContinueWatching,
                                 onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
+                                onTvLongPressContinueWatching = { entry -> tvQuickActionEntry = entry },
+                                onTvLongPressPoster = { item -> tvQuickActionItem = item },
+                                onRememberContentFocus = { requester -> lastFocusedContentRequester = requester },
                                 contentPadding = PaddingValues(
                                     top = topBarOffset,
                                     bottom = innerPadding.calculateBottomPadding() + 24.dp
@@ -601,11 +614,20 @@ fun VixFlixAppScreen(
                                                 )
                                             )
                                         },
-                                        onRemoveContinueWatching = { entry ->
-                                            viewModel.removeContinueWatching(entry.id)
-                                        },
-                                        bottomPadding = innerPadding.calculateBottomPadding()
-                                    )
+                                            onRemoveContinueWatching = { entry ->
+                                                viewModel.removeContinueWatching(entry.id)
+                                            },
+                                            onTvLongPressContinueWatching = { entry ->
+                                                tvQuickActionEntry = entry
+                                            },
+                                            onTvLongPressPoster = { item ->
+                                                tvQuickActionItem = item
+                                            },
+                                            onRememberContentFocus = { requester ->
+                                                lastFocusedContentRequester = requester
+                                            },
+                                            bottomPadding = innerPadding.calculateBottomPadding()
+                                        )
                                 }
                             }
                         }
@@ -650,10 +672,147 @@ fun VixFlixAppScreen(
                         modifier = Modifier.align(Alignment.TopCenter)
                     )
                 }
+
+                // Scrim morbido quando la barra laterale compatta TV è espansa
+                if (useTvNavigationRail) {
+                    AnimatedVisibility(
+                        visible = isRailFocused,
+                        enter = fadeIn(tween(180)),
+                        exit = fadeOut(tween(180)),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .zIndex(8f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(NetflixBlack.copy(alpha = 0.56f))
+                        )
+                    }
+
+                    TvExpandableNavigationRail(
+                        navItems = navItems,
+                        selectedTab = selectedTab,
+                        isExpanded = isRailFocused,
+                        selectedItemFocusRequester = navRailSelectedFocusRequester,
+                        rightToContentFocusRequester = activeContentEntryFocusRequester,
+                        onFocusChanged = { isRailFocused = it },
+                        onSelectTab = { tab ->
+                            isSearchBarVisible = false
+                            viewModel.clearSearch()
+                            viewModel.selectTab(tab)
+                        },
+                        onMoveFocusRight = {
+                            activeContentEntryFocusRequester?.let { target ->
+                                runCatching { target.requestFocus() }
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .zIndex(10f)
+                    )
+                }
+
+                // Banner discreto "Premi ancora Indietro per uscire" su Android TV / Google TV
+                AnimatedVisibility(
+                    visible = showExitHintBanner,
+                    enter = fadeIn(tween(200)) + slideInVertically(tween(220)) { it / 2 },
+                    exit = fadeOut(tween(200)) + slideOutVertically(tween(200)) { it / 2 },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = innerPadding.calculateBottomPadding() + 28.dp)
+                        .zIndex(14f)
+                ) {
+                    Surface(
+                        color = NetflixCardSurface.copy(alpha = 0.96f),
+                        shape = RoundedCornerShape(24.dp),
+                        border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.8f)),
+                        shadowElevation = 12.dp
+                    ) {
+                        Text(
+                            text = "Premi ancora Indietro per uscire da VixFlix",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = NetflixWhite,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                        )
+                    }
+                }
             }
         }
 
-        // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (apertura fluida da locandina con zoom+slide)
+        // Menu Rapido TV (Long-Press OK su "Continua a guardare")
+        tvQuickActionEntry?.let { entry ->
+            TvContinueWatchingQuickDialog(
+                entry = entry,
+                onDismiss = { tvQuickActionEntry = null },
+                onResume = {
+                    tvQuickActionEntry = null
+                    viewModel.resumeFromContinueWatching(entry)
+                },
+                onOpenDetails = {
+                    tvQuickActionEntry = null
+                    viewModel.openDetails(
+                        MediaItem(
+                            id = entry.tmdbId,
+                            mediaType = entry.mediaType,
+                            title = entry.title,
+                            overview = entry.overview,
+                            posterPath = entry.posterPath,
+                            backdropPath = entry.backdropPath,
+                            voteAverage = entry.voteAverage,
+                            releaseYear = entry.releaseYear
+                        )
+                    )
+                },
+                onRestart = {
+                    tvQuickActionEntry = null
+                    viewModel.startPlayback(
+                        item = MediaItem(
+                            id = entry.tmdbId,
+                            mediaType = entry.mediaType,
+                            title = entry.title,
+                            overview = entry.overview,
+                            posterPath = entry.posterPath,
+                            backdropPath = entry.backdropPath,
+                            voteAverage = entry.voteAverage,
+                            releaseYear = entry.releaseYear
+                        ),
+                        seasonNumber = entry.seasonNumber,
+                        episodeNumber = entry.episodeNumber,
+                        episodeTitle = entry.episodeTitle,
+                        explicitStartPositionMs = 0L
+                    )
+                },
+                onRemove = {
+                    tvQuickActionEntry = null
+                    viewModel.removeContinueWatching(entry.id)
+                }
+            )
+        }
+
+        // Menu Rapido TV (Long-Press OK su qualsiasi locandina del catalogo)
+        tvQuickActionItem?.let { item ->
+            val inWatchlist = watchlist.any { it.id == item.uniqueKey }
+            TvPosterQuickActionDialog(
+                item = item,
+                isInWatchlist = inWatchlist,
+                onDismiss = { tvQuickActionItem = null },
+                onOpenDetails = {
+                    tvQuickActionItem = null
+                    viewModel.openDetails(item)
+                },
+                onQuickPlay = {
+                    tvQuickActionItem = null
+                    viewModel.startPlayback(item)
+                },
+                onToggleWatchlist = {
+                    tvQuickActionItem = null
+                    viewModel.toggleWatchlist(item)
+                }
+            )
+        }
+
+        // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (con stack cronologico tra Titoli Simili)
         androidx.compose.animation.AnimatedVisibility(
             visible = isDetailVisible && !isPlayerVisible,
             enter = fadeIn(tween(260)) +
@@ -675,7 +834,10 @@ fun VixFlixAppScreen(
                     savedProgress = savedEntry,
                     isInWatchlist = inList,
                     bufferPreset = bufferPreset,
+                    detailStackDepth = detailStackSize,
+                    previousDetailTitle = previousDetailTitle,
                     isInteractive = isDetailVisible && !isPlayerVisible,
+                    onBack = viewModel::navigateBackDetail,
                     onClose = viewModel::closeDetails,
                     onPlayMain = { restartFromZero ->
                         viewModel.startPlayback(
@@ -739,6 +901,428 @@ fun VixFlixAppScreen(
     }
 }
 
+@Composable
+private fun TvExpandableNavigationRail(
+    navItems: List<Triple<NavTab, String, ImageVector>>,
+    selectedTab: NavTab,
+    isExpanded: Boolean,
+    selectedItemFocusRequester: FocusRequester,
+    rightToContentFocusRequester: FocusRequester?,
+    onFocusChanged: (Boolean) -> Unit,
+    onSelectTab: (NavTab) -> Unit,
+    onMoveFocusRight: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val railWidth by animateDpAsState(
+        targetValue = if (isExpanded) 216.dp else 72.dp,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "tvExpandableRailWidth"
+    )
+
+    Column(
+        modifier = modifier
+            .width(railWidth)
+            .fillMaxHeight()
+            .shadow(elevation = if (isExpanded) 20.dp else 0.dp)
+            .background(
+                Brush.horizontalGradient(
+                    colors = if (isExpanded) {
+                        listOf(NetflixDarkSurface, NetflixCardSurface.copy(alpha = 0.98f))
+                    } else {
+                        listOf(NetflixDarkSurface, NetflixDarkSurface)
+                    }
+                )
+            )
+            .statusBarsPadding()
+            .padding(top = 14.dp, bottom = 16.dp, start = 10.dp, end = 10.dp)
+            .onFocusChanged { onFocusChanged(it.hasFocus) }
+            .focusGroup()
+            .focusProperties {
+                if (rightToContentFocusRequester != null) {
+                    right = rightToContentFocusRequester
+                }
+            }
+            .testTag("tv_navigation_rail")
+    ) {
+        // Mini badge brand in cima alla barra laterale
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (isExpanded) 8.dp else 0.dp, vertical = 6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(NetflixRed),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "V",
+                    fontFamily = BebasNeueFontFamily,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = fadeIn(tween(180)) + expandHorizontally(tween(180)),
+                exit = fadeOut(tween(120)) + shrinkHorizontally(tween(140))
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "VIXFLIX TV",
+                        fontFamily = BebasNeueFontFamily,
+                        fontSize = 24.sp,
+                        letterSpacing = 1.5.sp,
+                        color = NetflixWhite,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            navItems.forEach { (tab, label, icon) ->
+                val isSelected = selectedTab == tab
+                var itemFocused by remember { mutableStateOf(false) }
+
+                val bgColor by animateColorAsState(
+                    targetValue = when {
+                        itemFocused -> NetflixRed
+                        isSelected -> NetflixElevatedSurface
+                        else -> Color.Transparent
+                    },
+                    animationSpec = tween(160),
+                    label = "railItemBg"
+                )
+                val contentTint by animateColorAsState(
+                    targetValue = when {
+                        itemFocused -> Color.White
+                        isSelected -> NetflixRed
+                        else -> NetflixMutedGray
+                    },
+                    animationSpec = tween(160),
+                    label = "railItemTint"
+                )
+
+                val activateAndMoveRight = {
+                    onSelectTab(tab)
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(bgColor)
+                        .then(
+                            if (itemFocused) {
+                                Modifier.border(2.dp, NetflixWhite, RoundedCornerShape(12.dp))
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .then(
+                            if (isSelected) {
+                                Modifier.focusRequester(selectedItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .focusProperties {
+                            if (rightToContentFocusRequester != null) {
+                                right = rightToContentFocusRequester
+                            }
+                        }
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown &&
+                                keyEvent.key == Key.DirectionRight
+                            ) {
+                                onMoveFocusRight()
+                                true
+                            } else if (keyEvent.type == KeyEventType.KeyUp &&
+                                (keyEvent.key == Key.DirectionCenter ||
+                                    keyEvent.key == Key.Enter ||
+                                    keyEvent.key == Key.NumPadEnter)
+                            ) {
+                                activateAndMoveRight()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        .onFocusChanged { itemFocused = it.isFocused }
+                        .focusable()
+                        .clickable { activateAndMoveRight() }
+                        .padding(horizontal = 12.dp)
+                        .testTag("tv_rail_${tab.name.lowercase()}"),
+                    contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Box(
+                            modifier = Modifier.size(26.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = label,
+                                tint = if (itemFocused) Color.White else contentTint,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        AnimatedVisibility(
+                            visible = isExpanded,
+                            enter = fadeIn(tween(180)) + expandHorizontally(tween(180)),
+                            exit = fadeOut(tween(110)) + shrinkHorizontally(tween(120))
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = if (isSelected || itemFocused) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected || itemFocused) NetflixWhite else NetflixLightGray,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvContinueWatchingQuickDialog(
+    entry: WatchProgressEntity,
+    onDismiss: () -> Unit,
+    onResume: () -> Unit,
+    onOpenDetails: () -> Unit,
+    onRestart: () -> Unit,
+    onRemove: () -> Unit
+) {
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(entry.id) {
+        delay(60L)
+        runCatching { firstFocus.requestFocus() }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+            border = BorderStroke(1.5.dp, NetflixElevatedSurface),
+            modifier = Modifier
+                .widthIn(max = 420.dp)
+                .fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .focusGroup(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = entry.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = NetflixWhite,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val subtitle = if (entry.mediaType == "tv" && entry.seasonNumber != null && entry.episodeNumber != null) {
+                    "S${entry.seasonNumber}:E${entry.episodeNumber} • Fermo a ${formatSecondsToMmSs(entry.startSeconds)}"
+                } else {
+                    "Fermo a ${formatSecondsToMmSs(entry.startSeconds)}"
+                }
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NetflixMatchGreen
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Button(
+                    onClick = onResume,
+                    colors = ButtonDefaults.buttonColors(containerColor = NetflixWhite, contentColor = NetflixBlack),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .focusRequester(firstFocus)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedBorderColor = NetflixRed, focusedScale = 1.03f)
+                ) {
+                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Riprendi da ${formatSecondsToMmSs(entry.startSeconds)}", fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = onOpenDetails,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
+                ) {
+                    Icon(imageVector = Icons.Outlined.Info, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Scheda Dettagli & Episodi")
+                }
+
+                OutlinedButton(
+                    onClick = onRestart,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
+                ) {
+                    Icon(imageVector = Icons.Default.Replay, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Ricomincia dall'inizio")
+                }
+
+                OutlinedButton(
+                    onClick = onRemove,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixRed),
+                    border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.6f)),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedBorderColor = NetflixRed, focusedScale = 1.03f)
+                ) {
+                    Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Rimuovi da Continua a guardare")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvPosterQuickActionDialog(
+    item: MediaItem,
+    isInWatchlist: Boolean,
+    onDismiss: () -> Unit,
+    onOpenDetails: () -> Unit,
+    onQuickPlay: () -> Unit,
+    onToggleWatchlist: () -> Unit
+) {
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(item.uniqueKey) {
+        delay(60L)
+        runCatching { firstFocus.requestFocus() }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+            border = BorderStroke(1.5.dp, NetflixElevatedSurface),
+            modifier = Modifier
+                .widthIn(max = 400.dp)
+                .fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .focusGroup(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = NetflixWhite,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${if (item.isSeries) "Serie TV" else "Film"} • ${item.releaseYear}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NetflixLightGray
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Button(
+                    onClick = onQuickPlay,
+                    colors = ButtonDefaults.buttonColors(containerColor = NetflixWhite, contentColor = NetflixBlack),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .focusRequester(firstFocus)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedBorderColor = NetflixRed, focusedScale = 1.03f)
+                ) {
+                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Riproduci Subito", fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = onOpenDetails,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
+                ) {
+                    Icon(imageVector = Icons.Outlined.Info, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Apri Scheda & Episodi")
+                }
+
+                OutlinedButton(
+                    onClick = onToggleWatchlist,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
+                    ),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
+                ) {
+                    Icon(
+                        imageVector = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
+                        contentDescription = null
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (isInWatchlist) "Rimuovi da La Mia Lista" else "Aggiungi a La Mia Lista")
+                }
+            }
+        }
+    }
+}
+
 private data class MainSectionKey(
     val isSearch: Boolean,
     val tab: NavTab,
@@ -762,6 +1346,9 @@ private fun CatalogFeedContent(
     onResumeContinueWatching: (WatchProgressEntity) -> Unit,
     onInfoContinueWatching: (WatchProgressEntity) -> Unit,
     onRemoveContinueWatching: (WatchProgressEntity) -> Unit,
+    onTvLongPressContinueWatching: (WatchProgressEntity) -> Unit = {},
+    onTvLongPressPoster: (MediaItem) -> Unit = {},
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     bottomPadding: androidx.compose.ui.unit.Dp
 ) {
     val heroItem = when (selectedTab) {
@@ -816,6 +1403,8 @@ private fun CatalogFeedContent(
                     onResumeClick = onResumeContinueWatching,
                     onInfoClick = onInfoContinueWatching,
                     onRemoveClick = onRemoveContinueWatching,
+                    onTvLongPress = onTvLongPressContinueWatching,
+                    onItemFocused = onRememberContentFocus,
                     isTvLayout = isTvLayout,
                     firstItemFocusRequester = firstRowFocusRequester,
                     upFocusRequester = firstRowUpTarget,
@@ -834,6 +1423,9 @@ private fun CatalogFeedContent(
                         title = "Top 10 in Italia Oggi",
                         items = feed.top10Today,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (top10IsFirstRow) firstRowFocusRequester else null,
                         upFocusRequester = if (top10IsFirstRow) firstRowUpTarget else null,
                         navRailFocusRequester = navRailFocusRequester
@@ -844,6 +1436,9 @@ private fun CatalogFeedContent(
                         title = "Film di Tendenza su TMDB",
                         items = feed.trendingMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (trendingMoviesIsFirstRow) firstRowFocusRequester else null,
                         upFocusRequester = if (trendingMoviesIsFirstRow) firstRowUpTarget else null,
                         navRailFocusRequester = navRailFocusRequester
@@ -854,6 +1449,9 @@ private fun CatalogFeedContent(
                         title = "Serie TV del Momento",
                         items = feed.trendingTv,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -862,6 +1460,9 @@ private fun CatalogFeedContent(
                         title = "Film Popolari su VixFlix",
                         items = feed.popularMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -870,6 +1471,9 @@ private fun CatalogFeedContent(
                         title = "Serie TV Acclamate",
                         items = feed.popularTv,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -878,6 +1482,9 @@ private fun CatalogFeedContent(
                         title = "Ora al Cinema",
                         items = feed.nowPlayingMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -886,6 +1493,9 @@ private fun CatalogFeedContent(
                         title = "Più Votati dalla Critica",
                         items = feed.topRatedMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -894,6 +1504,9 @@ private fun CatalogFeedContent(
                         title = "Azione & Adrenalina",
                         items = feed.actionMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -902,6 +1515,9 @@ private fun CatalogFeedContent(
                         title = "Fantascienza & Mondi Futuri",
                         items = feed.sciFiMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -913,6 +1529,9 @@ private fun CatalogFeedContent(
                         title = "Serie TV in Tendenza",
                         items = feed.trendingTv,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (!hasContinueWatching) firstRowFocusRequester else null,
                         upFocusRequester = if (!hasContinueWatching) firstRowUpTarget else null,
                         navRailFocusRequester = navRailFocusRequester
@@ -923,6 +1542,9 @@ private fun CatalogFeedContent(
                         title = "Serie TV Popolari",
                         items = feed.popularTv,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -934,6 +1556,9 @@ private fun CatalogFeedContent(
                         title = "Film di Tendenza",
                         items = feed.trendingMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (!hasContinueWatching) firstRowFocusRequester else null,
                         upFocusRequester = if (!hasContinueWatching) firstRowUpTarget else null,
                         navRailFocusRequester = navRailFocusRequester
@@ -944,6 +1569,9 @@ private fun CatalogFeedContent(
                         title = "Ora al Cinema",
                         items = feed.nowPlayingMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -952,6 +1580,9 @@ private fun CatalogFeedContent(
                         title = "Film Popolari",
                         items = feed.popularMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -960,6 +1591,9 @@ private fun CatalogFeedContent(
                         title = "Film Più Votati",
                         items = feed.topRatedMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -968,6 +1602,9 @@ private fun CatalogFeedContent(
                         title = "Azione & Avventura",
                         items = feed.actionMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -976,6 +1613,9 @@ private fun CatalogFeedContent(
                         title = "Fantascienza",
                         items = feed.sciFiMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -990,6 +1630,9 @@ private fun CatalogFeedContent(
                         title = "Top 10 in Italia Oggi",
                         items = feed.top10Today,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (top10IsFirstRow) firstRowFocusRequester else null,
                         upFocusRequester = if (top10IsFirstRow) firstRowUpTarget else null,
                         navRailFocusRequester = navRailFocusRequester
@@ -1000,6 +1643,9 @@ private fun CatalogFeedContent(
                         title = "Nuove Uscite al Cinema",
                         items = feed.nowPlayingMovies,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (cinemaIsFirstRow) firstRowFocusRequester else null,
                         upFocusRequester = if (cinemaIsFirstRow) firstRowUpTarget else null,
                         navRailFocusRequester = navRailFocusRequester
@@ -1010,6 +1656,9 @@ private fun CatalogFeedContent(
                         title = "Serie TV Nuove e Popolari",
                         items = feed.trendingTv,
                         onItemClick = onOpenDetails,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -1029,6 +1678,9 @@ private fun SearchResultsGrid(
     firstItemFocusRequester: FocusRequester,
     navRailFocusRequester: FocusRequester,
     upFocusRequester: FocusRequester,
+    onItemFocused: (FocusRequester) -> Unit = {},
+    onItemQuickPlay: (MediaItem) -> Unit = {},
+    onItemLongClick: (MediaItem) -> Unit = {},
     onItemClick: (MediaItem) -> Unit,
     contentPadding: PaddingValues
 ) {
@@ -1069,19 +1721,21 @@ private fun SearchResultsGrid(
             .testTag("search_results_grid")
     ) {
         itemsIndexed(results, key = { _, it -> "search_${it.uniqueKey}" }) { index, item ->
+            val itemFocusRequester = if (index == 0) {
+                firstItemFocusRequester
+            } else {
+                remember(item.uniqueKey) { FocusRequester() }
+            }
             MediaPosterCard(
                 item = item,
                 itemIndex = index,
                 onClick = { onItemClick(item) },
+                onQuickPlay = { onItemQuickPlay(item) },
+                onLongClick = { onItemLongClick(item) },
+                onFocused = { onItemFocused(itemFocusRequester) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(
-                        if (index == 0) {
-                            Modifier.focusRequester(firstItemFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
+                    .focusRequester(itemFocusRequester)
                     .focusProperties {
                         if (index == 0) {
                             left = navRailFocusRequester
@@ -1108,8 +1762,12 @@ private fun MyListScreen(
     topBarFocusRequester: FocusRequester,
     onBrowseCatalog: () -> Unit,
     onOpenItem: (MediaItem) -> Unit,
+    onPlayItem: (MediaItem) -> Unit = onOpenItem,
     onResumeContinueWatching: (WatchProgressEntity) -> Unit,
     onRemoveContinueWatching: (WatchProgressEntity) -> Unit,
+    onTvLongPressContinueWatching: (WatchProgressEntity) -> Unit = {},
+    onTvLongPressPoster: (MediaItem) -> Unit = {},
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     contentPadding: PaddingValues
 ) {
     LazyColumn(
@@ -1138,6 +1796,8 @@ private fun MyListScreen(
                         )
                     },
                     onRemoveClick = onRemoveContinueWatching,
+                    onTvLongPress = onTvLongPressContinueWatching,
+                    onItemFocused = onRememberContentFocus,
                     isTvLayout = isTvLayout,
                     firstItemFocusRequester = firstRowFocusRequester,
                     upFocusRequester = topBarFocusRequester,
@@ -1222,6 +1882,9 @@ private fun MyListScreen(
                     title = "Salvati nella Mia Lista (${mappedItems.size})",
                     items = mappedItems,
                     onItemClick = onOpenItem,
+                    onItemQuickPlay = onPlayItem,
+                    onItemLongClick = onTvLongPressPoster,
+                    onItemFocused = onRememberContentFocus,
                     firstItemFocusRequester = if (watchlistIsFirstRow) firstRowFocusRequester else null,
                     upFocusRequester = if (watchlistIsFirstRow) topBarFocusRequester else null,
                     navRailFocusRequester = navRailFocusRequester

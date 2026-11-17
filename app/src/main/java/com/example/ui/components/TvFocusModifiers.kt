@@ -13,10 +13,12 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -41,6 +43,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,7 +78,9 @@ import com.example.ui.theme.NetflixLightGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
 import kotlin.math.abs
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Rileva se l'app è eseguita su Android TV / Google TV (o dispositivo con interfaccia Leanback).
@@ -102,6 +107,7 @@ fun isAndroidTvDevice(context: Context): Boolean {
  * Modificatore universale per pulsanti, chip e voci di menu compatibile con Telecomando Android TV / Google TV
  * (D-pad + Invio/OK + visualizzazione chiara dello stato di focus).
  */
+@OptIn(ExperimentalFoundationApi::class)
 fun Modifier.tvFocusableControl(
     shape: Shape = RoundedCornerShape(8.dp),
     focusedScale: Float = 1.05f,
@@ -109,15 +115,20 @@ fun Modifier.tvFocusableControl(
     unfocusedBorderColor: Color = Color.Transparent,
     borderWidth: Dp = 2.dp,
     onFocusChange: ((Boolean) -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     onClick: (() -> Unit)? = null
 ): Modifier = composed {
     var isFocused by remember { mutableStateOf(false) }
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    val scope = rememberCoroutineScope()
+    var centerKeyHeld by remember { mutableStateOf(false) }
+    var longPressTriggered by remember { mutableStateOf(false) }
+    var longPressJob by remember { mutableStateOf<Job?>(null) }
 
     val scale by animateFloatAsState(
         targetValue = when {
-            isPressed -> 0.94f
+            isPressed || centerKeyHeld -> 0.94f
             isFocused -> focusedScale
             else -> 1f
         },
@@ -149,6 +160,11 @@ fun Modifier.tvFocusableControl(
         )
         .onFocusChanged { state ->
             val focusedNow = state.isFocused || state.hasFocus
+            if (!focusedNow) {
+                centerKeyHeld = false
+                longPressTriggered = false
+                longPressJob?.cancel()
+            }
             isFocused = focusedNow
             onFocusChange?.invoke(focusedNow)
         }
@@ -156,22 +172,62 @@ fun Modifier.tvFocusableControl(
             if (onClick != null) {
                 Modifier
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyUp &&
-                            (keyEvent.key == Key.DirectionCenter ||
-                                keyEvent.key == Key.Enter ||
-                                keyEvent.key == Key.NumPadEnter)
-                        ) {
-                            onClick()
-                            true
-                        } else {
-                            false
+                        val isCenterKey = keyEvent.key == Key.DirectionCenter ||
+                            keyEvent.key == Key.Enter ||
+                            keyEvent.key == Key.NumPadEnter
+                        if (!isCenterKey) return@onPreviewKeyEvent false
+
+                        when (keyEvent.type) {
+                            KeyEventType.KeyDown -> {
+                                if (!centerKeyHeld) {
+                                    centerKeyHeld = true
+                                    longPressTriggered = false
+                                    if (onLongClick != null) {
+                                        longPressJob?.cancel()
+                                        longPressJob = scope.launch {
+                                            delay(480L)
+                                            if (centerKeyHeld) {
+                                                longPressTriggered = true
+                                                onLongClick()
+                                            }
+                                        }
+                                    }
+                                } else if (keyEvent.nativeKeyEvent.isLongPress && onLongClick != null && !longPressTriggered) {
+                                    longPressTriggered = true
+                                    longPressJob?.cancel()
+                                    onLongClick()
+                                }
+                                true
+                            }
+                            KeyEventType.KeyUp -> {
+                                val wasLong = longPressTriggered
+                                centerKeyHeld = false
+                                longPressTriggered = false
+                                longPressJob?.cancel()
+                                if (!wasLong) {
+                                    onClick()
+                                }
+                                true
+                            }
+                            else -> false
                         }
                     }
                     .focusable(interactionSource = interactionSource)
-                    .clickable(
-                        interactionSource = interactionSource,
-                        indication = LocalIndication.current,
-                        onClick = onClick
+                    .then(
+                        if (onLongClick != null) {
+                            Modifier.combinedClickable(
+                                interactionSource = interactionSource,
+                                indication = LocalIndication.current,
+                                onLongClick = onLongClick,
+                                onClick = onClick
+                            )
+                        } else {
+                            Modifier.clickable(
+                                interactionSource = interactionSource,
+                                indication = LocalIndication.current,
+                                onClick = onClick
+                            )
+                        }
                     )
             } else {
                 Modifier
@@ -185,6 +241,7 @@ fun Modifier.tvFocusableControl(
  *   applica un effetto 3D coverflow dinamico (inclinazione Y, scala progressiva, parallasse morbida),
  *   sollevamento con bordo luminoso bicolore, ombra rossa cinematografica e bagliore satinato diagonale ("sheen").
  */
+@OptIn(ExperimentalFoundationApi::class)
 fun Modifier.animatedPosterShowcase(
     itemIndex: Int,
     listState: LazyListState?,
@@ -192,8 +249,15 @@ fun Modifier.animatedPosterShowcase(
     shape: Shape = RoundedCornerShape(10.dp),
     focusedScale: Float = 1.11f,
     onFocusedChanged: (Boolean) -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    onQuickPlay: (() -> Unit)? = null,
     onClick: () -> Unit
 ): Modifier = composed {
+    val scope = rememberCoroutineScope()
+    var centerKeyHeld by remember { mutableStateOf(false) }
+    var longPressTriggered by remember { mutableStateOf(false) }
+    var longPressJob by remember { mutableStateOf<Job?>(null) }
+
     val focusScale by animateFloatAsState(
         targetValue = if (isFocused) focusedScale else 1f,
         animationSpec = spring(
@@ -225,7 +289,7 @@ fun Modifier.animatedPosterShowcase(
     val isPressed by interactionSource.collectIsPressedAsState()
 
     val pressScale by animateFloatAsState(
-        targetValue = if (isPressed) 0.94f else 1f,
+        targetValue = if (isPressed || centerKeyHeld) 0.94f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
@@ -311,25 +375,78 @@ fun Modifier.animatedPosterShowcase(
             }
         }
         .onFocusChanged { state ->
+            if (!state.isFocused) {
+                centerKeyHeld = false
+                longPressTriggered = false
+                longPressJob?.cancel()
+            }
             onFocusedChanged(state.isFocused)
         }
         .onPreviewKeyEvent { keyEvent ->
-            if (keyEvent.type == KeyEventType.KeyUp &&
-                (keyEvent.key == Key.DirectionCenter ||
-                    keyEvent.key == Key.Enter ||
-                    keyEvent.key == Key.NumPadEnter)
+            if (keyEvent.type == KeyEventType.KeyDown &&
+                (keyEvent.key == Key.MediaPlay || keyEvent.key == Key.MediaPlayPause) &&
+                onQuickPlay != null
             ) {
-                onClick()
-                true
-            } else {
-                false
+                onQuickPlay()
+                return@onPreviewKeyEvent true
+            }
+
+            val isCenterKey = keyEvent.key == Key.DirectionCenter ||
+                keyEvent.key == Key.Enter ||
+                keyEvent.key == Key.NumPadEnter
+            if (!isCenterKey) return@onPreviewKeyEvent false
+
+            when (keyEvent.type) {
+                KeyEventType.KeyDown -> {
+                    if (!centerKeyHeld) {
+                        centerKeyHeld = true
+                        longPressTriggered = false
+                        if (onLongClick != null) {
+                            longPressJob?.cancel()
+                            longPressJob = scope.launch {
+                                delay(480L)
+                                if (centerKeyHeld) {
+                                    longPressTriggered = true
+                                    onLongClick()
+                                }
+                            }
+                        }
+                    } else if (keyEvent.nativeKeyEvent.isLongPress && onLongClick != null && !longPressTriggered) {
+                        longPressTriggered = true
+                        longPressJob?.cancel()
+                        onLongClick()
+                    }
+                    true
+                }
+                KeyEventType.KeyUp -> {
+                    val wasLong = longPressTriggered
+                    centerKeyHeld = false
+                    longPressTriggered = false
+                    longPressJob?.cancel()
+                    if (!wasLong) {
+                        onClick()
+                    }
+                    true
+                }
+                else -> false
             }
         }
         .focusable(interactionSource = interactionSource)
-        .clickable(
-            interactionSource = interactionSource,
-            indication = null,
-            onClick = onClick
+        .then(
+            if (onLongClick != null) {
+                Modifier.combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onLongClick = onLongClick,
+                    onClick = onClick
+                )
+            } else {
+                Modifier.clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick
+                )
+            }
         )
 }
 
@@ -352,6 +469,8 @@ fun TvSeekTimeBar(
     onFocusChanged: (Boolean) -> Unit = {},
     onScrubbingChanged: (Boolean) -> Unit = {},
     focusRequester: FocusRequester = remember { FocusRequester() },
+    upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
     compact: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -423,6 +542,10 @@ fun TvSeekTimeBar(
                 vertical = if (isFocused || isRemoteScrubbing) 6.dp else 0.dp
             )
             .focusRequester(focusRequester)
+            .focusProperties {
+                if (upFocusRequester != null) up = upFocusRequester
+                if (downFocusRequester != null) down = downFocusRequester
+            }
             .onFocusChanged { state ->
                 val focusedNow = state.isFocused || state.hasFocus
                 if (isFocused && !focusedNow && isRemoteScrubbing) {

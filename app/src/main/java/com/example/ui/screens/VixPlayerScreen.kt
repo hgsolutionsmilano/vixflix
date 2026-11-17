@@ -8,9 +8,13 @@ import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -52,14 +57,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,8 +72,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.focusable
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -167,11 +172,46 @@ fun VixPlayerScreen(
     var isTimeBarFocused by remember { mutableStateOf(false) }
     var focusTimeBarOnReveal by remember { mutableStateOf(false) }
     var wasControlsVisible by remember { mutableStateOf(false) }
+    var playbackEnded by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
+    var autoNextDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
+    var autoNextRemainingSec by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableIntStateOf(10)
+    }
+    var mediaActionBadge by remember { mutableStateOf<String?>(null) }
+
     val isTvDevice = rememberIsTvDevice()
+    val backButtonFocusRequester = remember { FocusRequester() }
+    val audioLangFocusRequester = remember { FocusRequester() }
+    val vixLinkFocusRequester = remember { FocusRequester() }
     val playPauseFocusRequester = remember { FocusRequester() }
     val timeBarFocusRequester = remember { FocusRequester() }
+    val resizeFocusRequester = remember { FocusRequester() }
+    val nextEpisodeFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
+    val cancelLoadingFocusRequester = remember { FocusRequester() }
+    val autoNextPlayFocusRequester = remember { FocusRequester() }
     val rootFocusRequester = remember { FocusRequester() }
+
+    val currentSeason = session.seasonNumber ?: 1
+    val currentEpisode = session.episodeNumber ?: 1
+    val nextEpisodeDto = remember(session.seasonEpisodes, currentEpisode) {
+        session.seasonEpisodes.firstOrNull { it.episodeNumber == currentEpisode + 1 }
+    }
+    val hasNextEpisodeCandidate = session.mediaItem.isSeries && (
+        nextEpisodeDto != null || session.seasonEpisodes.isEmpty()
+    )
+    val currentError = playerErrorMessage ?: session.errorMessage
+    val nearEpisodeEnd = durationMs > 60_000L && currentPositionMs >= (durationMs - 12_000L)
+    val showAutoNext = hasNextEpisodeCandidate &&
+        currentError == null &&
+        !isBuffering &&
+        !session.isResolvingStream &&
+        !autoNextDismissed &&
+        (playbackEnded || nearEpisodeEnd)
 
     // Usa OkHttpDataSource.Factory con l'interceptor VixSrc per gestire playlist HLS,
     // chiave AES-128 (/storage/enc.key) e segmenti MPEG-TS direttamente da vixsrc.to
@@ -205,10 +245,26 @@ fun VixPlayerScreen(
     }
 
     BackHandler {
-        if (currentPositionMs > 0L) {
-            onProgressUpdate(currentPositionMs, durationMs)
+        when {
+            showAutoNext -> {
+                autoNextDismissed = true
+                if (isTvDevice) {
+                    runCatching { rootFocusRequester.requestFocus() }
+                }
+            }
+            controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
+                controlsVisible = false
+                if (isTvDevice) {
+                    runCatching { rootFocusRequester.requestFocus() }
+                }
+            }
+            else -> {
+                if (currentPositionMs > 0L) {
+                    onProgressUpdate(currentPositionMs, durationMs)
+                }
+                onClose()
+            }
         }
-        onClose()
     }
 
     // Configura HlsMediaSource in Media3 ExoPlayer quando lo stream reale di vixsrc.to è risolto
@@ -248,6 +304,7 @@ fun VixPlayerScreen(
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
                     playerErrorMessage = null
+                    playbackEnded = false
                     val d = exoPlayer.duration
                     if (d != C.TIME_UNSET && d > 0L) {
                         durationMs = d
@@ -262,6 +319,10 @@ fun VixPlayerScreen(
                         currentPositionMs = safeSeek
                         hasSeekedInitial = true
                     }
+                } else if (playbackState == Player.STATE_ENDED) {
+                    isBuffering = false
+                    isPlaying = false
+                    playbackEnded = true
                 }
             }
 
@@ -309,6 +370,31 @@ fun VixPlayerScreen(
         }
     }
 
+    // Timer conto alla rovescia automatico Prossimo Episodio
+    LaunchedEffect(showAutoNext, currentSeason, currentEpisode) {
+        if (!showAutoNext) return@LaunchedEffect
+        autoNextRemainingSec = 10
+        controlsVisible = false
+        if (isTvDevice) {
+            delay(60L)
+            runCatching { autoNextPlayFocusRequester.requestFocus() }
+        }
+        while (autoNextRemainingSec > 0) {
+            delay(1_000L)
+            autoNextRemainingSec--
+        }
+        if (showAutoNext && !autoNextDismissed) {
+            onNextEpisode()
+        }
+    }
+
+    LaunchedEffect(mediaActionBadge) {
+        if (mediaActionBadge != null) {
+            delay(1_200L)
+            mediaActionBadge = null
+        }
+    }
+
     // Auto-hide dei controlli dopo 4.5 secondi (sospeso durante lo scorrimento sulla barra del tempo)
     LaunchedEffect(
         controlsVisible,
@@ -317,9 +403,10 @@ fun VixPlayerScreen(
         isBuffering,
         session.isResolvingStream,
         isRemoteScrubbing,
+        showAutoNext,
         interactionTick
     ) {
-        if (controlsVisible && isPlaying && !isBuffering && !session.isResolvingStream && !isRemoteScrubbing && playerErrorMessage == null) {
+        if (controlsVisible && isPlaying && !isBuffering && !session.isResolvingStream && !isRemoteScrubbing && playerErrorMessage == null && !showAutoNext) {
             delay(4_500L)
             controlsVisible = false
             if (isTvDevice) {
@@ -329,7 +416,11 @@ fun VixPlayerScreen(
     }
 
     // Sposta automaticamente il focus sui controlli TV solo quando compaiono (senza rubare focus alla barra del tempo durante i seek)
-    LaunchedEffect(controlsVisible, playerErrorMessage, session.errorMessage, isBuffering, session.isResolvingStream) {
+    LaunchedEffect(controlsVisible, playerErrorMessage, session.errorMessage, isBuffering, session.isResolvingStream, showAutoNext) {
+        if (showAutoNext) {
+            wasControlsVisible = false
+            return@LaunchedEffect
+        }
         val hasErr = (playerErrorMessage ?: session.errorMessage) != null && !session.isResolvingStream
         if (hasErr) {
             runCatching { retryFocusRequester.requestFocus() }
@@ -337,7 +428,16 @@ fun VixPlayerScreen(
             return@LaunchedEffect
         }
 
-        val readyControls = controlsVisible && !isBuffering && !session.isResolvingStream
+        if (isBuffering || session.isResolvingStream) {
+            wasControlsVisible = false
+            if (isTvDevice) {
+                delay(60L)
+                runCatching { cancelLoadingFocusRequester.requestFocus() }
+            }
+            return@LaunchedEffect
+        }
+
+        val readyControls = controlsVisible
         if (readyControls) {
             if (!wasControlsVisible && !isTimeBarFocused) {
                 if (focusTimeBarOnReveal) {
@@ -348,10 +448,10 @@ fun VixPlayerScreen(
                 }
             }
             wasControlsVisible = true
-        } else if (!controlsVisible) {
+        } else {
             wasControlsVisible = false
             focusTimeBarOnReveal = false
-            if (isTvDevice && !isBuffering && !session.isResolvingStream) {
+            if (isTvDevice) {
                 runCatching { rootFocusRequester.requestFocus() }
             }
         }
@@ -367,17 +467,20 @@ fun VixPlayerScreen(
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
                         Key.MediaPlayPause -> {
+                            val willPlay = !exoPlayer.isPlaying
                             if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                            controlsVisible = true
+                            mediaActionBadge = if (willPlay) "Riproduzione" else "In Pausa"
+                            if (!willPlay) controlsVisible = true
                             return@onPreviewKeyEvent true
                         }
                         Key.MediaPlay -> {
                             exoPlayer.play()
-                            controlsVisible = true
+                            mediaActionBadge = "Riproduzione"
                             return@onPreviewKeyEvent true
                         }
                         Key.MediaPause -> {
                             exoPlayer.pause()
+                            mediaActionBadge = "In Pausa"
                             controlsVisible = true
                             return@onPreviewKeyEvent true
                         }
@@ -385,6 +488,7 @@ fun VixPlayerScreen(
                             val target = exoPlayer.currentPosition + 10_000L
                             exoPlayer.seekTo(target)
                             currentPositionMs = target
+                            mediaActionBadge = "+10s"
                             controlsVisible = true
                             return@onPreviewKeyEvent true
                         }
@@ -392,6 +496,8 @@ fun VixPlayerScreen(
                             val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                             exoPlayer.seekTo(target)
                             currentPositionMs = target
+                            playbackEnded = false
+                            mediaActionBadge = "-10s"
                             controlsVisible = true
                             return@onPreviewKeyEvent true
                         }
@@ -473,7 +579,6 @@ fun VixPlayerScreen(
                 }
         )
 
-        val currentError = playerErrorMessage ?: session.errorMessage
         if (currentError != null && !session.isResolvingStream) {
             Column(
                 modifier = Modifier
@@ -507,6 +612,9 @@ fun VixPlayerScreen(
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
                         .focusRequester(retryFocusRequester)
+                        .focusProperties {
+                            up = backButtonFocusRequester
+                        }
                         .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
                 ) {
                     Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
@@ -515,23 +623,64 @@ fun VixPlayerScreen(
                 }
             }
         } else if (isBuffering || session.isResolvingStream) {
-            // Popup di Loading in fase di avvio/attesa dello streaming con dati completi del video e stagione/episodio
+            // Popup di Loading in fase di avvio/attesa dello streaming con tasto Annulla focusabile su TV
             VixStreamLoadingPopup(
                 session = session,
                 streamLang = streamLang,
+                cancelFocusRequester = cancelLoadingFocusRequester,
+                upFocusRequester = backButtonFocusRequester,
+                onCancel = {
+                    if (currentPositionMs > 0L) {
+                        onProgressUpdate(currentPositionMs, durationMs)
+                    }
+                    onClose()
+                },
                 modifier = Modifier
                     .align(Alignment.Center)
                     .padding(horizontal = 20.dp)
             )
         }
 
+        // Badge discreto per tasti multimediali dedicati telecomando (Play/Pausa/±10s)
+        AnimatedVisibility(
+            visible = mediaActionBadge != null && !controlsVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 20.dp, end = 24.dp)
+        ) {
+            Surface(
+                color = NetflixBlack.copy(alpha = 0.85f),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, NetflixRed)
+            ) {
+                Text(
+                    text = mediaActionBadge.orEmpty(),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = NetflixWhite,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+        }
+
         // Overlay Top Bar
         AnimatedVisibility(
-            visible = controlsVisible || currentError != null || isBuffering || session.isResolvingStream,
+            visible = (controlsVisible || currentError != null || isBuffering || session.isResolvingStream) && !showAutoNext,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
+            val readyOverlayActive = controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream
+            val topBarDownTarget: FocusRequester? = when {
+                currentError != null && !session.isResolvingStream -> retryFocusRequester
+                isBuffering || session.isResolvingStream -> cancelLoadingFocusRequester
+                readyOverlayActive -> playPauseFocusRequester
+                else -> null
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -544,7 +693,8 @@ fun VixPlayerScreen(
                         )
                     )
                     .statusBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .focusGroup(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -560,6 +710,14 @@ fun VixPlayerScreen(
                             onClose()
                         },
                         modifier = Modifier
+                            .size(48.dp)
+                            .focusRequester(backButtonFocusRequester)
+                            .focusProperties {
+                                right = audioLangFocusRequester
+                                if (topBarDownTarget != null) {
+                                    down = topBarDownTarget
+                                }
+                            }
                             .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
                             .testTag("player_back_button")
                     ) {
@@ -598,6 +756,7 @@ fun VixPlayerScreen(
                     }
                 }
 
+                val vixEmbedUrl = resolvedStream?.embedUrl
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -607,13 +766,24 @@ fun VixPlayerScreen(
                         color = NetflixCardSurface.copy(alpha = 0.9f),
                         shape = RoundedCornerShape(6.dp),
                         border = BorderStroke(1.dp, NetflixElevatedSurface),
-                        modifier = Modifier.tvFocusableControl(
-                            shape = RoundedCornerShape(6.dp),
-                            focusedScale = 1.08f,
-                            onClick = {
-                                onToggleLanguage(if (streamLang == "it") "en" else "it")
+                        modifier = Modifier
+                            .focusRequester(audioLangFocusRequester)
+                            .focusProperties {
+                                left = backButtonFocusRequester
+                                if (!vixEmbedUrl.isNullOrBlank()) {
+                                    right = vixLinkFocusRequester
+                                }
+                                if (topBarDownTarget != null) {
+                                    down = topBarDownTarget
+                                }
                             }
-                        )
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(6.dp),
+                                focusedScale = 1.08f,
+                                onClick = {
+                                    onToggleLanguage(if (streamLang == "it") "en" else "it")
+                                }
+                            )
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -636,13 +806,19 @@ fun VixPlayerScreen(
                     }
 
                     // Link diretto esterno VixSrc con startAt
-                    val vixEmbedUrl = resolvedStream?.embedUrl
                     if (!vixEmbedUrl.isNullOrBlank()) {
                         Surface(
                             color = NetflixCardSurface.copy(alpha = 0.9f),
                             shape = RoundedCornerShape(6.dp),
                             border = BorderStroke(1.dp, NetflixElevatedSurface),
                             modifier = Modifier
+                                .focusRequester(vixLinkFocusRequester)
+                                .focusProperties {
+                                    left = audioLangFocusRequester
+                                    if (topBarDownTarget != null) {
+                                        down = topBarDownTarget
+                                    }
+                                }
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(6.dp),
                                     focusedScale = 1.08f,
@@ -692,15 +868,23 @@ fun VixPlayerScreen(
 
         // Controlli centrali e barra inferiore per ExoPlayer Nativo (visibili quando il popup di loading non è mostrato)
         AnimatedVisibility(
-            visible = controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream,
+            visible = controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream && !showAutoNext,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
+            val bottomPrimaryFocusRequester = if (session.mediaItem.isSeries) {
+                nextEpisodeFocusRequester
+            } else {
+                resizeFocusRequester
+            }
+
             Box(modifier = Modifier.fillMaxSize()) {
                 // Pulsanti centrali -10s / Play-Pause / +10s
                 Row(
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .focusGroup(),
                     horizontalArrangement = Arrangement.spacedBy(36.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -709,10 +893,15 @@ fun VixPlayerScreen(
                             val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                             exoPlayer.seekTo(target)
                             currentPositionMs = target
+                            playbackEnded = false
                             onProgressUpdate(currentPositionMs, durationMs)
                         },
                         modifier = Modifier
                             .size(54.dp)
+                            .focusProperties {
+                                up = backButtonFocusRequester
+                                down = timeBarFocusRequester
+                            }
                             .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                             .clip(CircleShape)
                             .background(NetflixBlack.copy(alpha = 0.65f))
@@ -732,6 +921,10 @@ fun VixPlayerScreen(
                         modifier = Modifier
                             .size(70.dp)
                             .focusRequester(playPauseFocusRequester)
+                            .focusProperties {
+                                up = backButtonFocusRequester
+                                down = timeBarFocusRequester
+                            }
                             .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                             .clip(CircleShape)
                             .background(NetflixRed)
@@ -754,6 +947,10 @@ fun VixPlayerScreen(
                         },
                         modifier = Modifier
                             .size(54.dp)
+                            .focusProperties {
+                                up = backButtonFocusRequester
+                                down = timeBarFocusRequester
+                            }
                             .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                             .clip(CircleShape)
                             .background(NetflixBlack.copy(alpha = 0.65f))
@@ -781,7 +978,7 @@ fun VixPlayerScreen(
                             )
                         )
                         .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(horizontal = 20.dp, vertical = 14.dp)
                 ) {
                     TvSeekTimeBar(
                         currentPositionMs = currentPositionMs,
@@ -792,6 +989,7 @@ fun VixPlayerScreen(
                         },
                         onSeekCommit = { targetMs ->
                             currentPositionMs = targetMs
+                            playbackEnded = false
                             exoPlayer.seekTo(targetMs)
                             onProgressUpdate(targetMs, durationMs)
                             interactionTick++
@@ -804,6 +1002,8 @@ fun VixPlayerScreen(
                         onFocusChanged = { isTimeBarFocused = it },
                         onScrubbingChanged = { isRemoteScrubbing = it },
                         focusRequester = timeBarFocusRequester,
+                        upFocusRequester = playPauseFocusRequester,
+                        downFocusRequester = bottomPrimaryFocusRequester,
                         compact = false,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -811,7 +1011,9 @@ fun VixPlayerScreen(
                     )
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusGroup(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -844,7 +1046,16 @@ fun VixPlayerScreen(
                                         AspectRatioFrameLayout.RESIZE_MODE_FIT
                                     }
                                 },
-                                modifier = Modifier.tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .focusRequester(resizeFocusRequester)
+                                    .focusProperties {
+                                        up = timeBarFocusRequester
+                                        if (session.mediaItem.isSeries) {
+                                            right = nextEpisodeFocusRequester
+                                        }
+                                    }
+                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.AspectRatio,
@@ -863,6 +1074,12 @@ fun VixPlayerScreen(
                                     shape = RoundedCornerShape(6.dp),
                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                     modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .focusRequester(nextEpisodeFocusRequester)
+                                        .focusProperties {
+                                            up = timeBarFocusRequester
+                                            left = resizeFocusRequester
+                                        }
                                         .tvFocusableControl(
                                             shape = RoundedCornerShape(6.dp),
                                             focusedBorderColor = NetflixRed,
@@ -887,6 +1104,150 @@ fun VixPlayerScreen(
                 }
             }
         }
+
+        // Overlay automatico "Prossimo Episodio tra 10s" per visione continua da divano TV
+        AnimatedVisibility(
+            visible = showAutoNext,
+            enter = fadeIn() + slideInVertically { it / 3 },
+            exit = fadeOut() + slideOutVertically { it / 3 },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(24.dp)
+        ) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = NetflixCardSurface.copy(alpha = 0.96f)),
+                border = BorderStroke(1.5.dp, NetflixRed),
+                elevation = CardDefaults.cardElevation(defaultElevation = 18.dp),
+                modifier = Modifier
+                    .widthIn(max = 390.dp)
+                    .fillMaxWidth()
+                    .testTag("auto_next_episode_card")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .focusGroup(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "PROSSIMO EPISODIO IN ${autoNextRemainingSec}s",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = NetflixMatchGreen
+                        )
+                        Surface(
+                            color = NetflixRed,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "S${currentSeason}:E${currentEpisode + 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        val thumb = nextEpisodeDto?.stillUrl ?: session.mediaItem.backdropUrl ?: session.mediaItem.posterUrl
+                        if (!thumb.isNullOrBlank()) {
+                            AsyncImage(
+                                model = thumb,
+                                contentDescription = nextEpisodeDto?.name ?: "Prossimo episodio",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(width = 96.dp, height = 56.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(NetflixDarkSurface)
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = nextEpisodeDto?.name ?: "Episodio ${currentEpisode + 1}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = NetflixWhite,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = session.mediaItem.title,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NetflixLightGray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    LinearProgressIndicator(
+                        progress = { ((10 - autoNextRemainingSec) / 10f).coerceIn(0f, 1f) },
+                        color = NetflixRed,
+                        trackColor = NetflixElevatedSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                    )
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Button(
+                            onClick = onNextEpisode,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NetflixWhite,
+                                contentColor = NetflixBlack
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .focusRequester(autoNextPlayFocusRequester)
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedBorderColor = NetflixRed,
+                                    focusedScale = 1.04f
+                                )
+                                .testTag("auto_next_play_now_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Riproduci Ora", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = { autoNextDismissed = true },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                            border = BorderStroke(1.dp, NetflixElevatedSurface),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedBorderColor = NetflixWhite,
+                                    focusedScale = 1.04f
+                                )
+                                .testTag("auto_next_cancel_button")
+                        ) {
+                            Text("Annulla")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -898,6 +1259,9 @@ fun VixPlayerScreen(
 private fun VixStreamLoadingPopup(
     session: PlaybackSession,
     streamLang: String,
+    cancelFocusRequester: FocusRequester,
+    upFocusRequester: FocusRequester,
+    onCancel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val item = session.mediaItem
@@ -1100,24 +1464,53 @@ private fun VixStreamLoadingPopup(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                CircularProgressIndicator(
-                    color = NetflixRed,
-                    strokeWidth = 2.2.dp,
-                    modifier = Modifier.size(18.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    CircularProgressIndicator(
+                        color = NetflixRed,
+                        strokeWidth = 2.2.dp,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = if (session.isResolvingStream) {
+                            "Connessione a vixsrc.to e recupero masterPlaylist HLS…"
+                        } else {
+                            "Preparazione flusso video in corso su ExoPlayer…"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixWhite
+                    )
+                }
+
                 Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = if (session.isResolvingStream) {
-                        "Connessione a vixsrc.to e recupero masterPlaylist HLS…"
-                    } else {
-                        "Preparazione flusso video in corso su ExoPlayer…"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NetflixWhite
-                )
+
+                OutlinedButton(
+                    onClick = onCancel,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .focusRequester(cancelFocusRequester)
+                        .focusProperties {
+                            up = upFocusRequester
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(8.dp),
+                            focusedBorderColor = NetflixRed,
+                            focusedScale = 1.04f
+                        )
+                        .testTag("loading_cancel_button")
+                ) {
+                    Text("Annulla", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
     }
