@@ -21,12 +21,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle'
+          java-version: '21'
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Accept Android SDK Licenses & Install SDK 36
+        run: |
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0" || true
 
       - name: Compute Automatic Version on Check-in
         id: version
@@ -42,13 +51,21 @@ jobs:
           echo "Building VixFlix v${VERSION_NAME} (code ${VERSION_CODE}, commit ${SHORT_SHA})"
 
       - name: Configure .env with TMDB_API_KEY
+        env:
+          SECRET_TMDB_KEY: ${{ secrets.TMDB_API_KEY }}
         run: |
-          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" > .env
+          if [ -n "$SECRET_TMDB_KEY" ]; then
+            echo "TMDB_API_KEY=$SECRET_TMDB_KEY" > .env
+          else
+            cp .env.example .env
+          fi
 
-      - name: Generate Debug Keystore if Missing
+      - name: Prepare Debug Keystore
         run: |
-          if [ ! -f debug.keystore ]; then
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
       - name: Build Versioned APK with Gradle
@@ -57,7 +74,7 @@ jobs:
           CI_VERSION_NAME: ${{ steps.version.outputs.version_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          gradle assembleDebug --stacktrace
+          gradle assembleDebug --no-configuration-cache --warning-mode=summary --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk "VixFlix-v${{ steps.version.outputs.version_name }}.apk"
 
       - name: Upload APK Artifact
