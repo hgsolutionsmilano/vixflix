@@ -1,8 +1,22 @@
 package com.example.ui.screens
 
+import android.annotation.SuppressLint
+import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -104,6 +118,7 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.remote.MediaItem
+import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.ui.TrailerPlaybackState
 import com.example.ui.components.animatedPosterShowcase
@@ -142,9 +157,10 @@ fun YouTubeTrailerDialog(
     val resolved = trailerState.resolvedTrailer
     val selectedVideo = trailerState.selectedVideo
     val activeKey = selectedVideo?.videoId ?: "searching"
+    val useWebEmbed = resolved?.isYouTubeEmbedFallback == true && !resolved.embedVideoId.isNullOrBlank()
 
     var isBuffering by remember(activeKey) { mutableStateOf(trailerState.isLoadingStream) }
-    var isPlaying by remember { mutableStateOf(false) }
+    var isPlaying by remember(activeKey) { mutableStateOf(false) }
     var currentPosMs by remember(activeKey) { mutableLongStateOf(0L) }
     var durationMs by remember(activeKey) { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
@@ -153,6 +169,8 @@ fun YouTubeTrailerDialog(
         mutableStateOf(trailerState.errorMessage)
     }
     var interactionTick by remember { mutableLongStateOf(0L) }
+    var embedRetryNonce by remember { mutableIntStateOf(0) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     val isTvDevice = rememberIsTvDevice()
     val playPauseFocusRequester = remember { FocusRequester() }
@@ -189,10 +207,58 @@ fun YouTubeTrailerDialog(
             }
     }
 
-    // Prepara o ferma ExoPlayer in base allo stato della ricerca e dello stream selezionato
+    val togglePlayPause: () -> Unit = {
+        if (useWebEmbed) {
+            val js = if (isPlaying) {
+                "window.vixPause && window.vixPause();"
+            } else {
+                "window.vixPlay && window.vixPlay();"
+            }
+            webViewRef?.evaluateJavascript(js, null)
+        } else {
+            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+        }
+        interactionTick++
+    }
+
+    val playAction: () -> Unit = {
+        if (useWebEmbed) {
+            webViewRef?.evaluateJavascript("window.vixPlay && window.vixPlay();", null)
+        } else {
+            exoPlayer.play()
+        }
+        interactionTick++
+    }
+
+    val pauseAction: () -> Unit = {
+        if (useWebEmbed) {
+            webViewRef?.evaluateJavascript("window.vixPause && window.vixPause();", null)
+        } else {
+            exoPlayer.pause()
+        }
+        interactionTick++
+    }
+
+    val seekToAction: (Long) -> Unit = { targetMs ->
+        val clamped = targetMs.coerceAtLeast(0L).let { t ->
+            if (durationMs > 0L) t.coerceAtMost(durationMs) else t
+        }
+        currentPosMs = clamped
+        if (useWebEmbed) {
+            val sec = clamped / 1000.0
+            webViewRef?.evaluateJavascript("window.vixSeekTo && window.vixSeekTo($sec);", null)
+        } else {
+            exoPlayer.seekTo(clamped)
+        }
+        interactionTick++
+    }
+
+    // Prepara o ferma ExoPlayer / IFrame Embed in base allo stato della ricerca e dello stream selezionato
     LaunchedEffect(
         resolved?.streamUrl,
         resolved?.audioStreamUrl,
+        resolved?.isYouTubeEmbedFallback,
+        resolved?.embedVideoId,
         trailerState.isSearching,
         trailerState.isLoadingStream,
         trailerState.errorMessage,
@@ -200,8 +266,10 @@ fun YouTubeTrailerDialog(
     ) {
         if (trailerState.isSearching || trailerState.isLoadingStream) {
             isBuffering = true
+            isPlaying = false
             playbackError = null
             exoPlayer.stop()
+            exoPlayer.clearMediaItems()
             return@LaunchedEffect
         }
 
@@ -211,6 +279,7 @@ fun YouTubeTrailerDialog(
             showControls = true
             playbackError = trailerState.errorMessage
             exoPlayer.stop()
+            exoPlayer.clearMediaItems()
             return@LaunchedEffect
         }
 
@@ -220,6 +289,19 @@ fun YouTubeTrailerDialog(
             showControls = true
             playbackError = "Trailer non disponibile o non riproducibile su YouTube."
             exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            return@LaunchedEffect
+        }
+
+        if (resolved.isYouTubeEmbedFallback && !resolved.embedVideoId.isNullOrBlank()) {
+            // Modalità ufficiale YouTube IFrame Embed: ferma ExoPlayer per evitare conflitti
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            playbackError = null
+            isBuffering = true
+            isPlaying = false
+            currentPosMs = 0L
+            durationMs = (selectedVideo?.durationSeconds ?: 0).toLong() * 1000L
             return@LaunchedEffect
         }
 
@@ -255,11 +337,26 @@ fun YouTubeTrailerDialog(
     }
 
     // Watchdog anti-blocco: dopo 15 secondi in buffering mostra errore esplicito
-    LaunchedEffect(resolved?.streamUrl, isBuffering, trailerState.isSearching, trailerState.isLoadingStream, playbackError) {
+    LaunchedEffect(
+        resolved?.streamUrl,
+        useWebEmbed,
+        embedRetryNonce,
+        isBuffering,
+        trailerState.isSearching,
+        trailerState.isLoadingStream,
+        playbackError
+    ) {
         if (!trailerState.isSearching && !trailerState.isLoadingStream && isBuffering && playbackError == null && resolved != null) {
             delay(15_000L)
-            if (isBuffering && playbackError == null && exoPlayer.playbackState != Player.STATE_READY) {
-                exoPlayer.stop()
+            val stillStuck = if (useWebEmbed) {
+                isBuffering && !isPlaying && playbackError == null
+            } else {
+                isBuffering && playbackError == null && exoPlayer.playbackState != Player.STATE_READY
+            }
+            if (stillStuck) {
+                if (!useWebEmbed) {
+                    exoPlayer.stop()
+                }
                 isBuffering = false
                 isPlaying = false
                 showControls = true
@@ -268,8 +365,9 @@ fun YouTubeTrailerDialog(
         }
     }
 
-    // Aggiornamento timeline
-    LaunchedEffect(exoPlayer) {
+    // Aggiornamento timeline per ExoPlayer diretto
+    LaunchedEffect(exoPlayer, useWebEmbed) {
+        if (useWebEmbed) return@LaunchedEffect
         while (true) {
             delay(500L)
             currentPosMs = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -306,8 +404,8 @@ fun YouTubeTrailerDialog(
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (!playbackError.isNullOrBlank()) {
-                    isBuffering = false
+                if (useWebEmbed || !playbackError.isNullOrBlank()) {
+                    if (!useWebEmbed) isBuffering = false
                     return
                 }
                 isBuffering = playbackState == Player.STATE_BUFFERING
@@ -326,6 +424,7 @@ fun YouTubeTrailerDialog(
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
+                if (useWebEmbed) return
                 isPlaying = playing
                 if (playing) {
                     isBuffering = false
@@ -333,6 +432,7 @@ fun YouTubeTrailerDialog(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (useWebEmbed) return
                 isBuffering = false
                 isPlaying = false
                 showControls = true
@@ -370,27 +470,27 @@ fun YouTubeTrailerDialog(
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
                             Key.MediaPlayPause -> {
-                                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                                togglePlayPause()
                                 showControls = true
                                 return@onPreviewKeyEvent true
                             }
                             Key.MediaPlay -> {
-                                exoPlayer.play()
+                                playAction()
                                 showControls = true
                                 return@onPreviewKeyEvent true
                             }
                             Key.MediaPause -> {
-                                exoPlayer.pause()
+                                pauseAction()
                                 showControls = true
                                 return@onPreviewKeyEvent true
                             }
                             Key.MediaFastForward -> {
-                                exoPlayer.seekTo(exoPlayer.currentPosition + 10_000L)
+                                seekToAction(currentPosMs + 10_000L)
                                 showControls = true
                                 return@onPreviewKeyEvent true
                             }
                             Key.MediaRewind -> {
-                                exoPlayer.seekTo((exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L))
+                                seekToAction(currentPosMs - 10_000L)
                                 showControls = true
                                 return@onPreviewKeyEvent true
                             }
@@ -537,7 +637,7 @@ fun YouTubeTrailerDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            if (!trailerState.isSearching && playbackError.isNullOrBlank()) {
+                            if (!useWebEmbed && !trailerState.isSearching && playbackError.isNullOrBlank()) {
                                 Surface(
                                     color = NetflixDarkSurface,
                                     shape = RoundedCornerShape(8.dp),
@@ -614,27 +714,79 @@ fun YouTubeTrailerDialog(
                             }
                             .testTag("fullscreen_trailer_player_view")
                     ) {
-                        AndroidView(
-                            factory = { ctx ->
-                                (LayoutInflater.from(ctx).inflate(R.layout.trailer_player_view, null, false) as PlayerView).apply {
-                                    player = exoPlayer
-                                    useController = false
-                                    keepScreenOn = true
-                                    isFocusable = false
-                                    isFocusableInTouchMode = false
-                                    this.resizeMode = resizeMode
-                                    layoutParams = ViewGroup.LayoutParams(
-                                        ViewGroup.LayoutParams.MATCH_PARENT,
-                                        ViewGroup.LayoutParams.MATCH_PARENT
-                                    )
-                                }
-                            },
-                            update = { view ->
-                                view.player = exoPlayer
-                                view.resizeMode = resizeMode
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        if (useWebEmbed &&
+                            playbackError.isNullOrBlank() &&
+                            !trailerState.isSearching &&
+                            !trailerState.isLoadingStream &&
+                            !resolved?.embedVideoId.isNullOrBlank()
+                        ) {
+                            YouTubeWebEmbedPlayer(
+                                videoId = resolved!!.embedVideoId!!,
+                                reloadNonce = embedRetryNonce,
+                                onWebViewReady = { webViewRef = it },
+                                onReady = { durMs ->
+                                    if (durMs > 0L) durationMs = durMs
+                                    playbackError = null
+                                },
+                                onPlaybackStateChanged = { playing, buffering ->
+                                    isPlaying = playing
+                                    isBuffering = buffering
+                                    if (playing) {
+                                        playbackError = null
+                                    } else if (!buffering) {
+                                        showControls = true
+                                    }
+                                },
+                                onProgress = { posMs, durMs ->
+                                    currentPosMs = posMs
+                                    if (durMs > 0L) durationMs = durMs
+                                },
+                                onError = { msg ->
+                                    isBuffering = false
+                                    isPlaying = false
+                                    showControls = true
+                                    playbackError = msg
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            AndroidView(
+                                factory = { ctx ->
+                                    (LayoutInflater.from(ctx).inflate(R.layout.trailer_player_view, null, false) as PlayerView).apply {
+                                        player = exoPlayer
+                                        useController = false
+                                        keepScreenOn = true
+                                        isFocusable = false
+                                        isFocusableInTouchMode = false
+                                        this.resizeMode = resizeMode
+                                        layoutParams = ViewGroup.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT
+                                        )
+                                    }
+                                },
+                                update = { view ->
+                                    view.player = exoPlayer
+                                    view.resizeMode = resizeMode
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+
+                        // Intercettore tocchi trasparente sopra il player (così il WebView non cattura i tap o i link esterni)
+                        if (playbackError.isNullOrBlank() && !trailerState.isSearching && !trailerState.isLoadingStream) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) {
+                                        showControls = !showControls
+                                        interactionTick++
+                                    }
+                            )
+                        }
 
                         // Stato Errore Esplicito (prioritario) con Riprova / Cambio trailer / Chiudi
                         if (!playbackError.isNullOrBlank()) {
@@ -676,7 +828,12 @@ fun YouTubeTrailerDialog(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Button(
-                                            onClick = onRetry,
+                                            onClick = {
+                                                playbackError = null
+                                                isBuffering = true
+                                                embedRetryNonce++
+                                                onRetry()
+                                            },
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = NetflixRed,
                                                 contentColor = Color.White
@@ -774,10 +931,7 @@ fun YouTubeTrailerDialog(
                                         modifier = Modifier.align(Alignment.Center)
                                     ) {
                                         IconButton(
-                                            onClick = {
-                                                exoPlayer.seekTo((exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L))
-                                                interactionTick++
-                                            },
+                                            onClick = { seekToAction(currentPosMs - 10_000L) },
                                             modifier = Modifier
                                                 .size(46.dp)
                                                 .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
@@ -793,10 +947,7 @@ fun YouTubeTrailerDialog(
                                         }
 
                                         IconButton(
-                                            onClick = {
-                                                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                                                interactionTick++
-                                            },
+                                            onClick = togglePlayPause,
                                             modifier = Modifier
                                                 .size(62.dp)
                                                 .focusRequester(playPauseFocusRequester)
@@ -813,10 +964,7 @@ fun YouTubeTrailerDialog(
                                         }
 
                                         IconButton(
-                                            onClick = {
-                                                exoPlayer.seekTo(exoPlayer.currentPosition + 10_000L)
-                                                interactionTick++
-                                            },
+                                            onClick = { seekToAction(currentPosMs + 10_000L) },
                                             modifier = Modifier
                                                 .size(46.dp)
                                                 .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
@@ -856,9 +1004,7 @@ fun YouTubeTrailerDialog(
                                             Slider(
                                                 value = currentPosMs.toFloat().coerceIn(0f, durationMs.toFloat()),
                                                 onValueChange = { newValue ->
-                                                    currentPosMs = newValue.toLong()
-                                                    exoPlayer.seekTo(currentPosMs)
-                                                    interactionTick++
+                                                    seekToAction(newValue.toLong())
                                                 },
                                                 valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
                                                 colors = SliderDefaults.colors(
@@ -1097,4 +1243,369 @@ private fun YouTubeModalTrailerCard(
             }
         }
     }
+}
+
+/**
+ * Riproduce il trailer YouTube tramite YouTube IFrame JS API ufficiale all'interno di WebView,
+ * gestendo BotGuard/PoToken in automatico, evitando focus trap su Android TV e prevenendo crash del renderer.
+ */
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun YouTubeWebEmbedPlayer(
+    videoId: String,
+    reloadNonce: Int,
+    onWebViewReady: (WebView?) -> Unit,
+    onReady: (Long) -> Unit,
+    onPlaybackStateChanged: (isPlaying: Boolean, isBuffering: Boolean) -> Unit,
+    onProgress: (posMs: Long, durMs: Long) -> Unit,
+    onError: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val safeVideoId = remember(videoId) { videoId.replace(Regex("[^A-Za-z0-9_-]"), "") }
+    val loadKey = "$safeVideoId#$reloadNonce"
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    var activeVideoId by remember { mutableStateOf(safeVideoId) }
+    activeVideoId = safeVideoId
+
+    var hasStartedOrPaused by remember { mutableStateOf(false) }
+    var isDestroyed by remember { mutableStateOf(false) }
+
+    val webView = remember(context) {
+        WebView(context).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            keepScreenOn = true
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+            }
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                mediaPlaybackRequiresUserGesture = false
+                loadWithOverviewMode = true
+                useWideViewPort = true
+                cacheMode = WebSettings.LOAD_DEFAULT
+                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            }
+        }
+    }
+
+    // Se IFrame API è pronto ma autoplay resta in UNSTARTED dopo 2.2s, scopre i controlli Play/Pause
+    LaunchedEffect(loadKey) {
+        hasStartedOrPaused = false
+        delay(2_200L)
+        if (!hasStartedOrPaused && !isDestroyed) {
+            onPlaybackStateChanged(false, false)
+        }
+    }
+
+    DisposableEffect(webView) {
+        val bridge = YouTubeEmbedBridge(
+            currentVideoId = { activeVideoId },
+            mainHandler = mainHandler,
+            onReadyCallback = { durMs ->
+                if (!isDestroyed) onReady(durMs)
+            },
+            onStateChangeCallback = { state, curMs, durMs ->
+                if (isDestroyed) return@YouTubeEmbedBridge
+                if (durMs > 0L) onProgress(curMs, durMs)
+                when (state) {
+                    1 -> { // PLAYING
+                        hasStartedOrPaused = true
+                        onPlaybackStateChanged(true, false)
+                    }
+                    2, 0, 5 -> { // PAUSED / ENDED / CUED
+                        hasStartedOrPaused = true
+                        onPlaybackStateChanged(false, false)
+                    }
+                    3 -> { // BUFFERING
+                        onPlaybackStateChanged(false, true)
+                    }
+                }
+            },
+            onTimeUpdateCallback = { curMs, durMs ->
+                if (!isDestroyed) onProgress(curMs, durMs)
+            },
+            onErrorCallback = { code ->
+                if (isDestroyed) return@YouTubeEmbedBridge
+                hasStartedOrPaused = true
+                onError(mapYouTubeEmbedError(code))
+            }
+        )
+
+        webView.addJavascriptInterface(bridge, "AndroidBridge")
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun getDefaultVideoPoster(): Bitmap {
+                return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            }
+        }
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                // Mantiene l'utente dentro il modale trailer
+                return true
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                if (request?.isForMainFrame == true && !isDestroyed) {
+                    mainHandler.post {
+                        onError("Errore di rete nel caricamento del player YouTube.")
+                    }
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                val urlStr = request?.url?.toString().orEmpty()
+                val code = errorResponse?.statusCode ?: return
+                if ((request?.isForMainFrame == true || urlStr.contains("/embed/")) && code >= 400 && !isDestroyed) {
+                    mainHandler.post {
+                        onError("Trailer YouTube non disponibile o bloccato (HTTP $code).")
+                    }
+                }
+            }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?
+            ): Boolean {
+                isDestroyed = true
+                TmdbTrailerResolver.isWebViewRendererUnstable = true
+                mainHandler.post {
+                    onWebViewReady(null)
+                    onError("Il player YouTube è stato interrotto dal sistema. Seleziona un altro trailer dalla lista o riprova.")
+                }
+                runCatching {
+                    (view?.parent as? ViewGroup)?.removeView(view)
+                    view?.destroy()
+                }
+                return true
+            }
+        }
+
+        onWebViewReady(webView)
+        onDispose {
+            onWebViewReady(null)
+            if (!isDestroyed) {
+                isDestroyed = true
+                runCatching {
+                    webView.stopLoading()
+                    webView.loadUrl("about:blank")
+                    webView.removeJavascriptInterface("AndroidBridge")
+                    (webView.parent as? ViewGroup)?.removeView(webView)
+                    webView.destroy()
+                }
+            }
+        }
+    }
+
+    AndroidView(
+        factory = { webView },
+        update = { view ->
+            if (!isDestroyed && view.tag != loadKey && safeVideoId.isNotBlank()) {
+                view.tag = loadKey
+                view.loadDataWithBaseURL(
+                    "https://www.youtube.com",
+                    buildYouTubeEmbedHtml(safeVideoId),
+                    "text/html",
+                    "UTF-8",
+                    "https://www.youtube.com"
+                )
+            }
+        },
+        modifier = modifier
+    )
+}
+
+private class YouTubeEmbedBridge(
+    private val currentVideoId: () -> String,
+    private val mainHandler: Handler,
+    private val onReadyCallback: (Long) -> Unit,
+    private val onStateChangeCallback: (Int, Long, Long) -> Unit,
+    private val onTimeUpdateCallback: (Long, Long) -> Unit,
+    private val onErrorCallback: (Int) -> Unit
+) {
+    @JavascriptInterface
+    fun onReady(videoId: String, durationSec: Double) {
+        mainHandler.post {
+            if (videoId == currentVideoId()) {
+                onReadyCallback((durationSec * 1000.0).toLong().coerceAtLeast(0L))
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun onStateChange(videoId: String, state: Int, currentSec: Double, durationSec: Double) {
+        mainHandler.post {
+            if (videoId == currentVideoId()) {
+                onStateChangeCallback(
+                    state,
+                    (currentSec * 1000.0).toLong().coerceAtLeast(0L),
+                    (durationSec * 1000.0).toLong().coerceAtLeast(0L)
+                )
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun onTimeUpdate(videoId: String, currentSec: Double, durationSec: Double) {
+        mainHandler.post {
+            if (videoId == currentVideoId()) {
+                onTimeUpdateCallback(
+                    (currentSec * 1000.0).toLong().coerceAtLeast(0L),
+                    (durationSec * 1000.0).toLong().coerceAtLeast(0L)
+                )
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun onError(videoId: String, errorCode: Int) {
+        mainHandler.post {
+            if (videoId == currentVideoId()) {
+                onErrorCallback(errorCode)
+            }
+        }
+    }
+}
+
+private fun mapYouTubeEmbedError(code: Int): String {
+    return when (code) {
+        2 -> "Parametro video YouTube non valido."
+        5 -> "Errore del player HTML5 su questo dispositivo."
+        100 -> "Trailer YouTube non trovato, privato o rimosso."
+        101, 150 -> "Riproduzione incorporata bloccata dal proprietario del video YouTube. Scegli un altro trailer dalla lista."
+        153 -> "Configurazione player YouTube non accettata (153). Premi Riprova o seleziona un altro trailer."
+        -101 -> "Impossibile contattare il player ufficiale YouTube. Controlla la connessione o riprova."
+        else -> "Impossibile riprodurre questo video YouTube (codice $code). Scegli un altro trailer o chiudi."
+    }
+}
+
+private fun buildYouTubeEmbedHtml(videoId: String): String {
+    return """
+        <!DOCTYPE html>
+        <html lang="it">
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+          <style>
+            html, body {
+              margin: 0;
+              padding: 0;
+              width: 100%;
+              height: 100%;
+              background-color: #000000;
+              overflow: hidden;
+            }
+            #player {
+              position: fixed;
+              inset: 0;
+              width: 100%;
+              height: 100%;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="player"></div>
+          <script>
+            var VIDEO_ID = '$videoId';
+            var player = null;
+            var apiReady = false;
+            var pollHandle = null;
+
+            function startPolling() {
+              if (pollHandle) clearInterval(pollHandle);
+              pollHandle = setInterval(function() {
+                try {
+                  if (player && typeof player.getCurrentTime === 'function') {
+                    var cur = player.getCurrentTime() || 0;
+                    var dur = player.getDuration() || 0;
+                    AndroidBridge.onTimeUpdate(VIDEO_ID, cur, dur);
+                  }
+                } catch (e) {}
+              }, 350);
+            }
+
+            window.vixPlay = function() {
+              try { if (player && player.playVideo) player.playVideo(); } catch (e) {}
+            };
+            window.vixPause = function() {
+              try { if (player && player.pauseVideo) player.pauseVideo(); } catch (e) {}
+            };
+            window.vixSeekTo = function(sec) {
+              try { if (player && player.seekTo) player.seekTo(sec, true); } catch (e) {}
+            };
+
+            function onYouTubeIframeAPIReady() {
+              apiReady = true;
+              try {
+                player = new YT.Player('player', {
+                  width: '100%',
+                  height: '100%',
+                  videoId: VIDEO_ID,
+                  host: 'https://www.youtube.com',
+                  playerVars: {
+                    autoplay: 1,
+                    controls: 0,
+                    disablekb: 1,
+                    fs: 0,
+                    rel: 0,
+                    iv_load_policy: 3,
+                    playsinline: 1,
+                    enablejsapi: 1,
+                    origin: 'https://www.youtube.com',
+                    hl: 'it'
+                  },
+                  events: {
+                    onReady: function(event) {
+                      var dur = 0;
+                      try { dur = event.target.getDuration() || 0; } catch (e) {}
+                      AndroidBridge.onReady(VIDEO_ID, dur);
+                      startPolling();
+                      try { event.target.playVideo(); } catch (e) {}
+                    },
+                    onStateChange: function(event) {
+                      var cur = 0, dur = 0;
+                      try {
+                        cur = event.target.getCurrentTime() || 0;
+                        dur = event.target.getDuration() || 0;
+                      } catch (e) {}
+                      AndroidBridge.onStateChange(VIDEO_ID, event.data, cur, dur);
+                      if (event.data === 5) {
+                        try { event.target.playVideo(); } catch (e) {}
+                      }
+                    },
+                    onError: function(event) {
+                      AndroidBridge.onError(VIDEO_ID, event.data);
+                    }
+                  }
+                });
+              } catch (e) {
+                AndroidBridge.onError(VIDEO_ID, -101);
+              }
+            }
+
+            setTimeout(function() {
+              if (!apiReady && typeof YT === 'undefined') {
+                AndroidBridge.onError(VIDEO_ID, -101);
+              }
+            }, 9000);
+          </script>
+          <script src="https://www.youtube.com/iframe_api" onerror="AndroidBridge.onError('$videoId', -101)"></script>
+        </body>
+        </html>
+    """.trimIndent()
 }

@@ -1,5 +1,7 @@
 package com.example.data.remote
 
+import android.os.Build
+import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -32,7 +34,9 @@ data class ResolvedTrailerStream(
     val userAgent: String = ResolvedStream.DEFAULT_USER_AGENT,
     val referer: String = "",
     val clipStartMs: Long = 0L,
-    val clipEndMs: Long = 0L
+    val clipEndMs: Long = 0L,
+    val isYouTubeEmbedFallback: Boolean = false,
+    val embedVideoId: String? = null
 )
 
 /**
@@ -52,6 +56,22 @@ class TmdbTrailerResolver(
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
+
+    private val federatedHttpClient: OkHttpClient = okHttpClient.newBuilder()
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
+    @Volatile
+    private var cachedPipedInstances: List<String> = emptyList()
+
+    @Volatile
+    private var cachedInvidiousInstances: List<String> = emptyList()
+
+    @Volatile
+    private var instancesCachedAtMs: Long = 0L
 
     /**
      * Esegue una ricerca diretta su YouTube per il titolo selezionato:
@@ -150,12 +170,15 @@ class TmdbTrailerResolver(
     }
 
     private fun resolveYouTubeTrailer(video: TmdbVideoDto): ResolvedTrailerStream {
-        val visitorData = fetchYouTubeVisitorData(video.key)
+        val embedConfig = fetchYouTubeEmbedConfig(video.key)
+        val visitorData = embedConfig.visitorData
         var lastReason: String? = null
 
         val clients = listOf(
             YouTubeClientProfile(
                 name = "ANDROID_VR",
+                clientId = "28",
+                clientVersion = "1.62.27",
                 clientJson = buildClientJson(
                     clientName = "ANDROID_VR",
                     clientVersion = "1.62.27",
@@ -166,6 +189,8 @@ class TmdbTrailerResolver(
             ),
             YouTubeClientProfile(
                 name = "IOS",
+                clientId = "5",
+                clientVersion = "20.10.4",
                 clientJson = buildClientJson(
                     clientName = "IOS",
                     clientVersion = "20.10.4",
@@ -176,6 +201,8 @@ class TmdbTrailerResolver(
             ),
             YouTubeClientProfile(
                 name = "ANDROID",
+                clientId = "3",
+                clientVersion = "20.10.38",
                 clientJson = buildClientJson(
                     clientName = "ANDROID",
                     clientVersion = "20.10.38",
@@ -185,7 +212,34 @@ class TmdbTrailerResolver(
                 userAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
             ),
             YouTubeClientProfile(
+                name = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                clientId = "85",
+                clientVersion = "2.0",
+                clientJson = buildClientJson(
+                    clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                    clientVersion = "2.0",
+                    visitorData = visitorData,
+                    extraFields = ""
+                ),
+                userAgent = "Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/7.0 TV Safari/537.36",
+                includeEmbedContext = true
+            ),
+            YouTubeClientProfile(
+                name = "MWEB",
+                clientId = "2",
+                clientVersion = "2.20250310.01.00",
+                clientJson = buildClientJson(
+                    clientName = "MWEB",
+                    clientVersion = "2.20250310.01.00",
+                    visitorData = visitorData,
+                    extraFields = ""
+                ),
+                userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
+            ),
+            YouTubeClientProfile(
                 name = "WEB_EMBEDDED_PLAYER",
+                clientId = "56",
+                clientVersion = "1.20250310.01.00",
                 clientJson = buildClientJson(
                     clientName = "WEB_EMBEDDED_PLAYER",
                     clientVersion = "1.20250310.01.00",
@@ -197,9 +251,14 @@ class TmdbTrailerResolver(
             )
         )
 
+        val apiKeyQuery = embedConfig.apiKey?.takeIf { it.isNotBlank() }?.let { "&key=$it" }.orEmpty()
+
         for (profile in clients) {
             val thirdPartyBlock = if (profile.includeEmbedContext) {
-                ""","thirdParty":{"embedUrl":"https://www.themoviedb.org/"}"""
+                ""","thirdParty":{"embedUrl":"https://www.youtube.com/"}"""
+            } else ""
+            val playbackContextBlock = if (profile.includeEmbedContext && embedConfig.signatureTimestamp != null) {
+                ""","playbackContext":{"contentPlaybackContext":{"signatureTimestamp":${embedConfig.signatureTimestamp}}}"""
             } else ""
 
             val payload = """
@@ -207,17 +266,21 @@ class TmdbTrailerResolver(
                   "videoId": "${video.key}",
                   "context": {
                     "client": ${profile.clientJson}$thirdPartyBlock
-                  },
+                  }$playbackContextBlock,
                   "contentCheckOk": true,
                   "racyCheckOk": true
                 }
             """.trimIndent()
 
             val requestBuilder = Request.Builder()
-                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false$apiKeyQuery")
                 .header("User-Agent", profile.userAgent)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
+                .header("X-YouTube-Client-Name", profile.clientId)
+                .header("X-YouTube-Client-Version", profile.clientVersion)
+                .header("Origin", "https://www.youtube.com")
+                .header("Referer", "https://www.youtube.com/")
                 .post(payload.toRequestBody("application/json".toMediaType()))
 
             if (!visitorData.isNullOrBlank()) {
@@ -251,11 +314,49 @@ class TmdbTrailerResolver(
             }
         }
 
-        // Ultimo tentativo sulla pagina watch HTML di YouTube (ytInitialPlayerResponse)
+        // Tentativo pagina watch HTML di YouTube (ytInitialPlayerResponse)
         extractFromYouTubeWatchHtml(video)?.let { return it }
 
-        val detail = lastReason?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
-        throw IllegalStateException("Trailer non disponibile o bloccato su YouTube$detail.")
+        // Stage 1.5: Estrazione diretta via istanze pubbliche Piped / Invidious per riproduzione nativa ExoPlayer (zero WebView)
+        resolveViaPipedAndInvidious(video)?.let { return it }
+
+        // Stage 2: Verifica disponibilità e fallback su YouTube IFrame Embed Player (solo su hardware con GPU WebView stabile)
+        val oEmbedCode = checkYouTubeOEmbedStatus(video.key)
+        when (oEmbedCode) {
+            401, 403 -> {
+                throw IllegalStateException(
+                    "Riproduzione incorporata disabilitata dall'autore per questo video YouTube. Seleziona un altro trailer dalla lista."
+                )
+            }
+            400, 404 -> {
+                throw IllegalStateException(
+                    "Trailer YouTube non più disponibile o rimosso."
+                )
+            }
+        }
+
+        val canUseWebViewEmbed = !isSoftwareOnlyEmulator() && !isWebViewRendererUnstable
+        if (canUseWebViewEmbed && (oEmbedCode == 200 || embedConfig.isEmbedPageReachable)) {
+            return ResolvedTrailerStream(
+                video = video,
+                streamUrl = "https://www.youtube.com/embed/${video.key}",
+                isHls = false,
+                sourceLabel = "${video.typeBadge} • YouTube Player (${video.name})",
+                isYouTubeEmbedFallback = true,
+                embedVideoId = video.key
+            )
+        }
+
+        val detail = when {
+            isSoftwareOnlyEmulator() ->
+                "YouTube richiede verifica anti-bot da questo indirizzo e l'emulatore non supporta il player Web senza accelerazione GPU"
+            isWebViewRendererUnstable ->
+                "Player Web YouTube non stabile su questo dispositivo e nessuno stream diretto disponibile"
+            !lastReason.isNullOrBlank() -> lastReason
+            oEmbedCode != null -> "HTTP $oEmbedCode"
+            else -> null
+        }?.let { " ($it)" }.orEmpty()
+        throw IllegalStateException("Trailer non disponibile o bloccato su YouTube$detail. Seleziona un altro trailer dalla lista o riprova.")
     }
 
     private fun extractFromYouTubeWatchHtml(video: TmdbVideoDto): ResolvedTrailerStream? {
@@ -303,7 +404,7 @@ class TmdbTrailerResolver(
 
         // 1. HLS manifest (contiene già video + audio)
         val hlsManifestUrl = streamingData.optString("hlsManifestUrl").trim()
-        if (hlsManifestUrl.isNotEmpty() && verifyHlsManifest(hlsManifestUrl, userAgent)) {
+        if (hlsManifestUrl.startsWith("http")) {
             return ResolvedTrailerStream(
                 video = video,
                 streamUrl = hlsManifestUrl,
@@ -323,21 +424,20 @@ class TmdbTrailerResolver(
                 val url = fmt.optString("url").trim()
                 val mimeType = fmt.optString("mimeType").lowercase()
                 val height = fmt.optInt("height", 360)
-                if (url.isNotEmpty() && (mimeType.contains("video/mp4") || mimeType.contains("video/webm"))) {
+                if (url.startsWith("http") && (mimeType.contains("video/mp4") || mimeType.contains("video/webm"))) {
                     muxedCandidates.add(height to url)
                 }
             }
-            for ((height, url) in muxedCandidates.sortedByDescending { it.first }) {
-                if (verifyProgressiveStream(url, userAgent)) {
-                    return ResolvedTrailerStream(
-                        video = video,
-                        streamUrl = url,
-                        isHls = false,
-                        sourceLabel = "${video.typeBadge} • $sourceSuffix ${height}p (${video.name})",
-                        userAgent = userAgent,
-                        referer = ""
-                    )
-                }
+            val bestMuxed = muxedCandidates.maxByOrNull { it.first }
+            if (bestMuxed != null) {
+                return ResolvedTrailerStream(
+                    video = video,
+                    streamUrl = bestMuxed.second,
+                    isHls = false,
+                    sourceLabel = "${video.typeBadge} • $sourceSuffix ${bestMuxed.first}p (${video.name})",
+                    userAgent = userAgent,
+                    referer = ""
+                )
             }
         }
 
@@ -349,7 +449,7 @@ class TmdbTrailerResolver(
             for (i in 0 until adaptiveArray.length()) {
                 val fmt = adaptiveArray.optJSONObject(i) ?: continue
                 val url = fmt.optString("url").trim()
-                if (url.isEmpty()) continue
+                if (!url.startsWith("http")) continue
                 val mimeType = fmt.optString("mimeType").lowercase()
                 if (mimeType.startsWith("video/mp4")) {
                     val height = fmt.optInt("height", 0)
@@ -363,10 +463,7 @@ class TmdbTrailerResolver(
             }
             val bestVideo = videoCandidates.maxByOrNull { it.first }
             val bestAudio = audioCandidates.maxByOrNull { it.first }
-            if (bestVideo != null && bestAudio != null &&
-                verifyProgressiveStream(bestVideo.second, userAgent) &&
-                verifyProgressiveStream(bestAudio.second, userAgent)
-            ) {
+            if (bestVideo != null && bestAudio != null) {
                 return ResolvedTrailerStream(
                     video = video,
                     streamUrl = bestVideo.second,
@@ -436,19 +533,49 @@ class TmdbTrailerResolver(
         }
     }
 
-    private fun fetchYouTubeVisitorData(videoId: String): String? {
+    private fun fetchYouTubeEmbedConfig(videoId: String): YouTubeEmbedConfig {
         return runCatching {
             val req = Request.Builder()
-                .url("https://www.youtube.com/embed/$videoId")
+                .url("https://www.youtube.com/embed/$videoId?hl=it")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+                )
+                .header("Accept-Language", "it-IT,it;q=0.9,en;q=0.8")
+                .build()
+            cleanTrailerHttpClient.newCall(req).execute().use { resp ->
+                val html = if (resp.isSuccessful) resp.body?.string().orEmpty() else ""
+                YouTubeEmbedConfig(
+                    apiKey = Regex(""""INNERTUBE_API_KEY"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.getOrNull(1),
+                    visitorData = Regex(""""visitorData"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.getOrNull(1),
+                    signatureTimestamp = Regex(""""STS"\s*:\s*(\d+)""").find(html)?.groupValues?.getOrNull(1)?.toIntOrNull(),
+                    embedHttpCode = resp.code,
+                    isEmbedPageReachable = resp.isSuccessful && !html.contains("\"UNPLAYABLE\"")
+                )
+            }
+        }.getOrElse {
+            YouTubeEmbedConfig(
+                apiKey = null,
+                visitorData = null,
+                signatureTimestamp = null,
+                embedHttpCode = 0,
+                isEmbedPageReachable = false
+            )
+        }
+    }
+
+    private fun checkYouTubeOEmbedStatus(videoId: String): Int? {
+        return runCatching {
+            val encodedWatch = URLEncoder.encode("https://www.youtube.com/watch?v=$videoId", "UTF-8")
+            val req = Request.Builder()
+                .url("https://www.youtube.com/oembed?url=$encodedWatch&format=json")
                 .header(
                     "User-Agent",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
                 )
                 .build()
             cleanTrailerHttpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                val html = resp.body?.string().orEmpty()
-                Regex(""""visitorData"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.getOrNull(1)
+                resp.code
             }
         }.getOrNull()
     }
@@ -741,10 +868,339 @@ class TmdbTrailerResolver(
         }
     }
 
+    private fun resolveViaPipedAndInvidious(video: TmdbVideoDto): ResolvedTrailerStream? {
+        refreshFederatedInstancesIfNeeded()
+        val ua = ResolvedStream.DEFAULT_USER_AGENT
+
+        for (baseUrl in cachedPipedInstances.take(6)) {
+            val resolved = runCatching {
+                val req = Request.Builder()
+                    .url("$baseUrl/streams/${video.key}")
+                    .header("User-Agent", ua)
+                    .header("Accept", "application/json")
+                    .build()
+                federatedHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body?.string().orEmpty()
+                    if (body.isBlank() || !body.trimStart().startsWith("{")) return@use null
+                    val json = JSONObject(body)
+                    if (json.has("error")) return@use null
+
+                    val hlsUrl = json.optString("hls").trim()
+                    if (hlsUrl.startsWith("http") && verifyHlsManifest(hlsUrl, ua)) {
+                        return@use ResolvedTrailerStream(
+                            video = video,
+                            streamUrl = hlsUrl,
+                            isHls = true,
+                            sourceLabel = "${video.typeBadge} • YouTube HLS (${video.name})",
+                            userAgent = ua
+                        )
+                    }
+
+                    val videoStreams = json.optJSONArray("videoStreams")
+                    val audioStreams = json.optJSONArray("audioStreams")
+
+                    if (videoStreams != null && videoStreams.length() > 0) {
+                        val muxed = mutableListOf<Pair<Int, String>>()
+                        val adaptiveVideo = mutableListOf<Pair<Int, String>>()
+                        for (i in 0 until videoStreams.length()) {
+                            val obj = videoStreams.optJSONObject(i) ?: continue
+                            val url = obj.optString("url").trim()
+                            if (!url.startsWith("http")) continue
+                            val mime = obj.optString("mimeType").lowercase()
+                            val format = obj.optString("format").lowercase()
+                            if (!mime.contains("mp4") && !format.contains("mpeg_4")) continue
+                            val height = obj.optInt("height", parseQualityHeight(obj.optString("quality")))
+                            if (!obj.optBoolean("videoOnly", true)) {
+                                muxed.add(height to url)
+                            } else if (height in 240..1080) {
+                                adaptiveVideo.add(height to url)
+                            }
+                        }
+
+                        val bestMuxed = muxed.maxByOrNull { it.first }
+                        if (bestMuxed != null && verifyFederatedStream(bestMuxed.second, ua)) {
+                            return@use ResolvedTrailerStream(
+                                video = video,
+                                streamUrl = bestMuxed.second,
+                                isHls = false,
+                                sourceLabel = "${video.typeBadge} • YouTube ${bestMuxed.first}p (${video.name})",
+                                userAgent = ua
+                            )
+                        }
+
+                        if (audioStreams != null && audioStreams.length() > 0) {
+                            val bestVideo = adaptiveVideo.maxByOrNull { it.first }
+                            val bestAudio = (0 until audioStreams.length())
+                                .mapNotNull { audioStreams.optJSONObject(it) }
+                                .filter { obj ->
+                                    val url = obj.optString("url").trim()
+                                    val mime = obj.optString("mimeType").lowercase()
+                                    val fmt = obj.optString("format").lowercase()
+                                    url.startsWith("http") && (mime.contains("mp4") || fmt.contains("m4a"))
+                                }
+                                .maxByOrNull { it.optInt("bitrate", 0) }
+                                ?.optString("url")
+                                ?.trim()
+
+                            if (bestVideo != null && !bestAudio.isNullOrBlank() &&
+                                verifyFederatedStream(bestVideo.second, ua) &&
+                                verifyFederatedStream(bestAudio, ua)
+                            ) {
+                                return@use ResolvedTrailerStream(
+                                    video = video,
+                                    streamUrl = bestVideo.second,
+                                    audioStreamUrl = bestAudio,
+                                    isHls = false,
+                                    sourceLabel = "${video.typeBadge} • YouTube ${bestVideo.first}p HD (${video.name})",
+                                    userAgent = ua
+                                )
+                            }
+                        }
+                    }
+                    null
+                }
+            }.getOrNull()
+
+            if (resolved != null) return resolved
+        }
+
+        for (baseUrl in cachedInvidiousInstances.take(6)) {
+            val resolved = runCatching {
+                val req = Request.Builder()
+                    .url("$baseUrl/api/v1/videos/${video.key}?local=true")
+                    .header("User-Agent", ua)
+                    .header("Accept", "application/json")
+                    .build()
+                federatedHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body?.string().orEmpty()
+                    if (body.isBlank() || !body.trimStart().startsWith("{")) return@use null
+                    val json = JSONObject(body)
+                    if (json.has("error")) return@use null
+
+                    val hlsRaw = json.optString("hlsUrl").trim()
+                    val hlsUrl = resolveInstanceUrl(baseUrl, hlsRaw)
+                    if (hlsUrl.startsWith("http") && verifyHlsManifest(hlsUrl, ua, "$baseUrl/")) {
+                        return@use ResolvedTrailerStream(
+                            video = video,
+                            streamUrl = hlsUrl,
+                            isHls = true,
+                            sourceLabel = "${video.typeBadge} • YouTube HLS (${video.name})",
+                            userAgent = ua,
+                            referer = "$baseUrl/"
+                        )
+                    }
+
+                    val formatStreams = json.optJSONArray("formatStreams")
+                    if (formatStreams != null && formatStreams.length() > 0) {
+                        val candidates = mutableListOf<Pair<Int, String>>()
+                        for (i in 0 until formatStreams.length()) {
+                            val fmt = formatStreams.optJSONObject(i) ?: continue
+                            val type = fmt.optString("type").lowercase()
+                            if (!type.contains("video/mp4")) continue
+                            val url = resolveInstanceUrl(baseUrl, fmt.optString("url").trim())
+                            if (!url.startsWith("http")) continue
+                            val height = parseQualityHeight(fmt.optString("resolution").ifBlank { fmt.optString("qualityLabel") })
+                            candidates.add(height to url)
+                        }
+                        val best = candidates.maxByOrNull { it.first }
+                        if (best != null && verifyFederatedStream(best.second, ua, "$baseUrl/")) {
+                            return@use ResolvedTrailerStream(
+                                video = video,
+                                streamUrl = best.second,
+                                isHls = false,
+                                sourceLabel = "${video.typeBadge} • YouTube ${best.first}p (${video.name})",
+                                userAgent = ua,
+                                referer = "$baseUrl/"
+                            )
+                        }
+                    }
+
+                    val adaptiveFormats = json.optJSONArray("adaptiveFormats")
+                    if (adaptiveFormats != null && adaptiveFormats.length() > 0) {
+                        val videos = mutableListOf<Pair<Int, String>>()
+                        val audios = mutableListOf<Pair<Int, String>>()
+                        for (i in 0 until adaptiveFormats.length()) {
+                            val fmt = adaptiveFormats.optJSONObject(i) ?: continue
+                            val type = fmt.optString("type").lowercase()
+                            val url = resolveInstanceUrl(baseUrl, fmt.optString("url").trim())
+                            if (!url.startsWith("http")) continue
+                            if (type.startsWith("video/mp4")) {
+                                val height = parseQualityHeight(fmt.optString("resolution").ifBlank { fmt.optString("qualityLabel") })
+                                if (height in 240..1080) videos.add(height to url)
+                            } else if (type.startsWith("audio/mp4")) {
+                                val bitrate = fmt.optString("bitrate").toIntOrNull() ?: 0
+                                audios.add(bitrate to url)
+                            }
+                        }
+                        val bestVideo = videos.maxByOrNull { it.first }
+                        val bestAudio = audios.maxByOrNull { it.first }
+                        if (bestVideo != null && bestAudio != null &&
+                            verifyFederatedStream(bestVideo.second, ua, "$baseUrl/") &&
+                            verifyFederatedStream(bestAudio.second, ua, "$baseUrl/")
+                        ) {
+                            return@use ResolvedTrailerStream(
+                                video = video,
+                                streamUrl = bestVideo.second,
+                                audioStreamUrl = bestAudio.second,
+                                isHls = false,
+                                sourceLabel = "${video.typeBadge} • YouTube ${bestVideo.first}p HD (${video.name})",
+                                userAgent = ua,
+                                referer = "$baseUrl/"
+                            )
+                        }
+                    }
+                    null
+                }
+            }.getOrNull()
+
+            if (resolved != null) return resolved
+        }
+
+        return null
+    }
+
+    private fun refreshFederatedInstancesIfNeeded() {
+        val now = System.currentTimeMillis()
+        if (cachedPipedInstances.isNotEmpty() &&
+            cachedInvidiousInstances.isNotEmpty() &&
+            now - instancesCachedAtMs < 10 * 60_000L
+        ) {
+            return
+        }
+
+        val pipedSeed = listOf(
+            "https://pipedapi.kavin.rocks",
+            "https://pipedapi.adminforge.de",
+            "https://api.piped.yt",
+            "https://api.piped.private.coffee",
+            "https://pipedapi.drgns.space"
+        )
+        val dynamicPiped = runCatching {
+            val req = Request.Builder()
+                .url("https://piped-instances.kavin.rocks/")
+                .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
+                .build()
+            federatedHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use emptyList()
+                val arr = JSONArray(resp.body?.string().orEmpty())
+                (0 until arr.length())
+                    .mapNotNull { arr.optJSONObject(it) }
+                    .sortedByDescending { it.optDouble("uptime_30d", 0.0) }
+                    .mapNotNull { obj ->
+                        obj.optString("api_url").trim().trimEnd('/').takeIf { it.startsWith("https://") }
+                    }
+            }
+        }.getOrDefault(emptyList())
+
+        val invidiousSeed = listOf(
+            "https://invidious.nerdvpn.de",
+            "https://invidious.tiekoetter.com",
+            "https://inv.nadeko.net",
+            "https://invidious.jing.rocks",
+            "https://yewtu.be"
+        )
+        val dynamicInvidious = runCatching {
+            val req = Request.Builder()
+                .url("https://api.invidious.io/instances.json?sort_by=health")
+                .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
+                .build()
+            federatedHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use emptyList()
+                val arr = JSONArray(resp.body?.string().orEmpty())
+                (0 until arr.length()).mapNotNull { idx ->
+                    val entry = arr.optJSONArray(idx) ?: return@mapNotNull null
+                    val meta = entry.optJSONObject(1) ?: return@mapNotNull null
+                    if (meta.optString("type") != "https" || !meta.optBoolean("api", false)) return@mapNotNull null
+                    val statusClass = meta.optJSONObject("monitor")?.optString("statusClass").orEmpty()
+                    if (statusClass == "error") return@mapNotNull null
+                    meta.optString("uri").trim().trimEnd('/').takeIf { it.startsWith("https://") }
+                }
+            }
+        }.getOrDefault(emptyList())
+
+        cachedPipedInstances = (dynamicPiped + pipedSeed).distinct()
+        cachedInvidiousInstances = (dynamicInvidious + invidiousSeed).distinct()
+        instancesCachedAtMs = now
+    }
+
+    private fun verifyFederatedStream(url: String, userAgent: String, referer: String = ""): Boolean {
+        return runCatching {
+            val builder = Request.Builder()
+                .url(url)
+                .header("User-Agent", userAgent)
+                .header("Range", "bytes=0-255")
+            if (referer.isNotBlank()) builder.header("Referer", referer)
+            federatedHttpClient.newCall(builder.build()).execute().use { resp ->
+                resp.isSuccessful || resp.code == 206
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun resolveInstanceUrl(baseUrl: String, raw: String): String {
+        return when {
+            raw.startsWith("http") -> raw
+            raw.startsWith("/") -> "${baseUrl.trimEnd('/')}$raw"
+            else -> ""
+        }
+    }
+
+    private fun parseQualityHeight(label: String): Int {
+        return Regex("""(\d{3,4})""").find(label)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 360
+    }
+
+    private data class YouTubeEmbedConfig(
+        val apiKey: String?,
+        val visitorData: String?,
+        val signatureTimestamp: Int?,
+        val embedHttpCode: Int,
+        val isEmbedPageReachable: Boolean
+    )
+
     private data class YouTubeClientProfile(
         val name: String,
+        val clientId: String,
+        val clientVersion: String,
         val clientJson: String,
         val userAgent: String,
         val includeEmbedContext: Boolean = false
     )
+
+    companion object {
+        @Volatile
+        var isWebViewRendererUnstable: Boolean = false
+
+        fun isSoftwareOnlyEmulator(): Boolean {
+            val fingerprint = Build.FINGERPRINT.orEmpty().lowercase()
+            val model = Build.MODEL.orEmpty().lowercase()
+            val product = Build.PRODUCT.orEmpty().lowercase()
+            val hardware = Build.HARDWARE.orEmpty().lowercase()
+            val brand = Build.BRAND.orEmpty().lowercase()
+            val device = Build.DEVICE.orEmpty().lowercase()
+
+            val looksLikeEmulator = fingerprint.startsWith("generic") ||
+                fingerprint.contains("emulator") ||
+                fingerprint.contains("vsoc") ||
+                fingerprint.contains("sdk_gphone") ||
+                model.contains("emulator") ||
+                model.contains("android sdk built for") ||
+                model.contains("cuttlefish") ||
+                product.contains("sdk") ||
+                product.contains("emulator") ||
+                product.contains("vsoc") ||
+                hardware.contains("ranchu") ||
+                hardware.contains("goldfish") ||
+                hardware.contains("cutf") ||
+                (brand.startsWith("generic") && device.startsWith("generic"))
+
+            if (!looksLikeEmulator) return false
+
+            val hasHardwareRenderNode = runCatching {
+                File("/dev/dri").listFiles()?.any { it.name.startsWith("renderD") } == true
+            }.getOrDefault(false)
+
+            return !hasHardwareRenderNode
+        }
+    }
 }
