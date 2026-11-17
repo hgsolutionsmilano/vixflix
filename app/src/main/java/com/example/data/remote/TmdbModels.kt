@@ -106,6 +106,37 @@ data class TmdbSeasonSummaryDto(
     @Json(name = "air_date") val airDate: String? = null
 )
 
+data class TmdbVideoDto(
+    @Json(name = "id") val id: String,
+    @Json(name = "key") val key: String,
+    @Json(name = "name") val name: String,
+    @Json(name = "site") val site: String = "YouTube",
+    @Json(name = "type") val type: String = "Trailer",
+    @Json(name = "official") val official: Boolean = false,
+    @Json(name = "iso_639_1") val languageCode: String? = null
+) {
+    val isYouTube: Boolean
+        get() = site.equals("YouTube", ignoreCase = true) && key.isNotBlank()
+
+    val thumbnailUrl: String
+        get() = "https://i.ytimg.com/vi/$key/hqdefault.jpg"
+
+    val typeBadge: String
+        get() = when (type.lowercase()) {
+            "trailer" -> if (languageCode.equals("it", ignoreCase = true)) "TRAILER ITA" else "TRAILER UFFICIALE"
+            "teaser" -> "TEASER"
+            "clip" -> "CLIP VIDEO"
+            "behind the scenes" -> "BACKSTAGE"
+            "featurette" -> "FEATURETTE"
+            else -> type.uppercase()
+        }
+}
+
+data class TmdbVideosResponse(
+    @Json(name = "id") val id: Int? = null,
+    @Json(name = "results") val results: List<TmdbVideoDto> = emptyList()
+)
+
 data class TmdbMovieDetailsDto(
     @Json(name = "id") val id: Int,
     @Json(name = "title") val title: String? = null,
@@ -118,7 +149,8 @@ data class TmdbMovieDetailsDto(
     @Json(name = "tagline") val tagline: String? = null,
     @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
     @Json(name = "credits") val credits: TmdbCreditsDto? = null,
-    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null
+    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null,
+    @Json(name = "videos") val videos: TmdbVideosResponse? = null
 )
 
 data class TmdbTvDetailsDto(
@@ -135,7 +167,8 @@ data class TmdbTvDetailsDto(
     @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
     @Json(name = "seasons") val seasons: List<TmdbSeasonSummaryDto> = emptyList(),
     @Json(name = "credits") val credits: TmdbCreditsDto? = null,
-    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null
+    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null,
+    @Json(name = "videos") val videos: TmdbVideosResponse? = null
 )
 
 data class TmdbEpisodeDto(
@@ -168,7 +201,8 @@ data class MediaDetails(
     val cast: List<TmdbCastMemberDto>,
     val similar: List<MediaItem>,
     val seasons: List<TmdbSeasonSummaryDto> = emptyList(),
-    val numberOfSeasons: Int = 0
+    val numberOfSeasons: Int = 0,
+    val trailers: List<TmdbVideoDto> = emptyList()
 )
 
 object TmdbGenreMap {

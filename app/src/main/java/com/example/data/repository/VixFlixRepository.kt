@@ -10,10 +10,13 @@ import com.example.data.remote.GitHubUpdateService
 import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.ResolvedStream
+import com.example.data.remote.ResolvedTrailerStream
 import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbApiService
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbSeasonDetailsDto
+import com.example.data.remote.TmdbTrailerResolver
+import com.example.data.remote.TmdbVideoDto
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.remote.toDomain
 import com.squareup.moshi.Moshi
@@ -76,6 +79,7 @@ class VixFlixRepository(
         .create(TmdbApiService::class.java)
 
     val vixSrcResolver = VixSrcStreamResolver(rawOkHttpClient)
+    val trailerResolver = TmdbTrailerResolver(rawOkHttpClient, vixSrcResolver)
     val gitHubUpdateService = GitHubUpdateService(rawOkHttpClient)
 
     val continueWatchingFlow: Flow<List<WatchProgressEntity>> = dao.observeContinueWatching()
@@ -145,6 +149,9 @@ class VixFlixRepository(
                 voteAverage = dto.voteAverage ?: mediaItem.voteAverage,
                 releaseYear = dto.firstAirDate?.take(4) ?: mediaItem.releaseYear
             )
+            val rawVideos = dto.videos?.results.orEmpty().ifEmpty {
+                runCatching { tmdbApi.getTvVideos(mediaItem.id).results }.getOrDefault(emptyList())
+            }
             val validSeasons = dto.seasons.filter { it.seasonNumber > 0 && it.episodeCount > 0 }
             MediaDetails(
                 item = updatedItem,
@@ -154,7 +161,8 @@ class VixFlixRepository(
                 cast = dto.credits?.cast?.take(12).orEmpty(),
                 similar = dto.similar?.results?.mapNotNull { it.toDomain("tv") }?.take(12).orEmpty(),
                 seasons = validSeasons,
-                numberOfSeasons = dto.numberOfSeasons ?: validSeasons.size
+                numberOfSeasons = dto.numberOfSeasons ?: validSeasons.size,
+                trailers = prioritizeTrailers(rawVideos)
             )
         } else {
             val dto = tmdbApi.getMovieDetails(mediaItem.id)
@@ -166,15 +174,38 @@ class VixFlixRepository(
                 voteAverage = dto.voteAverage ?: mediaItem.voteAverage,
                 releaseYear = dto.releaseDate?.take(4) ?: mediaItem.releaseYear
             )
+            val rawVideos = dto.videos?.results.orEmpty().ifEmpty {
+                runCatching { tmdbApi.getMovieVideos(mediaItem.id).results }.getOrDefault(emptyList())
+            }
             MediaDetails(
                 item = updatedItem,
                 tagline = dto.tagline.orEmpty(),
                 runtimeMinutes = dto.runtime,
                 genres = dto.genres.map { it.name },
                 cast = dto.credits?.cast?.take(12).orEmpty(),
-                similar = dto.similar?.results?.mapNotNull { it.toDomain("movie") }?.take(12).orEmpty()
+                similar = dto.similar?.results?.mapNotNull { it.toDomain("movie") }?.take(12).orEmpty(),
+                trailers = prioritizeTrailers(rawVideos)
             )
         }
+    }
+
+    private fun prioritizeTrailers(videos: List<TmdbVideoDto>): List<TmdbVideoDto> {
+        return videos
+            .filter { it.key.isNotBlank() }
+            .sortedWith(
+                compareByDescending<TmdbVideoDto> { it.type.equals("Trailer", ignoreCase = true) }
+                    .thenByDescending { it.languageCode.equals("it", ignoreCase = true) }
+                    .thenByDescending { it.official }
+                    .thenByDescending { it.type.equals("Teaser", ignoreCase = true) }
+            )
+    }
+
+    suspend fun resolveTrailerForExoPlayer(
+        item: MediaItem,
+        video: TmdbVideoDto,
+        lang: String
+    ): Result<ResolvedTrailerStream> {
+        return trailerResolver.resolveTrailerForExoPlayer(item = item, video = video, lang = lang)
     }
 
     suspend fun fetchSeasonEpisodes(tvId: Int, seasonNumber: Int): Result<List<TmdbEpisodeDto>> = runCatching {

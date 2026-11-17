@@ -13,8 +13,10 @@ import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.ResolvedStream
+import com.example.data.remote.ResolvedTrailerStream
 import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbEpisodeDto
+import com.example.data.remote.TmdbVideoDto
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
 import kotlinx.coroutines.Job
@@ -42,6 +44,13 @@ sealed interface CatalogUiState {
     data class Error(val message: String) : CatalogUiState
 }
 
+data class TrailerPlaybackState(
+    val video: TmdbVideoDto,
+    val isLoading: Boolean = true,
+    val resolvedTrailer: ResolvedTrailerStream? = null,
+    val errorMessage: String? = null
+)
+
 data class DetailUiState(
     val mediaItem: MediaItem,
     val isLoading: Boolean = true,
@@ -50,6 +59,7 @@ data class DetailUiState(
     val episodes: List<TmdbEpisodeDto> = emptyList(),
     val isLoadingEpisodes: Boolean = false,
     val episodeProgressMap: Map<Int, EpisodeProgressEntity> = emptyMap(),
+    val activeTrailer: TrailerPlaybackState? = null,
     val errorMessage: String? = null
 )
 
@@ -220,6 +230,54 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     fun closeDetails() {
         seasonProgressJob?.cancel()
         _detailState.value = null
+    }
+
+    fun playTrailer(video: TmdbVideoDto) {
+        val current = _detailState.value ?: return
+        _detailState.value = current.copy(
+            activeTrailer = TrailerPlaybackState(
+                video = video,
+                isLoading = true
+            )
+        )
+        viewModelScope.launch {
+            val lang = streamLanguage.value
+            repository.resolveTrailerForExoPlayer(
+                item = current.mediaItem,
+                video = video,
+                lang = lang
+            ).fold(
+                onSuccess = { resolved ->
+                    val latest = _detailState.value ?: return@fold
+                    if (latest.activeTrailer?.video?.id == video.id) {
+                        _detailState.value = latest.copy(
+                            activeTrailer = TrailerPlaybackState(
+                                video = video,
+                                isLoading = false,
+                                resolvedTrailer = resolved
+                            )
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    val latest = _detailState.value ?: return@fold
+                    if (latest.activeTrailer?.video?.id == video.id) {
+                        _detailState.value = latest.copy(
+                            activeTrailer = TrailerPlaybackState(
+                                video = video,
+                                isLoading = false,
+                                errorMessage = err.localizedMessage ?: "Impossibile caricare il trailer."
+                            )
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun closeTrailerPlayer() {
+        val current = _detailState.value ?: return
+        _detailState.value = current.copy(activeTrailer = null)
     }
 
     fun selectSeason(tvId: Int, seasonNumber: Int) {

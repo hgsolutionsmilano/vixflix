@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
+import androidx.annotation.OptIn
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,8 +32,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,23 +50,46 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem as ExoMediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbCastMemberDto
 import com.example.data.remote.TmdbEpisodeDto
+import com.example.data.remote.TmdbVideoDto
+import com.example.data.remote.VixSrcStreamResolver
 import com.example.ui.DetailUiState
+import com.example.ui.TrailerPlaybackState
 import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.theme.NetflixBlack
@@ -80,17 +108,27 @@ fun MediaDetailScreen(
     state: DetailUiState,
     savedProgress: WatchProgressEntity?,
     isInWatchlist: Boolean,
+    vixSrcResolver: VixSrcStreamResolver,
     onClose: () -> Unit,
     onPlayMain: (restartFromZero: Boolean) -> Unit,
     onPlayEpisode: (season: Int, episode: Int, title: String?) -> Unit,
+    onPlayTrailer: (TmdbVideoDto) -> Unit,
+    onCloseTrailer: () -> Unit,
     onSelectSeason: (Int) -> Unit,
     onToggleWatchlist: () -> Unit,
     onSelectSimilar: (MediaItem) -> Unit
 ) {
-    BackHandler(onBack = onClose)
+    BackHandler {
+        if (state.activeTrailer != null) {
+            onCloseTrailer()
+        } else {
+            onClose()
+        }
+    }
 
     val item = state.mediaItem
     val details = state.details
+    val trailers = details?.trailers.orEmpty()
 
     Box(
         modifier = Modifier
@@ -169,7 +207,7 @@ fun MediaDetailScreen(
                 }
             }
 
-            // Info principali + Pulsanti Riproduci / Riprendi
+            // Info principali + Pulsanti Riproduci / Riprendi / Guarda Trailer
             item {
                 Column(
                     modifier = Modifier
@@ -327,6 +365,37 @@ fun MediaDetailScreen(
                         )
                     }
 
+                    // Pulsante rapido per avviare il Trailer Ufficiale direttamente in-app
+                    if (trailers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = { onPlayTrailer(trailers.first()) },
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NetflixRed,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("detail_watch_trailer_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SmartDisplay,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Guarda Trailer Ufficiale in App (${trailers.first().name})",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Row(
@@ -411,6 +480,68 @@ fun MediaDetailScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = NetflixMutedGray
                     )
+                }
+            }
+
+            // SEZIONE DEDICATA: Trailer & Video Ufficiali da TMDB (/movie/{id}/videos o /tv/{id}/videos)
+            if (trailers.isNotEmpty()) {
+                item {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("tmdb_trailers_section")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Movie,
+                                    contentDescription = null,
+                                    tint = NetflixRed,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Trailer & Anteprime Ufficiali (TMDB)",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = NetflixWhite
+                                )
+                            }
+                            Text(
+                                text = "${trailers.size} video",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NetflixMatchGreen
+                            )
+                        }
+
+                        Text(
+                            text = "Seleziona un trailer per guardarlo direttamente in-app prima di avviare lo streaming completo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NetflixLightGray,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(trailers, key = { it.id }) { video ->
+                                TmdbTrailerCard(
+                                    video = video,
+                                    fallbackBackdropUrl = item.backdropUrl,
+                                    onClick = { onPlayTrailer(video) }
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -515,6 +646,401 @@ fun MediaDetailScreen(
                         title = "Titoli Simili su TMDB",
                         items = details?.similar.orEmpty(),
                         onItemClick = onSelectSimilar
+                    )
+                }
+            }
+        }
+
+        // Player Trailer In-App (Media3 ExoPlayer) mostrato in sovrimpressione quando l'utente seleziona un trailer
+        val currentTrailerState = state.activeTrailer
+        if (currentTrailerState != null) {
+            InAppTrailerPlayerOverlay(
+                mediaItem = item,
+                trailerState = currentTrailerState,
+                allTrailers = trailers,
+                vixSrcResolver = vixSrcResolver,
+                onSelectTrailer = onPlayTrailer,
+                onStartMainStream = {
+                    onCloseTrailer()
+                    onPlayMain(false)
+                },
+                onClose = onCloseTrailer
+            )
+        }
+    }
+}
+
+@Composable
+private fun TmdbTrailerCard(
+    video: TmdbVideoDto,
+    fallbackBackdropUrl: String?,
+    onClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+        border = BorderStroke(1.dp, NetflixElevatedSurface),
+        modifier = Modifier
+            .width(230.dp)
+            .clickable { onClick() }
+            .testTag("trailer_card_${video.key}")
+    ) {
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(128.dp)
+                    .background(NetflixDarkSurface)
+            ) {
+                AsyncImage(
+                    model = if (video.isYouTube) video.thumbnailUrl else fallbackBackdropUrl,
+                    contentDescription = video.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(NetflixBlack.copy(alpha = 0.35f))
+                )
+                Surface(
+                    color = NetflixRed,
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = video.typeBadge,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .align(Alignment.Center)
+                        .clip(CircleShape)
+                        .background(NetflixRed.copy(alpha = 0.9f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Riproduci Trailer in App",
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.padding(10.dp)) {
+                Text(
+                    text = video.name,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Riproduzione In-App • ${video.site} (${video.languageCode?.uppercase() ?: "INT"})",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NetflixLightGray,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@OptIn(UnstableApi::class)
+@Composable
+private fun InAppTrailerPlayerOverlay(
+    mediaItem: MediaItem,
+    trailerState: TrailerPlaybackState,
+    allTrailers: List<TmdbVideoDto>,
+    vixSrcResolver: VixSrcStreamResolver,
+    onSelectTrailer: (TmdbVideoDto) -> Unit,
+    onStartMainStream: () -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    val resolved = trailerState.resolvedTrailer
+    var isBuffering by remember(trailerState.video.id) { mutableStateOf(true) }
+    var playbackError by remember(trailerState.video.id, trailerState.errorMessage) {
+        mutableStateOf(trailerState.errorMessage)
+    }
+
+    val okHttpDataSourceFactory = remember(vixSrcResolver, resolved?.referer, resolved?.userAgent) {
+        val headers = mapOf(
+            "Referer" to (resolved?.referer ?: "https://vixsrc.to/"),
+            "Origin" to "https://vixsrc.to"
+        )
+        OkHttpDataSource.Factory(vixSrcResolver.exoOkHttpClient)
+            .setUserAgent(resolved?.userAgent ?: "Mozilla/5.0")
+            .setDefaultRequestProperties(headers)
+    }
+
+    val exoPlayer = remember(context) {
+        ExoPlayer.Builder(context)
+            .build()
+            .apply {
+                playWhenReady = true
+            }
+    }
+
+    LaunchedEffect(resolved?.streamUrl, trailerState.isLoading) {
+        if (trailerState.isLoading || resolved == null) return@LaunchedEffect
+        playbackError = null
+        isBuffering = true
+
+        val uri = Uri.parse(resolved.streamUrl)
+        val itemBuilder = ExoMediaItem.Builder().setUri(uri)
+        if (resolved.isHls) {
+            itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        }
+
+        val mediaSource = if (resolved.isHls) {
+            HlsMediaSource.Factory(okHttpDataSourceFactory)
+                .setAllowChunklessPreparation(true)
+                .createMediaSource(itemBuilder.build())
+        } else {
+            ProgressiveMediaSource.Factory(okHttpDataSourceFactory)
+                .createMediaSource(itemBuilder.build())
+        }
+
+        exoPlayer.setMediaSource(mediaSource)
+        if (resolved.clipStartMs > 0L) {
+            exoPlayer.seekTo(resolved.clipStartMs)
+        }
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = true
+    }
+
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                isBuffering = playbackState == Player.STATE_BUFFERING
+                if (playbackState == Player.STATE_READY) {
+                    playbackError = null
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                isBuffering = false
+                playbackError = "Impossibile riprodurre questo trailer (${error.errorCodeName})."
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.release()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(NetflixBlack.copy(alpha = 0.94f))
+            .clickable(enabled = true) { /* blocca click sottostanti */ }
+            .testTag("in_app_trailer_overlay"),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+            border = BorderStroke(1.5.dp, NetflixRed),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                // Header del Player Trailer In-App
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                color = NetflixRed,
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = trailerState.video.typeBadge,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Text(
+                                text = mediaItem.title,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = NetflixMatchGreen,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = trailerState.video.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.testTag("close_trailer_overlay_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Chiudi Trailer",
+                            tint = NetflixWhite
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Area Video Media3 ExoPlayer In-App
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(230.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                player = exoPlayer
+                                useController = true
+                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            }
+                        },
+                        update = { view ->
+                            view.player = exoPlayer
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    if (trailerState.isLoading || isBuffering) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(NetflixBlack.copy(alpha = 0.82f))
+                                .padding(14.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = NetflixRed,
+                                strokeWidth = 2.5.dp,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Caricamento Trailer In-App: ${trailerState.video.name}…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NetflixWhite,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else if (!playbackError.isNullOrBlank()) {
+                        Text(
+                            text = playbackError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NetflixRed,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+
+                if (resolved != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = resolved.sourceLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixLightGray
+                    )
+                }
+
+                // Selettore rapido altri trailer dello stesso film/serie TV
+                if (allTrailers.size > 1) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Altri Trailer & Video disponibili:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixLightGray
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(allTrailers, key = { "switch_${it.id}" }) { vid ->
+                            val isSelected = vid.id == trailerState.video.id
+                            Surface(
+                                color = if (isSelected) NetflixRed else NetflixDarkSurface,
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isSelected) NetflixRed else NetflixElevatedSurface
+                                ),
+                                modifier = Modifier.clickable { onSelectTrailer(vid) }
+                            ) {
+                                Text(
+                                    text = vid.name,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NetflixWhite,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .width(150.dp)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Pulsante per passare subito dal Trailer allo Streaming Principale
+                Button(
+                    onClick = onStartMainStream,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NetflixWhite,
+                        contentColor = NetflixBlack
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .testTag("start_main_stream_from_trailer_button")
+                ) {
+                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (mediaItem.isSeries) {
+                            "Avvia Streaming Serie TV Completo"
+                        } else {
+                            "Avvia Streaming Film Completo"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }

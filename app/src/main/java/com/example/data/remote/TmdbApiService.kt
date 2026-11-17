@@ -73,15 +73,31 @@ interface TmdbApiService {
     suspend fun getMovieDetails(
         @Path("movie_id") movieId: Int,
         @Query("language") language: String = "it-IT",
-        @Query("append_to_response") appendToResponse: String = "credits,similar"
+        @Query("append_to_response") appendToResponse: String = "credits,similar,videos",
+        @Query("include_video_language") includeVideoLanguage: String = "it,en,null"
     ): TmdbMovieDetailsDto
 
     @GET("tv/{tv_id}")
     suspend fun getTvDetails(
         @Path("tv_id") tvId: Int,
         @Query("language") language: String = "it-IT",
-        @Query("append_to_response") appendToResponse: String = "credits,similar"
+        @Query("append_to_response") appendToResponse: String = "credits,similar,videos",
+        @Query("include_video_language") includeVideoLanguage: String = "it,en,null"
     ): TmdbTvDetailsDto
+
+    @GET("movie/{movie_id}/videos")
+    suspend fun getMovieVideos(
+        @Path("movie_id") movieId: Int,
+        @Query("language") language: String = "it-IT",
+        @Query("include_video_language") includeVideoLanguage: String = "it,en,null"
+    ): TmdbVideosResponse
+
+    @GET("tv/{tv_id}/videos")
+    suspend fun getTvVideos(
+        @Path("tv_id") tvId: Int,
+        @Query("language") language: String = "it-IT",
+        @Query("include_video_language") includeVideoLanguage: String = "it,en,null"
+    ): TmdbVideosResponse
 
     @GET("tv/{tv_id}/season/{season_number}")
     suspend fun getTvSeasonDetails(
