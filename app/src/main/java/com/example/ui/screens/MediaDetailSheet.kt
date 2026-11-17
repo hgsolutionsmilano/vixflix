@@ -146,24 +146,6 @@ fun MediaDetailScreen(
 
     val item = state.mediaItem
     val isTvDevice = rememberIsTvDevice()
-    val detailPlayFocusRequester = remember { FocusRequester() }
-    val detailTrailerFocusRequester = remember { FocusRequester() }
-    val detailCloseFocusRequester = remember { FocusRequester() }
-    val detailBackFocusRequester = remember { FocusRequester() }
-    var wasTrailerOpen by remember { mutableStateOf(false) }
-
-    LaunchedEffect(item.uniqueKey, state.activeTrailer, isInteractive) {
-        val isTrailerOpen = state.activeTrailer != null
-        if (isInteractive && isTvDevice && !isTrailerOpen) {
-            kotlinx.coroutines.delay(50L)
-            if (wasTrailerOpen) {
-                runCatching { detailTrailerFocusRequester.requestFocus() }
-            } else {
-                runCatching { detailPlayFocusRequester.requestFocus() }
-            }
-        }
-        wasTrailerOpen = isTrailerOpen
-    }
 
     Box(
         modifier = Modifier
@@ -189,10 +171,54 @@ fun MediaDetailScreen(
             val currentItem = currentState.mediaItem
             val details = currentState.details
             val trailers = details?.trailers.orEmpty()
+            val listState = rememberLazyListState()
+            val detailPlayFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
+            val detailTrailerFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
+            val detailCloseFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
+            val detailBackFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstTrailerFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstSeasonFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstEpisodeFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstSimilarFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            var isPlayButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            var isTrailerButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            var isOtherActionFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            var wasTrailerOpen by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+
+            val isCurrentActive = currentItem.uniqueKey == item.uniqueKey
+            val isTrailerOpen = currentState.activeTrailer != null
+
+            LaunchedEffect(isCurrentActive, isInteractive, isTrailerOpen) {
+                if (isCurrentActive && isInteractive && !isTrailerOpen) {
+                    val returnToTrailer = wasTrailerOpen
+                    val targetRequester = if (returnToTrailer) detailTrailerFocusRequester else detailPlayFocusRequester
+                    if (!returnToTrailer && listState.firstVisibleItemIndex > 0) {
+                        runCatching { listState.scrollToItem(0) }
+                    }
+                    var didAutoFocusOnce = false
+                    androidx.compose.runtime.withFrameNanos { }
+                    val retryDelaysMs = longArrayOf(0L, 40L, 90L, 160L, 280L)
+                    for (stepDelay in retryDelaysMs) {
+                        if (stepDelay > 0L) {
+                            kotlinx.coroutines.delay(stepDelay)
+                        }
+                        val targetAlreadyFocused = if (returnToTrailer) isTrailerButtonFocused else isPlayButtonFocused
+                        if (targetAlreadyFocused) break
+                        if (didAutoFocusOnce && isOtherActionFocused) break
+                        val requested = runCatching { targetRequester.requestFocus() }.isSuccess
+                        if (requested) {
+                            kotlinx.coroutines.yield()
+                            didAutoFocusOnce = true
+                            val focusedAfterYield = if (returnToTrailer) isTrailerButtonFocused else isPlayButtonFocused
+                            if (focusedAfterYield) break
+                        }
+                    }
+                }
+                if (isCurrentActive) {
+                    wasTrailerOpen = isTrailerOpen
+                }
+            }
+
             val downTargetFromActions: FocusRequester? = when {
                 trailers.isNotEmpty() -> firstTrailerFocus
                 currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
@@ -212,6 +238,7 @@ fun MediaDetailScreen(
             )
 
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .navigationBarsPadding(),
@@ -519,9 +546,11 @@ fun MediaDetailScreen(
                             containerColor = NetflixWhite,
                             contentColor = NetflixBlack,
                             focusedBorderColor = NetflixRed,
-                            focusRequester = if (currentItem.uniqueKey == item.uniqueKey) detailPlayFocusRequester else null,
+                            focusRequester = detailPlayFocusRequester,
                             upFocusRequester = topReturnTarget,
                             downFocusRequester = downTargetFromActions,
+                            rightFocusRequester = detailTrailerFocusRequester,
+                            onFocusChange = { focused -> isPlayButtonFocused = focused },
                             testTag = "detail_play_button",
                             onClick = { onPlayMain(false) }
                         )
@@ -533,9 +562,14 @@ fun MediaDetailScreen(
                             containerColor = NetflixRed,
                             contentColor = Color.White,
                             focusedBorderColor = NetflixWhite,
-                            focusRequester = if (currentItem.uniqueKey == item.uniqueKey) detailTrailerFocusRequester else null,
+                            focusRequester = detailTrailerFocusRequester,
                             upFocusRequester = topReturnTarget,
                             downFocusRequester = downTargetFromActions,
+                            leftFocusRequester = detailPlayFocusRequester,
+                            onFocusChange = { focused ->
+                                isTrailerButtonFocused = focused
+                                if (focused) isOtherActionFocused = true
+                            },
                             testTag = "detail_watch_trailer_button",
                             onClick = onOpenYouTubeTrailerPopup
                         )
@@ -550,6 +584,9 @@ fun MediaDetailScreen(
                             focusedBorderColor = NetflixWhite,
                             upFocusRequester = topReturnTarget,
                             downFocusRequester = downTargetFromActions,
+                            onFocusChange = { focused ->
+                                if (focused) isOtherActionFocused = true
+                            },
                             testTag = "detail_watchlist_button",
                             onClick = onToggleWatchlist
                         )
@@ -565,6 +602,9 @@ fun MediaDetailScreen(
                                 focusedBorderColor = NetflixWhite,
                                 upFocusRequester = topReturnTarget,
                                 downFocusRequester = downTargetFromActions,
+                                onFocusChange = { focused ->
+                                    if (focused) isOtherActionFocused = true
+                                },
                                 testTag = "detail_restart_button",
                                 onClick = { onPlayMain(true) }
                             )
@@ -862,6 +902,9 @@ private fun DetailRoundActionButton(
     focusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester? = null,
+    leftFocusRequester: FocusRequester? = null,
+    rightFocusRequester: FocusRequester? = null,
+    onFocusChange: ((Boolean) -> Unit)? = null,
     testTag: String,
     onClick: () -> Unit
 ) {
@@ -886,11 +929,14 @@ private fun DetailRoundActionButton(
                 .focusProperties {
                     if (upFocusRequester != null) up = upFocusRequester
                     if (downFocusRequester != null) down = downFocusRequester
+                    if (leftFocusRequester != null) left = leftFocusRequester
+                    if (rightFocusRequester != null) right = rightFocusRequester
                 }
                 .tvFocusableControl(
                     shape = CircleShape,
                     focusedScale = 1.12f,
                     focusedBorderColor = focusedBorderColor,
+                    onFocusChange = onFocusChange,
                     onClick = onClick
                 )
                 .testTag(testTag)

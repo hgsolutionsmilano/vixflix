@@ -212,7 +212,6 @@ fun Modifier.tvFocusableControl(
                             else -> false
                         }
                     }
-                    .focusable(interactionSource = interactionSource)
                     .then(
                         if (onLongClick != null) {
                             Modifier.combinedClickable(
