@@ -45,12 +45,12 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -69,6 +69,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -128,6 +129,9 @@ fun VixFlixAppScreen(
     val continueWatching by viewModel.continueWatching.collectAsStateWithLifecycle()
     val watchlist by viewModel.watchlist.collectAsStateWithLifecycle()
     val streamLang by viewModel.streamLanguage.collectAsStateWithLifecycle()
+    val preferWebPlayer by viewModel.preferWebPlayer.collectAsStateWithLifecycle()
+    val bufferPreset by viewModel.bufferPreset.collectAsStateWithLifecycle()
+    val autoCheckUpdates by viewModel.autoCheckUpdates.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
@@ -136,13 +140,15 @@ fun VixFlixAppScreen(
     val gitHubState by viewModel.gitHubState.collectAsStateWithLifecycle()
 
     var isSearchBarVisible by remember { mutableStateOf(false) }
+    var requestedSettingsCategory by remember { mutableStateOf(SettingsCategory.PLAYBACK) }
+    var requestedSettingsNonce by remember { mutableIntStateOf(0) }
     val heroPlayFocusRequester = remember { FocusRequester() }
     val firstRowFocusRequester = remember { FocusRequester() }
     val navRailSelectedFocusRequester = remember { FocusRequester() }
     val topBarBrandFocusRequester = remember { FocusRequester() }
     val searchInputFocusRequester = remember { FocusRequester() }
     val searchFirstItemFocusRequester = remember { FocusRequester() }
-    val githubFirstControlFocusRequester = remember { FocusRequester() }
+    val settingsFirstControlFocusRequester = remember { FocusRequester() }
     val retryButtonFocusRequester = remember { FocusRequester() }
 
     // Memorizza l'ultimo DetailUiState per animarne l'uscita fluida verso il basso senza scatti
@@ -156,7 +162,7 @@ fun VixFlixAppScreen(
     val isCatalogInteractive = !isDetailVisible && !isPlayerVisible
 
     val tabContentEntryFocusRequester: FocusRequester? = when (selectedTab) {
-        NavTab.GITHUB -> githubFirstControlFocusRequester
+        NavTab.SETTINGS -> settingsFirstControlFocusRequester
         NavTab.MY_LIST -> firstRowFocusRequester
         else -> when (catalogState) {
             is CatalogUiState.Error -> retryButtonFocusRequester
@@ -211,7 +217,11 @@ fun VixFlixAppScreen(
         state = gitHubState,
         onDismiss = viewModel::dismissUpdateDialog,
         onConfirmUpdate = { viewModel.performInAppUpdate(context) },
-        onOpenGitHubTab = { viewModel.selectTab(NavTab.GITHUB) }
+        onOpenGitHubTab = {
+            requestedSettingsCategory = SettingsCategory.UPDATES
+            requestedSettingsNonce++
+            viewModel.selectTab(NavTab.SETTINGS)
+        }
     )
 
     val navItems = remember {
@@ -221,7 +231,7 @@ fun VixFlixAppScreen(
             Triple(NavTab.MOVIES, "Film", Icons.Default.Movie),
             Triple(NavTab.NEW_POPULAR, "Top & Nuovi", Icons.Default.NewReleases),
             Triple(NavTab.MY_LIST, "La Mia Lista", Icons.Default.BookmarkBorder),
-            Triple(NavTab.GITHUB, "GitHub CI", Icons.Default.CloudDownload)
+            Triple(NavTab.SETTINGS, "Impostazioni", Icons.Default.Settings)
         )
     }
 
@@ -440,15 +450,30 @@ fun VixFlixAppScreen(
                                     end = 16.dp
                                 )
                             )
-                        } else if (currentSection.tab == NavTab.GITHUB) {
-                            GitHubUpdateSectionScreen(
-                                state = gitHubState,
+                        } else if (currentSection.tab == NavTab.SETTINGS) {
+                            SettingsScreen(
+                                gitHubState = gitHubState,
+                                streamLang = streamLang,
+                                preferWebPlayer = preferWebPlayer,
+                                bufferPreset = bufferPreset,
+                                autoCheckUpdates = autoCheckUpdates,
+                                continueWatchingCount = continueWatching.size,
+                                watchlistCount = watchlist.size,
+                                isTvLayout = useTvNavigationRail,
+                                requestedCategory = requestedSettingsCategory,
+                                requestedCategoryNonce = requestedSettingsNonce,
+                                onSelectStreamLang = viewModel::setStreamLanguage,
+                                onSetPreferWebPlayer = viewModel::setPreferWebPlayer,
+                                onSelectBufferPreset = viewModel::setBufferPreset,
+                                onSetAutoCheckUpdates = viewModel::setAutoCheckUpdates,
+                                onRefreshCatalog = viewModel::loadCatalog,
+                                onClearContinueWatching = viewModel::clearAllContinueWatching,
                                 onRepoSlugChange = viewModel::updateGitHubRepoSlug,
                                 onCheckUpdates = { slug -> viewModel.checkForGitHubUpdates(slug, showPopupIfAvailable = false) },
                                 onTriggerUpdate = { viewModel.performInAppUpdate(context) },
                                 onUpdateTmdbKey = viewModel::updateTmdbApiKey,
                                 onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
-                                firstControlFocusRequester = githubFirstControlFocusRequester,
+                                firstControlFocusRequester = settingsFirstControlFocusRequester,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = topBarBrandFocusRequester,
                                 contentPadding = PaddingValues(
@@ -612,7 +637,9 @@ fun VixFlixAppScreen(
                             if (gitHubState.releaseInfo?.isUpdateAvailable == true) {
                                 viewModel.openUpdateDialog()
                             } else {
-                                viewModel.selectTab(NavTab.GITHUB)
+                                requestedSettingsCategory = SettingsCategory.UPDATES
+                                requestedSettingsNonce++
+                                viewModel.selectTab(NavTab.SETTINGS)
                             }
                         },
                         isTvLayout = useTvNavigationRail,
@@ -647,6 +674,7 @@ fun VixFlixAppScreen(
                     state = currentDetail,
                     savedProgress = savedEntry,
                     isInWatchlist = inList,
+                    bufferPreset = bufferPreset,
                     isInteractive = isDetailVisible && !isPlayerVisible,
                     onClose = viewModel::closeDetails,
                     onPlayMain = { restartFromZero ->
@@ -697,6 +725,7 @@ fun VixFlixAppScreen(
                 VixPlayerScreen(
                     session = activeSession,
                     streamLang = streamLang,
+                    bufferPreset = bufferPreset,
                     vixSrcResolver = viewModel.repository.vixSrcResolver,
                     onDynamicHlsFound = viewModel::onDynamicHlsIntercepted,
                     onTogglePlayerMode = viewModel::togglePlayerMode,

@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppPreferences
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -36,7 +37,7 @@ enum class NavTab(val label: String) {
     MOVIES("Film"),
     NEW_POPULAR("Nuovi & Popolari"),
     MY_LIST("La Mia Lista"),
-    GITHUB("GitHub Update")
+    SETTINGS("Impostazioni")
 }
 
 sealed interface CatalogUiState {
@@ -119,6 +120,15 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
 
     val streamLanguage: StateFlow<String> = preferences.streamLanguageFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "it")
+
+    val preferWebPlayer: StateFlow<Boolean> = preferences.preferWebPlayerFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    val autoCheckUpdates: StateFlow<Boolean> = preferences.autoCheckUpdatesFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    val bufferPreset: StateFlow<StreamingBufferPreset> = preferences.bufferPresetFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StreamingBufferPreset.DEFAULT)
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -464,6 +474,7 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                 seasonEpisodes = seasonEpisodes,
                 startPositionMs = startPosMs,
                 isResolvingStream = true,
+                forceWebPlayer = preferWebPlayer.value,
                 resolvedStream = ResolvedStream(
                     streamUrl = initialEmbedUrl,
                     embedUrl = initialEmbedUrl,
@@ -608,6 +619,12 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun clearAllContinueWatching() {
+        viewModelScope.launch {
+            repository.clearAllContinueWatching()
+        }
+    }
+
     fun toggleWatchlist(item: MediaItem) {
         viewModelScope.launch {
             val isInList = watchlist.value.any { it.id == item.uniqueKey }
@@ -631,6 +648,24 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun setPreferWebPlayer(preferWeb: Boolean) {
+        viewModelScope.launch {
+            preferences.setPreferWebPlayer(preferWeb)
+        }
+    }
+
+    fun setAutoCheckUpdates(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setAutoCheckUpdates(enabled)
+        }
+    }
+
+    fun setBufferPreset(preset: StreamingBufferPreset) {
+        viewModelScope.launch {
+            preferences.setBufferPreset(preset)
+        }
+    }
+
     private fun initGitHubUpdateChecker() {
         val rawPreview = TmdbApiConfig.readBundledJsonPreview(getApplication())
         _gitHubState.value = _gitHubState.value.copy(
@@ -641,12 +676,13 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
             val savedTmdbKey = preferences.tmdbApiKeyFlow.first()
             TmdbApiConfig.updateApiKey(savedTmdbKey)
             val savedRepo = preferences.githubRepoFlow.first()
+            val shouldAutoCheck = preferences.autoCheckUpdatesFlow.first()
             _gitHubState.value = _gitHubState.value.copy(
                 repoSlug = savedRepo,
                 tmdbApiKey = TmdbApiConfig.currentApiKey,
                 bundledConfigJson = rawPreview
             )
-            if (savedRepo.isNotBlank()) {
+            if (shouldAutoCheck && savedRepo.isNotBlank()) {
                 checkForGitHubUpdates(savedRepo, showPopupIfAvailable = true)
             }
         }

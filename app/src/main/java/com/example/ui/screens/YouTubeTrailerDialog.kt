@@ -124,6 +124,7 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
+import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.YouTubeTrailerCandidate
@@ -157,6 +158,7 @@ import okhttp3.OkHttpClient
 fun YouTubeTrailerDialog(
     mediaItem: MediaItem,
     trailerState: TrailerPlaybackState,
+    bufferPreset: StreamingBufferPreset = StreamingBufferPreset.DEFAULT,
     onSelectTrailer: (YouTubeTrailerCandidate) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit
@@ -206,8 +208,9 @@ fun YouTubeTrailerDialog(
         factory
     }
 
-    val exoPlayer = remember(context) {
+    val exoPlayer = remember(context, bufferPreset) {
         ExoPlayer.Builder(context)
+            .setLoadControl(bufferPreset.toExoLoadControl())
             .setSeekBackIncrementMs(10_000L)
             .setSeekForwardIncrementMs(10_000L)
             .build()

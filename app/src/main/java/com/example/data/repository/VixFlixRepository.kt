@@ -312,6 +312,10 @@ class VixFlixRepository(
         dao.deleteWatchProgress(id)
     }
 
+    suspend fun clearAllContinueWatching() {
+        dao.clearAllWatchProgress()
+    }
+
     suspend fun toggleWatchlist(item: MediaItem, currentlyInList: Boolean) {
         val key = item.uniqueKey
         if (currentlyInList) {

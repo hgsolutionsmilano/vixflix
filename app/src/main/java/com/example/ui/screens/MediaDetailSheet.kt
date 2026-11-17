@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbCastMemberDto
@@ -111,6 +112,7 @@ fun MediaDetailScreen(
     state: DetailUiState,
     savedProgress: WatchProgressEntity?,
     isInWatchlist: Boolean,
+    bufferPreset: StreamingBufferPreset = StreamingBufferPreset.DEFAULT,
     isInteractive: Boolean = true,
     onClose: () -> Unit,
     onPlayMain: (restartFromZero: Boolean) -> Unit,
@@ -695,6 +697,7 @@ fun MediaDetailScreen(
             YouTubeTrailerDialog(
                 mediaItem = item,
                 trailerState = currentTrailerState,
+                bufferPreset = bufferPreset,
                 onSelectTrailer = onSelectYouTubeTrailer,
                 onRetry = onRetryYouTubeTrailer,
                 onClose = onCloseTrailer

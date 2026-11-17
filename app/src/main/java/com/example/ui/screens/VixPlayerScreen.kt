@@ -93,11 +93,14 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.ui.PlaybackSession
@@ -116,10 +119,26 @@ import com.example.ui.theme.NetflixWhite
 import kotlinx.coroutines.delay
 
 @OptIn(UnstableApi::class)
+internal fun StreamingBufferPreset.toExoLoadControl(): DefaultLoadControl {
+    return DefaultLoadControl.Builder()
+        .setAllocator(DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE))
+        .setBufferDurationsMs(
+            minBufferMs,
+            maxBufferMs,
+            bufferForPlaybackMs,
+            bufferForPlaybackAfterRebufferMs
+        )
+        .setTargetBufferBytes(targetBufferBytes)
+        .setPrioritizeTimeOverSizeThresholds(false)
+        .build()
+}
+
+@OptIn(UnstableApi::class)
 @Composable
 fun VixPlayerScreen(
     session: PlaybackSession,
     streamLang: String,
+    bufferPreset: StreamingBufferPreset = StreamingBufferPreset.DEFAULT,
     vixSrcResolver: VixSrcStreamResolver,
     onDynamicHlsFound: (String) -> Unit,
     onTogglePlayerMode: (Boolean) -> Unit,
@@ -166,8 +185,9 @@ fun VixPlayerScreen(
             .setDefaultRequestProperties(headers)
     }
 
-    val exoPlayer = remember(context) {
+    val exoPlayer = remember(context, bufferPreset) {
         ExoPlayer.Builder(context)
+            .setLoadControl(bufferPreset.toExoLoadControl())
             .setSeekBackIncrementMs(10_000L)
             .setSeekForwardIncrementMs(10_000L)
             .build()
