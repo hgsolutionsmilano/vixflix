@@ -785,108 +785,51 @@ private fun InAppTrailerPlayerOverlay(
 ) {
     val context = LocalContext.current
     val resolved = trailerState.resolvedTrailer
+    val activeSourceLabel = resolved?.sourceLabel ?: "${trailerState.video.typeBadge} • ${trailerState.video.name}"
 
-    // Stato dinamico dello stream attivo (con switch automatico su fallback VixSrc HD in caso di errore)
-    var usingFallbackStream by remember(trailerState.video.id, resolved?.streamUrl) {
-        mutableStateOf(false)
-    }
-    val activeStreamUrl = if (usingFallbackStream && !resolved?.fallbackVixStreamUrl.isNullOrBlank()) {
-        resolved?.fallbackVixStreamUrl
-    } else {
-        resolved?.streamUrl
-    }
-    val activeIsHls = if (usingFallbackStream) true else (resolved?.isHls ?: true)
-    val activeUseVixInterceptor = if (usingFallbackStream) true else (resolved?.useVixSrcInterceptor ?: false)
-    val activeUserAgent = if (usingFallbackStream) {
-        resolved?.fallbackUserAgent ?: "Mozilla/5.0"
-    } else {
-        resolved?.userAgent ?: "Mozilla/5.0"
-    }
-    val activeReferer = if (usingFallbackStream) {
-        resolved?.fallbackReferer ?: "https://vixsrc.to/"
-    } else {
-        resolved?.referer ?: "https://www.youtube.com/"
-    }
-    val activeSourceLabel = if (usingFallbackStream) {
-        "${trailerState.video.typeBadge} • Anteprima Video HD (${trailerState.video.name})"
-    } else {
-        resolved?.sourceLabel ?: "${trailerState.video.typeBadge} • ${trailerState.video.name}"
-    }
-
-    var isBuffering by remember(trailerState.video.id, activeStreamUrl) { mutableStateOf(true) }
+    var isBuffering by remember(trailerState.video.id) { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(true) }
     var currentPosMs by remember(trailerState.video.id) { mutableLongStateOf(0L) }
     var durationMs by remember(trailerState.video.id) { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
-    var pendingSeekMs by remember(trailerState.video.id, activeStreamUrl) {
-        mutableLongStateOf(
-            if (usingFallbackStream) {
-                resolved?.fallbackClipStartMs ?: 180_000L
-            } else {
-                resolved?.clipStartMs ?: 0L
-            }
-        )
-    }
+    var hasSeekedInitial by remember(trailerState.video.id, resolved?.streamUrl) { mutableStateOf(false) }
     var playbackError by remember(trailerState.video.id, trailerState.errorMessage) {
         mutableStateOf(trailerState.errorMessage)
     }
 
-    // Client OkHttp pulito per stream esterni (YouTube / Apple Preview) per non inviare header VixSrc che causano 403
-    val directOkHttpClient = remember {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(25, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
-    }
-
-    val okHttpDataSourceFactory = remember(
-        vixSrcResolver,
-        directOkHttpClient,
-        activeUseVixInterceptor,
-        activeReferer,
-        activeUserAgent
-    ) {
-        if (activeUseVixInterceptor) {
-            val headers = mapOf(
-                "Referer" to activeReferer,
-                "Origin" to "https://vixsrc.to"
-            )
-            OkHttpDataSource.Factory(vixSrcResolver.exoOkHttpClient)
-                .setUserAgent(activeUserAgent)
-                .setDefaultRequestProperties(headers)
-        } else {
-            val headers = mapOf(
-                "Referer" to activeReferer
-            )
-            OkHttpDataSource.Factory(directOkHttpClient)
-                .setUserAgent(activeUserAgent)
-                .setDefaultRequestProperties(headers)
-        }
+    val okHttpDataSourceFactory = remember(vixSrcResolver, resolved?.referer, resolved?.userAgent) {
+        val headers = mapOf(
+            "Referer" to (resolved?.referer ?: "https://vixsrc.to/"),
+            "Origin" to "https://vixsrc.to"
+        )
+        OkHttpDataSource.Factory(vixSrcResolver.exoOkHttpClient)
+            .setUserAgent(resolved?.userAgent ?: "Mozilla/5.0")
+            .setDefaultRequestProperties(headers)
     }
 
     val exoPlayer = remember(context) {
         ExoPlayer.Builder(context)
+            .setSeekBackIncrementMs(10_000L)
+            .setSeekForwardIncrementMs(10_000L)
             .build()
             .apply {
                 playWhenReady = true
             }
     }
 
-    LaunchedEffect(activeStreamUrl, trailerState.isLoading, okHttpDataSourceFactory) {
-        if (trailerState.isLoading || activeStreamUrl.isNullOrBlank()) return@LaunchedEffect
+    LaunchedEffect(resolved?.streamUrl, trailerState.isLoading) {
+        if (trailerState.isLoading || resolved == null || resolved.streamUrl.isBlank()) return@LaunchedEffect
         playbackError = null
         isBuffering = true
 
-        val uri = Uri.parse(activeStreamUrl)
+        val uri = Uri.parse(resolved.streamUrl)
         val itemBuilder = ExoMediaItem.Builder().setUri(uri)
-        if (activeIsHls) {
+        if (resolved.isHls) {
             itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
         }
 
-        val mediaSource = if (activeIsHls) {
+        val mediaSource = if (resolved.isHls) {
             HlsMediaSource.Factory(okHttpDataSourceFactory)
                 .setAllowChunklessPreparation(true)
                 .createMediaSource(itemBuilder.build())
@@ -896,6 +839,10 @@ private fun InAppTrailerPlayerOverlay(
         }
 
         exoPlayer.setMediaSource(mediaSource)
+        if (resolved.clipStartMs > 0L && !hasSeekedInitial) {
+            exoPlayer.seekTo(resolved.clipStartMs)
+            hasSeekedInitial = true
+        }
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
     }
@@ -909,6 +856,9 @@ private fun InAppTrailerPlayerOverlay(
             if (dur > 0L) {
                 durationMs = dur
             }
+            if (exoPlayer.isPlaying && isBuffering) {
+                isBuffering = false
+            }
         }
     }
 
@@ -919,39 +869,28 @@ private fun InAppTrailerPlayerOverlay(
         }
     }
 
-    DisposableEffect(exoPlayer, resolved) {
+    DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
                     playbackError = null
+                    isBuffering = false
                     val dur = exoPlayer.duration
                     if (dur > 0L) {
                         durationMs = dur
-                    }
-                    // Esegue il seek all'inizio della scena solo dopo che il flusso è STATE_READY
-                    if (pendingSeekMs > 0L) {
-                        val targetSeek = if (dur > 0L && pendingSeekMs >= dur) {
-                            (dur / 3L).coerceAtLeast(30_000L)
-                        } else {
-                            pendingSeekMs
-                        }
-                        pendingSeekMs = 0L
-                        exoPlayer.seekTo(targetSeek)
                     }
                 }
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                if (playing) {
+                    isBuffering = false
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                // Se lo stream primario fallisce, passa automaticamente al flusso HD VixSrc senza bloccare l'utente
-                if (!usingFallbackStream && !resolved?.fallbackVixStreamUrl.isNullOrBlank()) {
-                    usingFallbackStream = true
-                    return
-                }
                 isBuffering = false
                 showControls = true
                 playbackError = "Impossibile riprodurre questo trailer (${error.errorCodeName})."
