@@ -49,8 +49,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,7 +56,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -75,10 +72,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -379,158 +378,93 @@ fun MediaDetailScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                    // Pulsante primario Riproduci / Riprendi (con startAt passato a vixsrc.to)
-                    Button(
-                        onClick = { onPlayMain(false) },
-                        shape = RoundedCornerShape(6.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NetflixWhite,
-                            contentColor = NetflixBlack
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .then(
-                                if (currentItem.uniqueKey == item.uniqueKey) {
-                                    Modifier.focusRequester(detailPlayFocusRequester)
-                                } else {
-                                    Modifier
-                                }
-                            )
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(6.dp),
-                                focusedScale = 1.03f,
-                                focusedBorderColor = NetflixRed
-                            )
-                            .testTag("detail_play_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val playLabel = if (savedProgress != null && savedProgress.startSeconds > 0L) {
-                            val epPrefix = if (savedProgress.seasonNumber != null && savedProgress.episodeNumber != null) {
-                                "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} "
-                            } else ""
-                            "Riprendi ${epPrefix}da ${savedProgress.startMinutes} min (${formatSecondsToMmSs(savedProgress.startSeconds)})"
-                        } else if (currentItem.isSeries) {
-                            "Riproduci S1:E1"
-                        } else {
-                            "Riproduci Ora"
-                        }
-                        Text(
-                            text = playLabel,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                    val hasResumeProgress = savedProgress != null && savedProgress.startSeconds > 0L
+                    val playActionDesc = if (hasResumeProgress) {
+                        val epPrefix = if (savedProgress?.seasonNumber != null && savedProgress.episodeNumber != null) {
+                            "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} "
+                        } else ""
+                        "Riprendi ${epPrefix}da ${savedProgress?.startMinutes} min"
+                    } else if (currentItem.isSeries) {
+                        "Riproduci S1:E1"
+                    } else {
+                        "Riproduci Ora"
                     }
 
-                    // Pulsante rapido per cercare e guardare i Trailer direttamente da YouTube nel popup 16:9
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = onOpenYouTubeTrailerPopup,
-                        shape = RoundedCornerShape(6.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NetflixRed,
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp)
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(6.dp),
-                                focusedScale = 1.03f,
-                                focusedBorderColor = NetflixWhite
-                            )
-                            .testTag("detail_watch_trailer_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SmartDisplay,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Guarda Trailer su YouTube",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    val watchlistBg by animateColorAsState(
+                        targetValue = if (isInWatchlist) NetflixMatchGreen.copy(alpha = 0.22f) else NetflixCardSurface,
+                        animationSpec = tween(220),
+                        label = "detailWatchlistBg"
+                    )
+                    val watchlistBorder by animateColorAsState(
+                        targetValue = if (isInWatchlist) NetflixMatchGreen else NetflixElevatedSurface,
+                        animationSpec = tween(220),
+                        label = "detailWatchlistBorder"
+                    )
+                    val watchlistTint by animateColorAsState(
+                        targetValue = if (isInWatchlist) NetflixMatchGreen else NetflixWhite,
+                        animationSpec = tween(220),
+                        label = "detailWatchlistTint"
+                    )
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
+                    // Riga unica con icone rotonde: Riproduci, Trailer YouTube, La Mia Lista (+ Dall'inizio se presente)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(if (hasResumeProgress) 18.dp else 24.dp),
+                        verticalAlignment = Alignment.Top
                     ) {
-                        if (savedProgress != null && savedProgress.startSeconds > 0L) {
-                            OutlinedButton(
-                                onClick = { onPlayMain(true) },
-                                shape = RoundedCornerShape(6.dp),
-                                border = BorderStroke(1.dp, NetflixElevatedSurface),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = NetflixCardSurface,
-                                    contentColor = NetflixWhite
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(44.dp)
-                                    .tvFocusableControl(
-                                        shape = RoundedCornerShape(6.dp),
-                                        focusedScale = 1.03f
-                                    )
-                                    .testTag("detail_restart_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Replay,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Dall'inizio",
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                        }
+                        DetailRoundActionButton(
+                            icon = Icons.Default.PlayArrow,
+                            label = if (hasResumeProgress) "Riprendi" else "Riproduci",
+                            contentDescription = playActionDesc,
+                            containerColor = NetflixWhite,
+                            contentColor = NetflixBlack,
+                            focusedBorderColor = NetflixRed,
+                            focusRequester = if (currentItem.uniqueKey == item.uniqueKey) detailPlayFocusRequester else null,
+                            testTag = "detail_play_button",
+                            onClick = { onPlayMain(false) }
+                        )
 
-                        OutlinedButton(
-                            onClick = onToggleWatchlist,
-                            shape = RoundedCornerShape(6.dp),
-                            border = BorderStroke(1.dp, NetflixElevatedSurface),
-                            colors = ButtonDefaults.outlinedButtonColors(
+                        DetailRoundActionButton(
+                            icon = Icons.Default.SmartDisplay,
+                            label = "Trailer",
+                            contentDescription = "Guarda Trailer su YouTube",
+                            containerColor = NetflixRed,
+                            contentColor = Color.White,
+                            focusedBorderColor = NetflixWhite,
+                            testTag = "detail_watch_trailer_button",
+                            onClick = onOpenYouTubeTrailerPopup
+                        )
+
+                        DetailRoundActionButton(
+                            icon = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
+                            label = if (isInWatchlist) "Nella lista" else "La mia lista",
+                            contentDescription = if (isInWatchlist) "Rimuovi dalla Mia Lista" else "Aggiungi alla Lista",
+                            containerColor = watchlistBg,
+                            contentColor = watchlistTint,
+                            borderColor = watchlistBorder,
+                            focusedBorderColor = NetflixWhite,
+                            testTag = "detail_watchlist_button",
+                            onClick = onToggleWatchlist
+                        )
+
+                        if (hasResumeProgress) {
+                            DetailRoundActionButton(
+                                icon = Icons.Default.Replay,
+                                label = "Dall'inizio",
+                                contentDescription = "Riproduci dall'inizio",
                                 containerColor = NetflixCardSurface,
-                                contentColor = NetflixWhite
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                                .tvFocusableControl(
-                                    shape = RoundedCornerShape(6.dp),
-                                    focusedScale = 1.03f
-                                )
-                                .testTag("detail_watchlist_button")
-                        ) {
-                            Icon(
-                                imageVector = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (isInWatchlist) "Nella Mia Lista" else "Aggiungi alla Lista",
-                                style = MaterialTheme.typography.labelLarge
+                                contentColor = NetflixWhite,
+                                borderColor = NetflixElevatedSurface,
+                                focusedBorderColor = NetflixWhite,
+                                testTag = "detail_restart_button",
+                                onClick = { onPlayMain(true) }
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     if (currentItem.overview.isNotBlank()) {
                         Text(
@@ -766,6 +700,69 @@ fun MediaDetailScreen(
                 onClose = onCloseTrailer
             )
         }
+    }
+}
+
+@Composable
+private fun DetailRoundActionButton(
+    icon: ImageVector,
+    label: String,
+    contentDescription: String,
+    containerColor: Color,
+    contentColor: Color,
+    borderColor: Color = Color.Transparent,
+    focusedBorderColor: Color = NetflixWhite,
+    focusRequester: FocusRequester? = null,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(68.dp)
+    ) {
+        Surface(
+            color = containerColor,
+            shape = CircleShape,
+            border = if (borderColor != Color.Transparent) BorderStroke(1.dp, borderColor) else null,
+            shadowElevation = 6.dp,
+            modifier = Modifier
+                .size(56.dp)
+                .then(
+                    if (focusRequester != null) {
+                        Modifier.focusRequester(focusRequester)
+                    } else {
+                        Modifier
+                    }
+                )
+                .tvFocusableControl(
+                    shape = CircleShape,
+                    focusedScale = 1.12f,
+                    focusedBorderColor = focusedBorderColor,
+                    onClick = onClick
+                )
+                .testTag(testTag)
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = contentDescription,
+                    tint = contentColor,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = NetflixLightGray,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
