@@ -1,11 +1,16 @@
 package com.example.data.remote
 
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import com.example.BuildConfig
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -29,6 +34,13 @@ data class GitHubReleaseInfo(
 class GitHubUpdateService(
     private val okHttpClient: OkHttpClient
 ) {
+    private val downloadHttpClient: OkHttpClient = okHttpClient.newBuilder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
     /**
      * Controlla la presenza di una nuova versione su GitHub Releases per il repository specificato (`owner/repo`).
      */
@@ -146,33 +158,135 @@ class GitHubUpdateService(
     }
 
     /**
-     * Avvia il download dell'APK della nuova release tramite DownloadManager di sistema
-     * e apre il link della release per l'aggiornamento immediato.
+     * Scarica automaticamente in background il file APK della nuova release,
+     * emettendo l'avanzamento in tempo reale e restituendo il File pronto per l'installazione.
      */
-    fun triggerInAppUpdate(context: Context, release: GitHubReleaseInfo): Long? {
+    suspend fun downloadReleaseApkInBackground(
+        context: Context,
+        release: GitHubReleaseInfo,
+        onProgress: (downloadedBytes: Long, totalBytes: Long, progressFraction: Float) -> Unit
+    ): Result<File> = withContext(Dispatchers.IO) {
+        val downloadUrl = release.apkDownloadUrl
+            ?: return@withContext Result.failure(
+                IllegalStateException("Nessun file APK allegato alla release ${release.tagName}.")
+            )
+
+        runCatching {
+            val safeFileName = (release.apkFileName ?: "VixFlix-${release.tagName}.apk")
+                .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            val targetDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: File(context.cacheDir, "updates").apply { mkdirs() }
+            if (!targetDir.exists()) {
+                targetDir.mkdirs()
+            }
+
+            val destinationFile = File(targetDir, safeFileName)
+            val tempFile = File(targetDir, "$safeFileName.part")
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+
+            val request = Request.Builder()
+                .url(downloadUrl)
+                .header("User-Agent", "VixFlix-Android/${BuildConfig.VERSION_NAME}")
+                .header("Accept", "application/octet-stream, application/vnd.android.package-archive, */*")
+                .build()
+
+            downloadHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("Errore download APK da GitHub (HTTP ${response.code})")
+                }
+                val body = response.body ?: throw IllegalStateException("Corpo APK vuoto durante il download")
+                val expectedBytes = body.contentLength().takeIf { it > 0L } ?: release.apkSizeBytes
+
+                body.byteStream().use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(16 * 1024)
+                        var downloaded = 0L
+                        var lastReported = 0L
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            if (downloaded - lastReported >= 64 * 1024 || downloaded == expectedBytes) {
+                                lastReported = downloaded
+                                val fraction = if (expectedBytes > 0L) {
+                                    (downloaded.toFloat() / expectedBytes.toFloat()).coerceIn(0f, 1f)
+                                } else {
+                                    0.5f
+                                }
+                                onProgress(downloaded, expectedBytes, fraction)
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+            }
+
+            if (destinationFile.exists()) {
+                destinationFile.delete()
+            }
+            if (!tempFile.renameTo(destinationFile)) {
+                tempFile.copyTo(destinationFile, overwrite = true)
+                tempFile.delete()
+            }
+
+            onProgress(destinationFile.length(), destinationFile.length(), 1f)
+            destinationFile
+        }
+    }
+
+    /**
+     * Avvia immediatamente il processo di installazione/aggiornamento Android per l'APK scaricato.
+     */
+    fun launchApkInstaller(context: Context, apkFile: File): Boolean {
+        return runCatching {
+            if (!apkFile.exists()) return false
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    val permissionIntent = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${context.packageName}")
+                    ).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(permissionIntent)
+                    return true
+                }
+            }
+
+            val apkUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                apkFile
+            )
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(installIntent)
+            true
+        }.getOrElse {
+            false
+        }
+    }
+
+    /**
+     * Fallback o apertura manuale se il file locale non è ancora presente.
+     */
+    fun triggerInAppUpdate(context: Context, release: GitHubReleaseInfo, downloadedFile: File? = null) {
+        if (downloadedFile != null && downloadedFile.exists()) {
+            if (launchApkInstaller(context, downloadedFile)) return
+        }
         val targetUrl = release.apkDownloadUrl ?: release.htmlUrl
-        val fileName = release.apkFileName ?: "VixFlix-${release.tagName}.apk"
-
-        val downloadId = runCatching {
-            if (release.apkDownloadUrl != null) {
-                val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                val request = DownloadManager.Request(Uri.parse(release.apkDownloadUrl))
-                    .setTitle("Aggiornamento VixFlix ${release.tagName}")
-                    .setDescription("Download di $fileName da GitHub Releases…")
-                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    .setMimeType("application/vnd.android.package-archive")
-                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-                dm.enqueue(request)
-            } else null
-        }.getOrNull()
-
         runCatching {
             val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(viewIntent)
         }
-
-        return downloadId
     }
 }

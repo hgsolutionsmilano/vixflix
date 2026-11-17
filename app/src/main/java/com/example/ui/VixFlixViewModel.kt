@@ -19,6 +19,7 @@ import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbVideoDto
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
+import java.io.File
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,6 +84,12 @@ data class GitHubUpdateUiState(
     val repoSlug: String = "",
     val isChecking: Boolean = false,
     val releaseInfo: GitHubReleaseInfo? = null,
+    val isDownloadingApk: Boolean = false,
+    val downloadProgress: Float = 0f,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val downloadedApkPath: String? = null,
+    val autoInstallTriggered: Boolean = false,
     val errorMessage: String? = null,
     val showUpdateDialog: Boolean = false,
     val tmdbApiKey: String = TmdbApiConfig.INTEGRATED_TMDB_API_KEY,
@@ -583,6 +590,8 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private var apkDownloadJob: Job? = null
+
     fun checkForGitHubUpdates(repoSlug: String = _gitHubState.value.repoSlug, showPopupIfAvailable: Boolean = true) {
         val cleaned = repoSlug.trim().removePrefix("https://github.com/").removeSuffix(".git").trim('/')
         if (cleaned.isBlank()) {
@@ -608,11 +617,65 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                         errorMessage = null,
                         showUpdateDialog = showPopupIfAvailable && info.isUpdateAvailable
                     )
+                    // Se è stata trovata una nuova versione con APK allegato, avvia automaticamente
+                    // il download in background e l'installazione appena terminato il download
+                    if (info.isUpdateAvailable && !info.apkDownloadUrl.isNullOrBlank()) {
+                        startBackgroundApkDownloadAndInstall(info)
+                    }
                 },
                 onFailure = { err ->
                     _gitHubState.value = _gitHubState.value.copy(
                         isChecking = false,
                         errorMessage = err.localizedMessage ?: "Impossibile verificare le release su GitHub."
+                    )
+                }
+            )
+        }
+    }
+
+    fun startBackgroundApkDownloadAndInstall(release: GitHubReleaseInfo) {
+        if (_gitHubState.value.isDownloadingApk) return
+        apkDownloadJob?.cancel()
+        apkDownloadJob = viewModelScope.launch {
+            _gitHubState.value = _gitHubState.value.copy(
+                isDownloadingApk = true,
+                downloadProgress = 0f,
+                downloadedBytes = 0L,
+                totalBytes = release.apkSizeBytes,
+                autoInstallTriggered = false,
+                errorMessage = null
+            )
+
+            val downloadResult = repository.gitHubUpdateService.downloadReleaseApkInBackground(
+                context = getApplication(),
+                release = release,
+                onProgress = { downloaded, total, fraction ->
+                    _gitHubState.value = _gitHubState.value.copy(
+                        isDownloadingApk = true,
+                        downloadedBytes = downloaded,
+                        totalBytes = total,
+                        downloadProgress = fraction
+                    )
+                }
+            )
+
+            downloadResult.fold(
+                onSuccess = { apkFile ->
+                    _gitHubState.value = _gitHubState.value.copy(
+                        isDownloadingApk = false,
+                        downloadProgress = 1f,
+                        downloadedBytes = apkFile.length(),
+                        totalBytes = apkFile.length(),
+                        downloadedApkPath = apkFile.absolutePath,
+                        autoInstallTriggered = true
+                    )
+                    // Avvia automaticamente il processo di aggiornamento di sistema appena terminato il download
+                    repository.gitHubUpdateService.launchApkInstaller(getApplication(), apkFile)
+                },
+                onFailure = { err ->
+                    _gitHubState.value = _gitHubState.value.copy(
+                        isDownloadingApk = false,
+                        errorMessage = err.localizedMessage ?: "Errore durante il download in background dell'APK."
                     )
                 }
             )
@@ -628,7 +691,20 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun performInAppUpdate(context: Context) {
-        val release = _gitHubState.value.releaseInfo ?: return
-        repository.gitHubUpdateService.triggerInAppUpdate(context, release)
+        val state = _gitHubState.value
+        val release = state.releaseInfo ?: return
+        val existingPath = state.downloadedApkPath
+        if (!existingPath.isNullOrBlank()) {
+            val file = File(existingPath)
+            if (file.exists()) {
+                repository.gitHubUpdateService.launchApkInstaller(context, file)
+                return
+            }
+        }
+        if (!release.apkDownloadUrl.isNullOrBlank()) {
+            startBackgroundApkDownloadAndInstall(release)
+        } else {
+            repository.gitHubUpdateService.triggerInAppUpdate(context, release)
+        }
     }
 }
