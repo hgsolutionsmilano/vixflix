@@ -1,5 +1,6 @@
 package com.example.data.remote
 
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -7,7 +8,20 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
+
+data class YouTubeTrailerCandidate(
+    val videoId: String,
+    val title: String,
+    val channelName: String,
+    val durationText: String,
+    val durationSeconds: Int,
+    val languageLabel: String, // "ITA" oppure "ENG"
+    val thumbnailUrl: String = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+) {
+    val watchUrl: String get() = "https://www.youtube.com/watch?v=$videoId"
+}
 
 data class ResolvedTrailerStream(
     val video: TmdbVideoDto,
@@ -22,8 +36,8 @@ data class ResolvedTrailerStream(
 )
 
 /**
- * Risolve esclusivamente i trailer ufficiali recuperati dagli endpoint video di TMDB
- * (`/movie/{id}/videos` e `/tv/{id}/videos`) tramite YouTube o Vimeo.
+ * Cerca e risolve i trailer ufficiali direttamente da YouTube (con priorità Italiano, poi Inglese/Originale),
+ * mantenendo la compatibilità con gli ID YouTube/Vimeo da TMDB.
  *
  * Non effettua alcun fallback su sorgenti diverse (es. film completo su VixSrc):
  * se il trailer non è disponibile o non è riproducibile, restituisce un errore esplicito.
@@ -39,6 +53,77 @@ class TmdbTrailerResolver(
         .followSslRedirects(true)
         .build()
 
+    /**
+     * Esegue una ricerca diretta su YouTube per il titolo selezionato:
+     * 1) Prima cerca trailer in Italiano (`trailer ufficiale ita`)
+     * 2) Integra trailer ufficiali in Inglese / lingua originale (`official trailer`)
+     * Restituisce una lista deduplicata ordinata per lingua (ITA prima) e pertinenza.
+     */
+    suspend fun searchYouTubeTrailers(item: MediaItem): Result<List<YouTubeTrailerCandidate>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val baseTitle = item.title.trim()
+                if (baseTitle.isBlank()) {
+                    throw IllegalStateException("Titolo non valido per la ricerca trailer su YouTube.")
+                }
+                val yearToken = item.releaseYear.takeIf { it.length == 4 }?.let { " $it" }.orEmpty()
+                val itaQuery = "$baseTitle$yearToken trailer ufficiale ita"
+                val engQuery = "$baseTitle$yearToken official trailer"
+
+                val itaResults = queryYouTubeSearch(
+                    query = itaQuery,
+                    hl = "it",
+                    gl = "IT",
+                    defaultLangLabel = "ITA",
+                    movieTitle = baseTitle
+                )
+                val engResults = queryYouTubeSearch(
+                    query = engQuery,
+                    hl = "en",
+                    gl = "US",
+                    defaultLangLabel = "ENG",
+                    movieTitle = baseTitle
+                )
+
+                val mergedById = LinkedHashMap<String, YouTubeTrailerCandidate>()
+                // Prima tutti i risultati marcati ITA
+                (itaResults + engResults)
+                    .filter { it.languageLabel == "ITA" }
+                    .forEach { candidate ->
+                        mergedById.putIfAbsent(candidate.videoId, candidate)
+                    }
+                // Poi i risultati originali / ENG non ancora presenti
+                (engResults + itaResults)
+                    .filter { it.languageLabel != "ITA" }
+                    .forEach { candidate ->
+                        mergedById.putIfAbsent(candidate.videoId, candidate)
+                    }
+
+                val finalResults = mergedById.values.toList().take(12)
+                if (finalResults.isEmpty()) {
+                    throw IllegalStateException("Nessun trailer trovato su YouTube per \"$baseTitle\".")
+                }
+                finalResults
+            }
+        }
+
+    suspend fun resolveYouTubeCandidateForExoPlayer(
+        candidate: YouTubeTrailerCandidate
+    ): Result<ResolvedTrailerStream> = withContext(Dispatchers.IO) {
+        runCatching {
+            val syntheticDto = TmdbVideoDto(
+                id = "yt_${candidate.videoId}",
+                key = candidate.videoId,
+                name = candidate.title,
+                site = "YouTube",
+                type = "Trailer",
+                official = true,
+                languageCode = if (candidate.languageLabel == "ITA") "it" else "en"
+            )
+            resolveYouTubeTrailer(syntheticDto)
+        }
+    }
+
     suspend fun resolveTrailerForExoPlayer(
         @Suppress("UNUSED_PARAMETER") item: MediaItem,
         video: TmdbVideoDto,
@@ -47,7 +132,7 @@ class TmdbTrailerResolver(
         runCatching {
             val key = video.key.trim()
             if (key.isBlank()) {
-                throw IllegalStateException("Chiave video TMDB non valida per questo trailer.")
+                throw IllegalStateException("Chiave video non valida per questo trailer.")
             }
 
             when {
@@ -58,7 +143,7 @@ class TmdbTrailerResolver(
                     resolveVimeoTrailer(video)
                 }
                 else -> {
-                    throw IllegalStateException("Sorgente trailer '${video.site}' non supportata (solo YouTube/Vimeo da TMDB).")
+                    throw IllegalStateException("Sorgente trailer '${video.site}' non supportata (solo YouTube/Vimeo).")
                 }
             }
         }
@@ -434,6 +519,226 @@ class TmdbTrailerResolver(
             }
         }
         return null
+    }
+
+    private fun queryYouTubeSearch(
+        query: String,
+        hl: String,
+        gl: String,
+        defaultLangLabel: String,
+        movieTitle: String
+    ): List<YouTubeTrailerCandidate> {
+        val webUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+        // 1. Tentativo rapido tramite endpoint ufficiale InnerTube /youtubei/v1/search
+        val apiPayload = JSONObject().apply {
+            put("query", query)
+            put("params", "EgIQAQ%3D%3D") // Solo Video
+            put(
+                "context",
+                JSONObject().apply {
+                    put(
+                        "client",
+                        JSONObject().apply {
+                            put("clientName", "WEB")
+                            put("clientVersion", "2.20250310.01.00")
+                            put("hl", hl)
+                            put("gl", gl)
+                        }
+                    )
+                }
+            )
+        }.toString()
+
+        runCatching {
+            val req = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
+                .header("User-Agent", webUa)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("Accept-Language", if (hl == "it") "it-IT,it;q=0.9" else "en-US,en;q=0.9")
+                .post(apiPayload.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            cleanTrailerHttpClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string().orEmpty()
+                    if (body.isNotBlank()) {
+                        val parsed = parseYouTubeSearchJson(
+                            root = JSONObject(body),
+                            defaultLangLabel = defaultLangLabel,
+                            movieTitle = movieTitle
+                        )
+                        if (parsed.isNotEmpty()) return parsed
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback sulla pagina HTML risultati YouTube (ytInitialData)
+        return runCatching {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val url = "https://www.youtube.com/results?search_query=$encoded&sp=EgIQAQ%253D%253D&hl=$hl&gl=$gl"
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", webUa)
+                .header("Accept-Language", if (hl == "it") "it-IT,it;q=0.9" else "en-US,en;q=0.9")
+                .build()
+
+            cleanTrailerHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use emptyList()
+                val html = resp.body?.string().orEmpty()
+                val markers = listOf("var ytInitialData = ", "ytInitialData = ")
+                var jsonText: String? = null
+                for (marker in markers) {
+                    val idx = html.indexOf(marker)
+                    if (idx != -1) {
+                        val startBrace = html.indexOf('{', idx + marker.length)
+                        if (startBrace != -1) {
+                            jsonText = extractBalancedJsonObject(html, startBrace)
+                            if (jsonText != null) break
+                        }
+                    }
+                }
+                if (jsonText == null) return@use emptyList()
+                parseYouTubeSearchJson(
+                    root = JSONObject(jsonText),
+                    defaultLangLabel = defaultLangLabel,
+                    movieTitle = movieTitle
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun parseYouTubeSearchJson(
+        root: JSONObject,
+        defaultLangLabel: String,
+        movieTitle: String
+    ): List<YouTubeTrailerCandidate> {
+        val renderers = mutableListOf<JSONObject>()
+        collectVideoRenderers(root, renderers)
+
+        val scored = mutableListOf<Pair<Int, YouTubeTrailerCandidate>>()
+        val titleWords = movieTitle.lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.length >= 3 }
+
+        for (renderer in renderers) {
+            val videoId = renderer.optString("videoId").trim()
+            if (videoId.length < 6) continue
+
+            val title = extractRunsText(renderer.optJSONObject("title")).trim()
+            if (title.isBlank()) continue
+
+            val channel = extractRunsText(renderer.optJSONObject("ownerText"))
+                .ifBlank { extractRunsText(renderer.optJSONObject("longBylineText")) }
+                .ifBlank { "YouTube" }
+
+            val durationText = renderer.optJSONObject("lengthText")
+                ?.let { lt ->
+                    lt.optString("simpleText").ifBlank { extractRunsText(lt) }
+                }
+                .orEmpty()
+                .trim()
+            val durationSeconds = parseDurationSeconds(durationText)
+            // Escludi clip < 15s (Shorts) o video lunghi (> 8 min, es. film completi / recensioni lunghe)
+            if (durationSeconds in 1..14 || durationSeconds > 480) continue
+
+            val lowerTitle = title.lowercase()
+            val lowerChannel = channel.lowercase()
+            val isItaMarked = Regex("""\b(ita|italiano|sub ita|ufficiale|doppiato)\b""").containsMatchIn(lowerTitle)
+            val isEngMarked = Regex("""\b(official trailer|english|en|original)\b""").containsMatchIn(lowerTitle)
+            val langLabel = when {
+                isItaMarked -> "ITA"
+                defaultLangLabel == "ITA" && !isEngMarked -> "ITA"
+                else -> "ENG"
+            }
+
+            var score = 0
+            if (lowerTitle.contains("trailer")) score += 40
+            if (lowerTitle.contains("teaser")) score += 20
+            if (lowerTitle.contains("ufficiale") || lowerTitle.contains("official")) score += 25
+            if (titleWords.isNotEmpty() && titleWords.any { lowerTitle.contains(it) }) score += 20
+            if (lowerChannel.contains("trailer") || lowerChannel.contains("pictures") ||
+                lowerChannel.contains("netflix") || lowerChannel.contains("warner") ||
+                lowerChannel.contains("universal") || lowerChannel.contains("disney") ||
+                lowerChannel.contains("sony") || lowerChannel.contains("paramount") ||
+                lowerChannel.contains("eagle") || lowerChannel.contains("01 distribution") ||
+                lowerChannel.contains("prime video")
+            ) {
+                score += 15
+            }
+            if (lowerTitle.contains("reaction") || lowerTitle.contains("review") ||
+                lowerTitle.contains("spiegazione") || lowerTitle.contains("ending explained")
+            ) {
+                score -= 50
+            }
+
+            if (score < 15) continue
+
+            scored.add(
+                score to YouTubeTrailerCandidate(
+                    videoId = videoId,
+                    title = title,
+                    channelName = channel,
+                    durationText = durationText.ifBlank { "HD" },
+                    durationSeconds = durationSeconds,
+                    languageLabel = langLabel
+                )
+            )
+        }
+
+        return scored
+            .sortedByDescending { it.first }
+            .map { it.second }
+            .distinctBy { it.videoId }
+            .take(8)
+    }
+
+    private fun collectVideoRenderers(node: Any?, out: MutableList<JSONObject>) {
+        if (out.size >= 30) return
+        when (node) {
+            is JSONObject -> {
+                val vr = node.optJSONObject("videoRenderer")
+                if (vr != null) {
+                    out.add(vr)
+                }
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (key != "videoRenderer") {
+                        collectVideoRenderers(node.opt(key), out)
+                    }
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    collectVideoRenderers(node.opt(i), out)
+                }
+            }
+        }
+    }
+
+    private fun extractRunsText(obj: JSONObject?): String {
+        if (obj == null) return ""
+        val simple = obj.optString("simpleText").trim()
+        if (simple.isNotEmpty()) return simple
+        val runs = obj.optJSONArray("runs") ?: return ""
+        return buildString {
+            for (i in 0 until runs.length()) {
+                append(runs.optJSONObject(i)?.optString("text").orEmpty())
+            }
+        }.trim()
+    }
+
+    private fun parseDurationSeconds(text: String): Int {
+        if (text.isBlank()) return 0
+        val parts = text.split(":").mapNotNull { it.trim().toIntOrNull() }
+        return when (parts.size) {
+            2 -> parts[0] * 60 + parts[1]
+            3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+            else -> 0
+        }
     }
 
     private data class YouTubeClientProfile(

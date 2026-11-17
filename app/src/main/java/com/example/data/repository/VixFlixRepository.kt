@@ -18,6 +18,7 @@ import com.example.data.remote.TmdbSeasonDetailsDto
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.TmdbVideoDto
 import com.example.data.remote.VixSrcStreamResolver
+import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.remote.toDomain
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -198,6 +199,16 @@ class VixFlixRepository(
                     .thenByDescending { it.official }
                     .thenByDescending { it.type.equals("Teaser", ignoreCase = true) }
             )
+    }
+
+    suspend fun searchYouTubeTrailers(item: MediaItem): Result<List<YouTubeTrailerCandidate>> {
+        return trailerResolver.searchYouTubeTrailers(item)
+    }
+
+    suspend fun resolveYouTubeCandidateForExoPlayer(
+        candidate: YouTubeTrailerCandidate
+    ): Result<ResolvedTrailerStream> {
+        return trailerResolver.resolveYouTubeCandidateForExoPlayer(candidate)
     }
 
     suspend fun resolveTrailerForExoPlayer(

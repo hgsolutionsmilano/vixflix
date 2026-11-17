@@ -16,7 +16,7 @@ import com.example.data.remote.ResolvedStream
 import com.example.data.remote.ResolvedTrailerStream
 import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbEpisodeDto
-import com.example.data.remote.TmdbVideoDto
+import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
 import java.io.File
@@ -46,8 +46,10 @@ sealed interface CatalogUiState {
 }
 
 data class TrailerPlaybackState(
-    val video: TmdbVideoDto,
-    val isLoading: Boolean = true,
+    val trailers: List<YouTubeTrailerCandidate> = emptyList(),
+    val selectedVideo: YouTubeTrailerCandidate? = null,
+    val isSearching: Boolean = false,
+    val isLoadingStream: Boolean = false,
     val resolvedTrailer: ResolvedTrailerStream? = null,
     val errorMessage: String? = null
 )
@@ -138,6 +140,7 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
 
     private var searchJob: Job? = null
     private var seasonProgressJob: Job? = null
+    private var trailerJob: Job? = null
 
     init {
         loadCatalog()
@@ -235,54 +238,140 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun closeDetails() {
+        trailerJob?.cancel()
         seasonProgressJob?.cancel()
         _detailState.value = null
     }
 
-    fun playTrailer(video: TmdbVideoDto) {
+    /**
+     * Apre il popup trailer ed esegue una ricerca diretta su YouTube (prima Italiano, poi Inglese)
+     * popolando la lista multipla direttamente nel modale.
+     */
+    fun openYouTubeTrailerPopup() {
         val current = _detailState.value ?: return
+        trailerJob?.cancel()
+
         _detailState.value = current.copy(
             activeTrailer = TrailerPlaybackState(
-                video = video,
-                isLoading = true
+                isSearching = true,
+                isLoadingStream = false
             )
         )
-        viewModelScope.launch {
-            val lang = streamLanguage.value
-            repository.resolveTrailerForExoPlayer(
-                item = current.mediaItem,
-                video = video,
-                lang = lang
-            ).fold(
-                onSuccess = { resolved ->
+
+        trailerJob = viewModelScope.launch {
+            repository.searchYouTubeTrailers(current.mediaItem).fold(
+                onSuccess = { results ->
                     val latest = _detailState.value ?: return@fold
-                    if (latest.activeTrailer?.video?.id == video.id) {
+                    if (latest.mediaItem.id != current.mediaItem.id || latest.activeTrailer == null) return@fold
+                    val first = results.firstOrNull()
+                    if (first == null) {
                         _detailState.value = latest.copy(
                             activeTrailer = TrailerPlaybackState(
-                                video = video,
-                                isLoading = false,
-                                resolvedTrailer = resolved
+                                trailers = emptyList(),
+                                isSearching = false,
+                                isLoadingStream = false,
+                                errorMessage = "Nessun trailer trovato su YouTube per \"${current.mediaItem.title}\"."
                             )
                         )
+                    } else {
+                        _detailState.value = latest.copy(
+                            activeTrailer = TrailerPlaybackState(
+                                trailers = results,
+                                selectedVideo = first,
+                                isSearching = false,
+                                isLoadingStream = true
+                            )
+                        )
+                        resolveSelectedYouTubeCandidate(current.mediaItem.id, first)
                     }
                 },
                 onFailure = { err ->
                     val latest = _detailState.value ?: return@fold
-                    if (latest.activeTrailer?.video?.id == video.id) {
-                        _detailState.value = latest.copy(
-                            activeTrailer = TrailerPlaybackState(
-                                video = video,
-                                isLoading = false,
-                                errorMessage = err.localizedMessage ?: "Impossibile caricare il trailer."
-                            )
+                    if (latest.mediaItem.id != current.mediaItem.id || latest.activeTrailer == null) return@fold
+                    _detailState.value = latest.copy(
+                        activeTrailer = TrailerPlaybackState(
+                            trailers = emptyList(),
+                            isSearching = false,
+                            isLoadingStream = false,
+                            errorMessage = err.localizedMessage
+                                ?: "Impossibile cercare i trailer su YouTube in questo momento."
                         )
-                    }
+                    )
                 }
             )
         }
     }
 
+    fun selectYouTubeTrailer(candidate: YouTubeTrailerCandidate) {
+        val current = _detailState.value ?: return
+        val currentPopup = current.activeTrailer ?: return
+        trailerJob?.cancel()
+
+        _detailState.value = current.copy(
+            activeTrailer = currentPopup.copy(
+                selectedVideo = candidate,
+                isSearching = false,
+                isLoadingStream = true,
+                resolvedTrailer = null,
+                errorMessage = null
+            )
+        )
+
+        trailerJob = viewModelScope.launch {
+            resolveSelectedYouTubeCandidate(current.mediaItem.id, candidate)
+        }
+    }
+
+    fun retryCurrentYouTubeTrailer() {
+        val current = _detailState.value ?: return
+        val currentPopup = current.activeTrailer ?: return
+        val selected = currentPopup.selectedVideo
+        if (selected != null) {
+            selectYouTubeTrailer(selected)
+        } else {
+            openYouTubeTrailerPopup()
+        }
+    }
+
+    private suspend fun resolveSelectedYouTubeCandidate(
+        mediaId: Int,
+        candidate: YouTubeTrailerCandidate
+    ) {
+        repository.resolveYouTubeCandidateForExoPlayer(candidate).fold(
+            onSuccess = { resolved ->
+                val latest = _detailState.value ?: return@fold
+                val popup = latest.activeTrailer ?: return@fold
+                if (latest.mediaItem.id == mediaId && popup.selectedVideo?.videoId == candidate.videoId) {
+                    _detailState.value = latest.copy(
+                        activeTrailer = popup.copy(
+                            isSearching = false,
+                            isLoadingStream = false,
+                            resolvedTrailer = resolved,
+                            errorMessage = null
+                        )
+                    )
+                }
+            },
+            onFailure = { err ->
+                val latest = _detailState.value ?: return@fold
+                val popup = latest.activeTrailer ?: return@fold
+                if (latest.mediaItem.id == mediaId && popup.selectedVideo?.videoId == candidate.videoId) {
+                    _detailState.value = latest.copy(
+                        activeTrailer = popup.copy(
+                            isSearching = false,
+                            isLoadingStream = false,
+                            resolvedTrailer = null,
+                            errorMessage = err.localizedMessage
+                                ?: "Impossibile riprodurre questo trailer YouTube."
+                        )
+                    )
+                }
+            }
+        )
+    }
+
     fun closeTrailerPlayer() {
+        trailerJob?.cancel()
         val current = _detailState.value ?: return
         _detailState.value = current.copy(activeTrailer = null)
     }

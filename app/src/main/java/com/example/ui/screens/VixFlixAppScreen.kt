@@ -135,7 +135,6 @@ fun VixFlixAppScreen(
             state = currentDetail,
             savedProgress = savedEntry,
             isInWatchlist = inList,
-            vixSrcResolver = viewModel.repository.vixSrcResolver,
             onClose = viewModel::closeDetails,
             onPlayMain = { restartFromZero ->
                 viewModel.startPlayback(
@@ -154,7 +153,9 @@ fun VixFlixAppScreen(
                     episodeTitle = epTitle
                 )
             },
-            onPlayTrailer = viewModel::playTrailer,
+            onOpenYouTubeTrailerPopup = viewModel::openYouTubeTrailerPopup,
+            onSelectYouTubeTrailer = viewModel::selectYouTubeTrailer,
+            onRetryYouTubeTrailer = viewModel::retryCurrentYouTubeTrailer,
             onCloseTrailer = viewModel::closeTrailerPlayer,
             onSelectSeason = { seasonNum ->
                 viewModel.selectSeason(currentDetail.mediaItem.id, seasonNum)
