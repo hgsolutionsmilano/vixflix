@@ -47,6 +47,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
@@ -77,6 +80,9 @@ fun GitHubUpdateSectionScreen(
     onTriggerUpdate: () -> Unit,
     onUpdateTmdbKey: (String) -> Unit = {},
     onResetTmdbKey: () -> Unit = {},
+    firstControlFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
     contentPadding: PaddingValues = PaddingValues(0.dp)
 ) {
     var inputRepo by remember(state.repoSlug) { mutableStateOf(state.repoSlug) }
@@ -182,6 +188,14 @@ fun GitHubUpdateSectionScreen(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .focusProperties {
+                                if (navRailFocusRequester != null) {
+                                    left = navRailFocusRequester
+                                }
+                                if (upFocusRequester != null) {
+                                    up = upFocusRequester
+                                }
+                            }
                             .testTag("github_repo_input")
                     )
 
@@ -198,6 +212,18 @@ fun GitHubUpdateSectionScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
+                            .then(
+                                if (firstControlFocusRequester != null) {
+                                    Modifier.focusRequester(firstControlFocusRequester)
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .focusProperties {
+                                if (navRailFocusRequester != null) {
+                                    left = navRailFocusRequester
+                                }
+                            }
                             .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.03f)
                             .testTag("check_github_updates_button")
                     ) {
@@ -345,6 +371,11 @@ fun GitHubUpdateSectionScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(46.dp)
+                                .focusProperties {
+                                    if (navRailFocusRequester != null) {
+                                        left = navRailFocusRequester
+                                    }
+                                }
                                 .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.03f)
                                 .testTag("download_update_apk_button")
                         ) {
@@ -500,6 +531,11 @@ fun GitHubUpdateSectionScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(44.dp)
+                                .focusProperties {
+                                    if (navRailFocusRequester != null) {
+                                        left = navRailFocusRequester
+                                    }
+                                }
                                 .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.03f)
                                 .testTag("save_tmdb_key_button")
                         ) {

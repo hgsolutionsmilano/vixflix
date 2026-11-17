@@ -4,6 +4,7 @@ import android.app.UiModeManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -85,11 +86,16 @@ fun rememberIsTvDevice(): Boolean {
     return remember(context) { isAndroidTvDevice(context) }
 }
 
+@Suppress("DEPRECATION")
 fun isAndroidTvDevice(context: Context): Boolean {
     val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
     val isTvMode = uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
-    val hasLeanback = context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
-    return isTvMode || hasLeanback
+    val pm = context.packageManager
+    val hasLeanback = pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    val hasTelevision = pm.hasSystemFeature(PackageManager.FEATURE_TELEVISION)
+    val isAmazonFireTv = Build.MANUFACTURER.equals("Amazon", ignoreCase = true) &&
+        Build.MODEL.startsWith("AFT", ignoreCase = true)
+    return isTvMode || hasLeanback || hasTelevision || isAmazonFireTv
 }
 
 /**

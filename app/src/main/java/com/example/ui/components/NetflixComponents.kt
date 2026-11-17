@@ -18,7 +18,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -74,6 +75,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -81,6 +83,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -123,11 +131,15 @@ fun NetflixTopBar(
     onClickUpdateIcon: () -> Unit,
     isTvLayout: Boolean = false,
     searchFocusRequester: FocusRequester? = null,
+    brandLogoFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
+    downToContentFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .focusGroup()
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -140,16 +152,50 @@ fun NetflixTopBar(
             .statusBarsPadding()
             .padding(horizontal = if (isTvLayout) 28.dp else 16.dp, vertical = 8.dp)
     ) {
+        val resolvedDownTarget = if (isSearchOpen) {
+            searchFocusRequester ?: downToContentFocusRequester
+        } else {
+            downToContentFocusRequester
+        }
+
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusGroup(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Logo VixFlix (navigabile con D-pad)
+            // Logo VixFlix (navigabile con D-pad: Sinistra -> Barra laterale, Giù -> Titoli/Hero)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
+                    .then(
+                        if (brandLogoFocusRequester != null) {
+                            Modifier.focusRequester(brandLogoFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .focusProperties {
+                        if (navRailFocusRequester != null) {
+                            left = navRailFocusRequester
+                        }
+                        if (resolvedDownTarget != null) {
+                            down = resolvedDownTarget
+                        }
+                    }
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown &&
+                            keyEvent.key == Key.DirectionDown &&
+                            resolvedDownTarget != null
+                        ) {
+                            runCatching { resolvedDownTarget.requestFocus() }
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     .tvFocusableControl(
                         shape = RoundedCornerShape(8.dp),
                         focusedBorderColor = NetflixRed,
@@ -205,6 +251,22 @@ fun NetflixTopBar(
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(1.dp, NetflixElevatedSurface),
                     modifier = Modifier
+                        .focusProperties {
+                            if (resolvedDownTarget != null) {
+                                down = resolvedDownTarget
+                            }
+                        }
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown &&
+                                keyEvent.key == Key.DirectionDown &&
+                                resolvedDownTarget != null
+                            ) {
+                                runCatching { resolvedDownTarget.requestFocus() }
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(8.dp),
                             focusedBorderColor = NetflixWhite,
@@ -225,6 +287,22 @@ fun NetflixTopBar(
                     IconButton(
                         onClick = onClickUpdateIcon,
                         modifier = Modifier
+                            .focusProperties {
+                                if (resolvedDownTarget != null) {
+                                    down = resolvedDownTarget
+                                }
+                            }
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown &&
+                                    keyEvent.key == Key.DirectionDown &&
+                                    resolvedDownTarget != null
+                                ) {
+                                    runCatching { resolvedDownTarget.requestFocus() }
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                             .tvFocusableControl(
                                 shape = CircleShape,
                                 focusedBorderColor = NetflixWhite
@@ -253,6 +331,22 @@ fun NetflixTopBar(
                 IconButton(
                     onClick = onToggleSearch,
                     modifier = Modifier
+                        .focusProperties {
+                            if (resolvedDownTarget != null) {
+                                down = resolvedDownTarget
+                            }
+                        }
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown &&
+                                keyEvent.key == Key.DirectionDown &&
+                                resolvedDownTarget != null
+                            ) {
+                                runCatching { resolvedDownTarget.requestFocus() }
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         .tvFocusableControl(
                             shape = CircleShape,
                             focusedBorderColor = NetflixWhite
@@ -325,6 +419,25 @@ fun NetflixTopBar(
                             Modifier
                         }
                     )
+                    .focusProperties {
+                        if (navRailFocusRequester != null) {
+                            left = navRailFocusRequester
+                        }
+                        if (downToContentFocusRequester != null) {
+                            down = downToContentFocusRequester
+                        }
+                    }
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown &&
+                            keyEvent.key == Key.DirectionDown &&
+                            downToContentFocusRequester != null
+                        ) {
+                            runCatching { downToContentFocusRequester.requestFocus() }
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     .testTag("search_input_field")
             )
         }
@@ -404,12 +517,19 @@ fun NetflixHeroBanner(
     onToggleWatchlist: () -> Unit,
     onInfoClick: () -> Unit,
     playButtonFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
+    topBarFocusRequester: FocusRequester? = null,
+    firstRowFocusRequester: FocusRequester? = null,
     isTvLayout: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var watchFocused by remember { mutableStateOf(false) }
     var playFocused by remember { mutableStateOf(false) }
     var infoFocused by remember { mutableStateOf(false) }
+
+    val watchFocusRequester = remember { FocusRequester() }
+    val resolvedPlayFocusRequester = playButtonFocusRequester ?: remember { FocusRequester() }
+    val infoFocusRequester = remember { FocusRequester() }
 
     val watchScale by animateFloatAsState(
         targetValue = if (watchFocused) 1.06f else 1f,
@@ -431,7 +551,11 @@ fun NetflixHeroBanner(
         modifier = modifier
             .fillMaxWidth()
             .height(if (isTvLayout) 410.dp else 500.dp)
-            .clickable { onInfoClick() }
+            .pointerInput(isTvLayout) {
+                if (!isTvLayout) {
+                    detectTapGestures { onInfoClick() }
+                }
+            }
             .testTag("hero_banner_card")
     ) {
         Crossfade(
@@ -557,7 +681,9 @@ fun NetflixHeroBanner(
             Spacer(modifier = Modifier.height(14.dp))
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup(),
                 horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -578,6 +704,13 @@ fun NetflixHeroBanner(
                         .graphicsLayer {
                             scaleX = watchScale
                             scaleY = watchScale
+                        }
+                        .focusRequester(watchFocusRequester)
+                        .focusProperties {
+                            if (navRailFocusRequester != null) left = navRailFocusRequester
+                            right = resolvedPlayFocusRequester
+                            if (topBarFocusRequester != null) up = topBarFocusRequester
+                            if (firstRowFocusRequester != null) down = firstRowFocusRequester
                         }
                         .onFocusChanged { watchFocused = it.isFocused }
                         .testTag("hero_watchlist_button")
@@ -609,13 +742,13 @@ fun NetflixHeroBanner(
                             scaleX = playScale
                             scaleY = playScale
                         }
-                        .then(
-                            if (playButtonFocusRequester != null) {
-                                Modifier.focusRequester(playButtonFocusRequester)
-                            } else {
-                                Modifier
-                            }
-                        )
+                        .focusRequester(resolvedPlayFocusRequester)
+                        .focusProperties {
+                            left = watchFocusRequester
+                            right = infoFocusRequester
+                            if (topBarFocusRequester != null) up = topBarFocusRequester
+                            if (firstRowFocusRequester != null) down = firstRowFocusRequester
+                        }
                         .onFocusChanged { playFocused = it.isFocused }
                         .testTag("hero_play_button")
                 ) {
@@ -654,6 +787,12 @@ fun NetflixHeroBanner(
                             scaleX = infoScale
                             scaleY = infoScale
                         }
+                        .focusRequester(infoFocusRequester)
+                        .focusProperties {
+                            left = resolvedPlayFocusRequester
+                            if (topBarFocusRequester != null) up = topBarFocusRequester
+                            if (firstRowFocusRequester != null) down = firstRowFocusRequester
+                        }
                         .onFocusChanged { infoFocused = it.isFocused }
                         .testTag("hero_info_button")
                 ) {
@@ -683,6 +822,10 @@ fun ContinueWatchingSection(
     onResumeClick: (WatchProgressEntity) -> Unit,
     onInfoClick: (WatchProgressEntity) -> Unit,
     onRemoveClick: (WatchProgressEntity) -> Unit,
+    isTvLayout: Boolean = false,
+    firstItemFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
     if (entries.isEmpty()) return
@@ -734,14 +877,31 @@ fun ContinueWatchingSection(
                     entry = entry,
                     itemIndex = index,
                     listState = listState,
+                    isTvLayout = isTvLayout,
                     onResume = { onResumeClick(entry) },
                     onInfo = { onInfoClick(entry) },
                     onRemove = { onRemoveClick(entry) },
-                    modifier = Modifier.animateItem(
-                        fadeInSpec = tween(250),
-                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                        fadeOutSpec = tween(200)
-                    )
+                    modifier = Modifier
+                        .then(
+                            if (index == 0 && firstItemFocusRequester != null) {
+                                Modifier.focusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .focusProperties {
+                            if (index == 0 && navRailFocusRequester != null) {
+                                left = navRailFocusRequester
+                            }
+                            if (upFocusRequester != null) {
+                                up = upFocusRequester
+                            }
+                        }
+                        .animateItem(
+                            fadeInSpec = tween(250),
+                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                            fadeOutSpec = tween(200)
+                        )
                 )
             }
         }
@@ -753,6 +913,7 @@ private fun ContinueWatchingCard(
     entry: WatchProgressEntity,
     itemIndex: Int,
     listState: LazyListState,
+    isTvLayout: Boolean,
     onResume: () -> Unit,
     onInfo: () -> Unit,
     onRemove: () -> Unit,
@@ -882,32 +1043,34 @@ private fun ContinueWatchingCard(
                     )
                 }
 
-                IconButton(
-                    onClick = onInfo,
-                    modifier = Modifier
-                        .size(34.dp)
-                        .tvFocusableControl(shape = CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Info,
-                        contentDescription = "Dettagli",
-                        tint = NetflixLightGray,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+                if (!isTvLayout) {
+                    IconButton(
+                        onClick = onInfo,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .tvFocusableControl(shape = CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Info,
+                            contentDescription = "Dettagli",
+                            tint = NetflixLightGray,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
 
-                IconButton(
-                    onClick = onRemove,
-                    modifier = Modifier
-                        .size(34.dp)
-                        .tvFocusableControl(shape = CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Rimuovi da Continua a guardare",
-                        tint = NetflixMutedGray,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    IconButton(
+                        onClick = onRemove,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .tvFocusableControl(shape = CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Rimuovi da Continua a guardare",
+                            tint = NetflixMutedGray,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -919,6 +1082,9 @@ fun Top10Section(
     title: String,
     items: List<MediaItem>,
     onItemClick: (MediaItem) -> Unit,
+    firstItemFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
     if (items.isEmpty()) return
@@ -949,11 +1115,27 @@ fun Top10Section(
                     listState = listState,
                     item = item,
                     onClick = { onItemClick(item) },
-                    modifier = Modifier.animateItem(
-                        fadeInSpec = tween(250),
-                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                        fadeOutSpec = tween(200)
-                    )
+                    modifier = Modifier
+                        .then(
+                            if (index == 0 && firstItemFocusRequester != null) {
+                                Modifier.focusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .focusProperties {
+                            if (index == 0 && navRailFocusRequester != null) {
+                                left = navRailFocusRequester
+                            }
+                            if (upFocusRequester != null) {
+                                up = upFocusRequester
+                            }
+                        }
+                        .animateItem(
+                            fadeInSpec = tween(250),
+                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                            fadeOutSpec = tween(200)
+                        )
                 )
             }
         }
@@ -1084,6 +1266,9 @@ fun MediaCatalogRow(
     title: String,
     items: List<MediaItem>,
     onItemClick: (MediaItem) -> Unit,
+    firstItemFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
     if (items.isEmpty()) return
@@ -1113,11 +1298,27 @@ fun MediaCatalogRow(
                     itemIndex = index,
                     listState = listState,
                     onClick = { onItemClick(item) },
-                    modifier = Modifier.animateItem(
-                        fadeInSpec = tween(250),
-                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                        fadeOutSpec = tween(200)
-                    )
+                    modifier = Modifier
+                        .then(
+                            if (index == 0 && firstItemFocusRequester != null) {
+                                Modifier.focusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .focusProperties {
+                            if (index == 0 && navRailFocusRequester != null) {
+                                left = navRailFocusRequester
+                            }
+                            if (upFocusRequester != null) {
+                                up = upFocusRequester
+                            }
+                        }
+                        .animateItem(
+                            fadeInSpec = tween(250),
+                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                            fadeOutSpec = tween(200)
+                        )
                 )
             }
         }

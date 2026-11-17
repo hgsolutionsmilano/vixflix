@@ -20,6 +20,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -75,9 +76,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
@@ -99,6 +106,7 @@ import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
 import com.example.ui.components.Top10Section
 import com.example.ui.components.rememberIsTvDevice
+import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
 import com.example.ui.theme.NetflixDarkSurface
@@ -107,6 +115,7 @@ import com.example.ui.theme.NetflixLightGray
 import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
+import kotlinx.coroutines.delay
 
 @Composable
 fun VixFlixAppScreen(
@@ -128,7 +137,13 @@ fun VixFlixAppScreen(
 
     var isSearchBarVisible by remember { mutableStateOf(false) }
     val heroPlayFocusRequester = remember { FocusRequester() }
+    val firstRowFocusRequester = remember { FocusRequester() }
+    val navRailSelectedFocusRequester = remember { FocusRequester() }
+    val topBarBrandFocusRequester = remember { FocusRequester() }
     val searchInputFocusRequester = remember { FocusRequester() }
+    val searchFirstItemFocusRequester = remember { FocusRequester() }
+    val githubFirstControlFocusRequester = remember { FocusRequester() }
+    val retryButtonFocusRequester = remember { FocusRequester() }
 
     // Memorizza l'ultimo DetailUiState per animarne l'uscita fluida verso il basso senza scatti
     var lastDetailSnapshot by remember { mutableStateOf<DetailUiState?>(null) }
@@ -139,6 +154,25 @@ fun VixFlixAppScreen(
     val isDetailVisible = detailState != null
     val isPlayerVisible = playbackSession != null
     val isCatalogInteractive = !isDetailVisible && !isPlayerVisible
+
+    val tabContentEntryFocusRequester: FocusRequester? = when (selectedTab) {
+        NavTab.GITHUB -> githubFirstControlFocusRequester
+        NavTab.MY_LIST -> firstRowFocusRequester
+        else -> when (catalogState) {
+            is CatalogUiState.Error -> retryButtonFocusRequester
+            is CatalogUiState.Success -> {
+                if (selectedTab == NavTab.NEW_POPULAR) firstRowFocusRequester else heroPlayFocusRequester
+            }
+            is CatalogUiState.Loading -> null
+        }
+    }
+
+    val activeContentEntryFocusRequester: FocusRequester? = when {
+        isSearchBarVisible && searchQuery.isNotBlank() -> {
+            if (searchResults.isNotEmpty() && !isSearching) searchFirstItemFocusRequester else null
+        }
+        else -> tabContentEntryFocusRequester
+    }
 
     // Gestione tasto INDIETRO del telecomando Android TV / Google TV quando si è nel catalogo principale
     BackHandler(enabled = isCatalogInteractive && (isSearchBarVisible || selectedTab != NavTab.HOME)) {
@@ -152,13 +186,23 @@ fun VixFlixAppScreen(
 
     LaunchedEffect(isSearchBarVisible) {
         if (isSearchBarVisible) {
+            delay(80L)
             runCatching { searchInputFocusRequester.requestFocus() }
         }
     }
 
-    LaunchedEffect(isTvDevice, catalogState is CatalogUiState.Success) {
-        if (isTvDevice && catalogState is CatalogUiState.Success && isCatalogInteractive) {
-            runCatching { heroPlayFocusRequester.requestFocus() }
+    LaunchedEffect(
+        isTvDevice,
+        isCatalogInteractive,
+        selectedTab,
+        isSearchBarVisible,
+        catalogState is CatalogUiState.Success,
+        catalogState is CatalogUiState.Error
+    ) {
+        if (isTvDevice && isCatalogInteractive && !isSearchBarVisible) {
+            val target = tabContentEntryFocusRequester ?: return@LaunchedEffect
+            delay(140L)
+            runCatching { target.requestFocus() }
         }
     }
 
@@ -263,18 +307,25 @@ fun VixFlixAppScreen(
                             .fillMaxHeight()
                             .statusBarsPadding()
                             .padding(top = 12.dp, bottom = 12.dp)
+                            .focusGroup()
+                            .focusProperties {
+                                if (activeContentEntryFocusRequester != null) {
+                                    right = activeContentEntryFocusRequester
+                                }
+                            }
                             .testTag("tv_navigation_rail")
                     ) {
                         Spacer(modifier = Modifier.height(10.dp))
                         navItems.forEach { (tab, label, icon) ->
                             var itemFocused by remember { mutableStateOf(false) }
+                            val onSelectNavTab = {
+                                isSearchBarVisible = false
+                                viewModel.clearSearch()
+                                viewModel.selectTab(tab)
+                            }
                             NavigationRailItem(
                                 selected = selectedTab == tab,
-                                onClick = {
-                                    isSearchBarVisible = false
-                                    viewModel.clearSearch()
-                                    viewModel.selectTab(tab)
-                                },
+                                onClick = onSelectNavTab,
                                 icon = {
                                     Icon(imageVector = icon, contentDescription = label)
                                 },
@@ -289,6 +340,36 @@ fun VixFlixAppScreen(
                                     unselectedTextColor = if (itemFocused) NetflixWhite else NetflixMutedGray
                                 ),
                                 modifier = Modifier
+                                    .then(
+                                        if (selectedTab == tab) {
+                                            Modifier.focusRequester(navRailSelectedFocusRequester)
+                                        } else {
+                                            Modifier
+                                        }
+                                    )
+                                    .focusProperties {
+                                        if (activeContentEntryFocusRequester != null) {
+                                            right = activeContentEntryFocusRequester
+                                        }
+                                    }
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown &&
+                                            keyEvent.key == Key.DirectionRight &&
+                                            activeContentEntryFocusRequester != null
+                                        ) {
+                                            runCatching { activeContentEntryFocusRequester.requestFocus() }
+                                            true
+                                        } else if (keyEvent.type == KeyEventType.KeyUp &&
+                                            (keyEvent.key == Key.DirectionCenter ||
+                                                keyEvent.key == Key.Enter ||
+                                                keyEvent.key == Key.NumPadEnter)
+                                        ) {
+                                            onSelectNavTab()
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .onFocusChanged { itemFocused = it.isFocused }
                                     .testTag("tv_rail_${tab.name.lowercase()}")
                             )
@@ -348,6 +429,9 @@ fun VixFlixAppScreen(
                                 isSearching = isSearching,
                                 results = searchResults,
                                 isTvLayout = useTvNavigationRail,
+                                firstItemFocusRequester = searchFirstItemFocusRequester,
+                                navRailFocusRequester = navRailSelectedFocusRequester,
+                                upFocusRequester = searchInputFocusRequester,
                                 onItemClick = viewModel::openDetails,
                                 contentPadding = PaddingValues(
                                     top = topBarOffset + 46.dp,
@@ -364,6 +448,9 @@ fun VixFlixAppScreen(
                                 onTriggerUpdate = { viewModel.performInAppUpdate(context) },
                                 onUpdateTmdbKey = viewModel::updateTmdbApiKey,
                                 onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
+                                firstControlFocusRequester = githubFirstControlFocusRequester,
+                                navRailFocusRequester = navRailSelectedFocusRequester,
+                                upFocusRequester = topBarBrandFocusRequester,
                                 contentPadding = PaddingValues(
                                     top = topBarOffset,
                                     bottom = innerPadding.calculateBottomPadding()
@@ -373,6 +460,11 @@ fun VixFlixAppScreen(
                             MyListScreen(
                                 watchlist = watchlist,
                                 continueWatching = continueWatching,
+                                isTvLayout = useTvNavigationRail,
+                                firstRowFocusRequester = firstRowFocusRequester,
+                                navRailFocusRequester = navRailSelectedFocusRequester,
+                                topBarFocusRequester = topBarBrandFocusRequester,
+                                onBrowseCatalog = { viewModel.selectTab(NavTab.HOME) },
                                 onOpenItem = viewModel::openDetails,
                                 onResumeContinueWatching = viewModel::resumeFromContinueWatching,
                                 onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
@@ -439,6 +531,11 @@ fun VixFlixAppScreen(
                                                 ),
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
+                                                    .focusRequester(retryButtonFocusRequester)
+                                                    .focusProperties {
+                                                        left = navRailSelectedFocusRequester
+                                                        up = topBarBrandFocusRequester
+                                                    }
                                                     .onFocusChanged { retryFocused = it.isFocused }
                                                     .testTag("retry_tmdb_button")
                                             ) {
@@ -458,6 +555,9 @@ fun VixFlixAppScreen(
                                         watchlist = watchlist,
                                         isTvLayout = useTvNavigationRail,
                                         heroPlayFocusRequester = heroPlayFocusRequester,
+                                        firstRowFocusRequester = firstRowFocusRequester,
+                                        navRailFocusRequester = navRailSelectedFocusRequester,
+                                        topBarFocusRequester = topBarBrandFocusRequester,
                                         onPlayItem = { item -> viewModel.startPlayback(item) },
                                         onOpenDetails = viewModel::openDetails,
                                         onToggleWatchlist = viewModel::toggleWatchlist,
@@ -486,7 +586,7 @@ fun VixFlixAppScreen(
                         }
                     }
 
-                    // Top bar flottante stile Netflix (compatibile D-pad Android TV)
+                    // Top bar flottante stile Netflix (compatibile D-pad Android TV / Fire Stick)
                     NetflixTopBar(
                         selectedTab = selectedTab,
                         onSelectTab = { tab ->
@@ -517,6 +617,9 @@ fun VixFlixAppScreen(
                         },
                         isTvLayout = useTvNavigationRail,
                         searchFocusRequester = searchInputFocusRequester,
+                        brandLogoFocusRequester = topBarBrandFocusRequester,
+                        navRailFocusRequester = navRailSelectedFocusRequester,
+                        downToContentFocusRequester = activeContentEntryFocusRequester,
                         modifier = Modifier.align(Alignment.TopCenter)
                     )
                 }
@@ -621,6 +724,9 @@ private fun CatalogFeedContent(
     watchlist: List<WatchlistEntity>,
     isTvLayout: Boolean,
     heroPlayFocusRequester: FocusRequester,
+    firstRowFocusRequester: FocusRequester,
+    navRailFocusRequester: FocusRequester,
+    topBarFocusRequester: FocusRequester,
     onPlayItem: (MediaItem) -> Unit,
     onOpenDetails: (MediaItem) -> Unit,
     onToggleWatchlist: (MediaItem) -> Unit,
@@ -641,13 +747,17 @@ private fun CatalogFeedContent(
         else -> continueWatching
     }
 
+    val showHero = selectedTab != NavTab.NEW_POPULAR
+    val hasContinueWatching = filteredContinueWatching.isNotEmpty()
+    val firstRowUpTarget = if (showHero) heroPlayFocusRequester else topBarFocusRequester
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .testTag("catalog_lazy_column"),
         contentPadding = PaddingValues(bottom = bottomPadding + 32.dp)
     ) {
-        if (selectedTab != NavTab.NEW_POPULAR) {
+        if (showHero) {
             item(key = "hero_${heroItem.uniqueKey}") {
                 val isInWatchlist = watchlist.any { it.id == heroItem.uniqueKey }
                 val savedProgress = continueWatching.firstOrNull { it.id == heroItem.uniqueKey }
@@ -659,6 +769,9 @@ private fun CatalogFeedContent(
                     onToggleWatchlist = { onToggleWatchlist(heroItem) },
                     onInfoClick = { onOpenDetails(heroItem) },
                     playButtonFocusRequester = heroPlayFocusRequester,
+                    navRailFocusRequester = navRailFocusRequester,
+                    topBarFocusRequester = topBarFocusRequester,
+                    firstRowFocusRequester = firstRowFocusRequester,
                     isTvLayout = isTvLayout
                 )
             }
@@ -667,80 +780,100 @@ private fun CatalogFeedContent(
         }
 
         // Sezione "Continua a guardare" (Room DB + startAt VixSrc API)
-        if (filteredContinueWatching.isNotEmpty()) {
+        if (hasContinueWatching) {
             item(key = "row_continue_watching") {
                 ContinueWatchingSection(
                     entries = filteredContinueWatching,
                     onResumeClick = onResumeContinueWatching,
                     onInfoClick = onInfoContinueWatching,
-                    onRemoveClick = onRemoveContinueWatching
+                    onRemoveClick = onRemoveContinueWatching,
+                    isTvLayout = isTvLayout,
+                    firstItemFocusRequester = firstRowFocusRequester,
+                    upFocusRequester = firstRowUpTarget,
+                    navRailFocusRequester = navRailFocusRequester
                 )
             }
         }
 
         when (selectedTab) {
             NavTab.HOME -> {
+                val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
+                val trendingMoviesIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
+
                 item(key = "row_top_10") {
                     Top10Section(
                         title = "Top 10 in Italia Oggi",
                         items = feed.top10Today,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        firstItemFocusRequester = if (top10IsFirstRow) firstRowFocusRequester else null,
+                        upFocusRequester = if (top10IsFirstRow) firstRowUpTarget else null,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_trending_movies") {
                     MediaCatalogRow(
                         title = "Film di Tendenza su TMDB",
                         items = feed.trendingMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        firstItemFocusRequester = if (trendingMoviesIsFirstRow) firstRowFocusRequester else null,
+                        upFocusRequester = if (trendingMoviesIsFirstRow) firstRowUpTarget else null,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_trending_tv") {
                     MediaCatalogRow(
                         title = "Serie TV del Momento",
                         items = feed.trendingTv,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_popular_movies") {
                     MediaCatalogRow(
                         title = "Film Popolari su VixFlix",
                         items = feed.popularMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_popular_tv") {
                     MediaCatalogRow(
                         title = "Serie TV Acclamate",
                         items = feed.popularTv,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_now_playing") {
                     MediaCatalogRow(
                         title = "Ora al Cinema",
                         items = feed.nowPlayingMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_top_rated") {
                     MediaCatalogRow(
                         title = "Più Votati dalla Critica",
                         items = feed.topRatedMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_action") {
                     MediaCatalogRow(
                         title = "Azione & Adrenalina",
                         items = feed.actionMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "row_scifi") {
                     MediaCatalogRow(
                         title = "Fantascienza & Mondi Futuri",
                         items = feed.sciFiMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
             }
@@ -750,14 +883,18 @@ private fun CatalogFeedContent(
                     MediaCatalogRow(
                         title = "Serie TV in Tendenza",
                         items = feed.trendingTv,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        firstItemFocusRequester = if (!hasContinueWatching) firstRowFocusRequester else null,
+                        upFocusRequester = if (!hasContinueWatching) firstRowUpTarget else null,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "tv_popular") {
                     MediaCatalogRow(
                         title = "Serie TV Popolari",
                         items = feed.popularTv,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
             }
@@ -767,66 +904,84 @@ private fun CatalogFeedContent(
                     MediaCatalogRow(
                         title = "Film di Tendenza",
                         items = feed.trendingMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        firstItemFocusRequester = if (!hasContinueWatching) firstRowFocusRequester else null,
+                        upFocusRequester = if (!hasContinueWatching) firstRowUpTarget else null,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "movies_now_playing") {
                     MediaCatalogRow(
                         title = "Ora al Cinema",
                         items = feed.nowPlayingMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "movies_popular") {
                     MediaCatalogRow(
                         title = "Film Popolari",
                         items = feed.popularMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "movies_top_rated") {
                     MediaCatalogRow(
                         title = "Film Più Votati",
                         items = feed.topRatedMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "movies_action") {
                     MediaCatalogRow(
                         title = "Azione & Avventura",
                         items = feed.actionMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "movies_scifi") {
                     MediaCatalogRow(
                         title = "Fantascienza",
                         items = feed.sciFiMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
             }
 
             NavTab.NEW_POPULAR -> {
+                val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
+                val cinemaIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
+
                 item(key = "new_top10") {
                     Top10Section(
                         title = "Top 10 in Italia Oggi",
                         items = feed.top10Today,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        firstItemFocusRequester = if (top10IsFirstRow) firstRowFocusRequester else null,
+                        upFocusRequester = if (top10IsFirstRow) firstRowUpTarget else null,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "new_cinema") {
                     MediaCatalogRow(
                         title = "Nuove Uscite al Cinema",
                         items = feed.nowPlayingMovies,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        firstItemFocusRequester = if (cinemaIsFirstRow) firstRowFocusRequester else null,
+                        upFocusRequester = if (cinemaIsFirstRow) firstRowUpTarget else null,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
                 item(key = "new_tv") {
                     MediaCatalogRow(
                         title = "Serie TV Nuove e Popolari",
                         items = feed.trendingTv,
-                        onItemClick = onOpenDetails
+                        onItemClick = onOpenDetails,
+                        navRailFocusRequester = navRailFocusRequester
                     )
                 }
             }
@@ -842,6 +997,9 @@ private fun SearchResultsGrid(
     isSearching: Boolean,
     results: List<MediaItem>,
     isTvLayout: Boolean,
+    firstItemFocusRequester: FocusRequester,
+    navRailFocusRequester: FocusRequester,
+    upFocusRequester: FocusRequester,
     onItemClick: (MediaItem) -> Unit,
     contentPadding: PaddingValues
 ) {
@@ -888,6 +1046,19 @@ private fun SearchResultsGrid(
                 onClick = { onItemClick(item) },
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(
+                        if (index == 0) {
+                            Modifier.focusRequester(firstItemFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .focusProperties {
+                        if (index == 0) {
+                            left = navRailFocusRequester
+                            up = upFocusRequester
+                        }
+                    }
                     .animateItem(
                         fadeInSpec = tween(250),
                         placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -902,6 +1073,11 @@ private fun SearchResultsGrid(
 private fun MyListScreen(
     watchlist: List<WatchlistEntity>,
     continueWatching: List<WatchProgressEntity>,
+    isTvLayout: Boolean,
+    firstRowFocusRequester: FocusRequester,
+    navRailFocusRequester: FocusRequester,
+    topBarFocusRequester: FocusRequester,
+    onBrowseCatalog: () -> Unit,
     onOpenItem: (MediaItem) -> Unit,
     onResumeContinueWatching: (WatchProgressEntity) -> Unit,
     onRemoveContinueWatching: (WatchProgressEntity) -> Unit,
@@ -932,7 +1108,11 @@ private fun MyListScreen(
                             )
                         )
                     },
-                    onRemoveClick = onRemoveContinueWatching
+                    onRemoveClick = onRemoveContinueWatching,
+                    isTvLayout = isTvLayout,
+                    firstItemFocusRequester = firstRowFocusRequester,
+                    upFocusRequester = topBarFocusRequester,
+                    navRailFocusRequester = navRailFocusRequester
                 )
                 Spacer(modifier = Modifier.height(12.dp))
             }
@@ -966,6 +1146,31 @@ private fun MyListScreen(
                             color = NetflixLightGray,
                             textAlign = TextAlign.Center
                         )
+                        Spacer(modifier = Modifier.height(18.dp))
+                        Button(
+                            onClick = onBrowseCatalog,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NetflixRed,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .focusRequester(firstRowFocusRequester)
+                                .focusProperties {
+                                    left = navRailFocusRequester
+                                    up = topBarFocusRequester
+                                }
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(8.dp),
+                                    focusedScale = 1.05f
+                                )
+                                .testTag("browse_catalog_from_empty_list_button")
+                        ) {
+                            Text(
+                                text = "Sfoglia il Catalogo",
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
                     }
                 }
             }
@@ -982,11 +1187,15 @@ private fun MyListScreen(
                     releaseYear = it.releaseYear
                 )
             }
+            val watchlistIsFirstRow = continueWatching.isEmpty()
             item {
                 MediaCatalogRow(
                     title = "Salvati nella Mia Lista (${mappedItems.size})",
                     items = mappedItems,
-                    onItemClick = onOpenItem
+                    onItemClick = onOpenItem,
+                    firstItemFocusRequester = if (watchlistIsFirstRow) firstRowFocusRequester else null,
+                    upFocusRequester = if (watchlistIsFirstRow) topBarFocusRequester else null,
+                    navRailFocusRequester = navRailFocusRequester
                 )
             }
         }
