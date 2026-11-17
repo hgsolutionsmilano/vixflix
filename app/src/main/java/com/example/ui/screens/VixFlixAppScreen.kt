@@ -1,6 +1,23 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -57,8 +74,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
@@ -69,7 +88,9 @@ import com.example.data.local.WatchlistEntity
 import com.example.data.remote.MediaItem
 import com.example.data.repository.CatalogFeed
 import com.example.ui.CatalogUiState
+import com.example.ui.DetailUiState
 import com.example.ui.NavTab
+import com.example.ui.PlaybackSession
 import com.example.ui.VixFlixViewModel
 import com.example.ui.components.ContinueWatchingSection
 import com.example.ui.components.MediaCatalogRow
@@ -109,69 +130,18 @@ fun VixFlixAppScreen(
     val heroPlayFocusRequester = remember { FocusRequester() }
     val searchInputFocusRequester = remember { FocusRequester() }
 
-    // 1. Se c'è una sessione di riproduzione attiva, mostra a tutto schermo il player ExoPlayer + VixSrc
-    val activeSession = playbackSession
-    if (activeSession != null) {
-        VixPlayerScreen(
-            session = activeSession,
-            streamLang = streamLang,
-            vixSrcResolver = viewModel.repository.vixSrcResolver,
-            onDynamicHlsFound = viewModel::onDynamicHlsIntercepted,
-            onTogglePlayerMode = viewModel::togglePlayerMode,
-            onToggleLanguage = viewModel::setStreamLanguage,
-            onProgressUpdate = viewModel::onPlaybackProgressUpdate,
-            onNextEpisode = viewModel::playNextEpisode,
-            onClose = viewModel::closePlayer
-        )
-        return
+    // Memorizza l'ultimo DetailUiState per animarne l'uscita fluida verso il basso senza scatti
+    var lastDetailSnapshot by remember { mutableStateOf<DetailUiState?>(null) }
+    if (detailState != null) {
+        lastDetailSnapshot = detailState
     }
 
-    // 2. Se i dettagli di un film/serie sono aperti, mostra la schermata dettagli & episodi
-    val currentDetail = detailState
-    if (currentDetail != null) {
-        val savedEntry = continueWatching.firstOrNull { it.id == currentDetail.mediaItem.uniqueKey }
-        val inList = watchlist.any { it.id == currentDetail.mediaItem.uniqueKey }
-        MediaDetailScreen(
-            state = currentDetail,
-            savedProgress = savedEntry,
-            isInWatchlist = inList,
-            onClose = viewModel::closeDetails,
-            onPlayMain = { restartFromZero ->
-                viewModel.startPlayback(
-                    item = currentDetail.mediaItem,
-                    seasonNumber = if (currentDetail.mediaItem.isSeries) (savedEntry?.seasonNumber ?: currentDetail.selectedSeason) else null,
-                    episodeNumber = if (currentDetail.mediaItem.isSeries) (savedEntry?.episodeNumber ?: 1) else null,
-                    episodeTitle = savedEntry?.episodeTitle,
-                    explicitStartPositionMs = if (restartFromZero) 0L else null
-                )
-            },
-            onPlayEpisode = { season, episode, epTitle ->
-                viewModel.startPlayback(
-                    item = currentDetail.mediaItem,
-                    seasonNumber = season,
-                    episodeNumber = episode,
-                    episodeTitle = epTitle
-                )
-            },
-            onOpenYouTubeTrailerPopup = viewModel::openYouTubeTrailerPopup,
-            onSelectYouTubeTrailer = viewModel::selectYouTubeTrailer,
-            onRetryYouTubeTrailer = viewModel::retryCurrentYouTubeTrailer,
-            onCloseTrailer = viewModel::closeTrailerPlayer,
-            onSelectSeason = { seasonNum ->
-                viewModel.selectSeason(currentDetail.mediaItem.id, seasonNum)
-            },
-            onToggleWatchlist = {
-                viewModel.toggleWatchlist(currentDetail.mediaItem)
-            },
-            onSelectSimilar = { similarItem ->
-                viewModel.openDetails(similarItem)
-            }
-        )
-        return
-    }
+    val isDetailVisible = detailState != null
+    val isPlayerVisible = playbackSession != null
+    val isCatalogInteractive = !isDetailVisible && !isPlayerVisible
 
-    // Gestione tasto INDIETRO del telecomando Android TV / Google TV
-    BackHandler(enabled = isSearchBarVisible || selectedTab != NavTab.HOME) {
+    // Gestione tasto INDIETRO del telecomando Android TV / Google TV quando si è nel catalogo principale
+    BackHandler(enabled = isCatalogInteractive && (isSearchBarVisible || selectedTab != NavTab.HOME)) {
         if (isSearchBarVisible) {
             isSearchBarVisible = false
             viewModel.clearSearch()
@@ -187,12 +157,12 @@ fun VixFlixAppScreen(
     }
 
     LaunchedEffect(isTvDevice, catalogState is CatalogUiState.Success) {
-        if (isTvDevice && catalogState is CatalogUiState.Success) {
+        if (isTvDevice && catalogState is CatalogUiState.Success && isCatalogInteractive) {
             runCatching { heroPlayFocusRequester.requestFocus() }
         }
     }
 
-    // 3. Popup automatico se GitHub Releases segnala una nuova versione
+    // Popup automatico se GitHub Releases segnala una nuova versione
     GitHubUpdateDialog(
         state = gitHubState,
         onDismiss = viewModel::dismissUpdateDialog,
@@ -211,6 +181,17 @@ fun VixFlixAppScreen(
         )
     }
 
+    val catalogDepthScale by animateFloatAsState(
+        targetValue = if (isDetailVisible) 0.94f else 1f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "catalogDepthScale"
+    )
+    val catalogDepthAlpha by animateFloatAsState(
+        targetValue = if (isDetailVisible) 0.42f else 1f,
+        animationSpec = tween(durationMillis = 280),
+        label = "catalogDepthAlpha"
+    )
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -218,9 +199,18 @@ fun VixFlixAppScreen(
     ) {
         val useTvNavigationRail = isTvDevice || maxWidth >= 840.dp
 
+        // 1. LIVELLO BASE: Catalogo Principale (mantiene posizione di scorrimento e stato TV dietro ai dettagli)
         Scaffold(
             containerColor = NetflixBlack,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            modifier = Modifier
+                .fillMaxSize()
+                .focusProperties { canFocus = isCatalogInteractive }
+                .graphicsLayer {
+                    scaleX = catalogDepthScale
+                    scaleY = catalogDepthScale
+                    alpha = catalogDepthAlpha
+                },
             bottomBar = {
                 if (!useTvNavigationRail) {
                     NavigationBar(
@@ -313,146 +303,185 @@ fun VixFlixAppScreen(
                         .background(NetflixBlack)
                 ) {
                     val topBarOffset = if (useTvNavigationRail) 78.dp else 122.dp
+                    val sectionKey = MainSectionKey(
+                        isSearch = isSearchBarVisible && searchQuery.isNotBlank(),
+                        tab = selectedTab,
+                        catalogStage = when (catalogState) {
+                            is CatalogUiState.Loading -> "loading"
+                            is CatalogUiState.Error -> "error"
+                            is CatalogUiState.Success -> "success"
+                        }
+                    )
 
-                    if (isSearchBarVisible && searchQuery.isNotBlank()) {
-                        SearchResultsGrid(
-                            query = searchQuery,
-                            isSearching = isSearching,
-                            results = searchResults,
-                            isTvLayout = useTvNavigationRail,
-                            onItemClick = viewModel::openDetails,
-                            contentPadding = PaddingValues(
-                                top = topBarOffset + 46.dp,
-                                bottom = innerPadding.calculateBottomPadding() + 24.dp,
-                                start = 16.dp,
-                                end = 16.dp
-                            )
-                        )
-                    } else if (selectedTab == NavTab.GITHUB) {
-                        GitHubUpdateSectionScreen(
-                            state = gitHubState,
-                            onRepoSlugChange = viewModel::updateGitHubRepoSlug,
-                            onCheckUpdates = { slug -> viewModel.checkForGitHubUpdates(slug, showPopupIfAvailable = false) },
-                            onTriggerUpdate = { viewModel.performInAppUpdate(context) },
-                            onUpdateTmdbKey = viewModel::updateTmdbApiKey,
-                            onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
-                            contentPadding = PaddingValues(
-                                top = topBarOffset,
-                                bottom = innerPadding.calculateBottomPadding()
-                            )
-                        )
-                    } else if (selectedTab == NavTab.MY_LIST) {
-                        MyListScreen(
-                            watchlist = watchlist,
-                            continueWatching = continueWatching,
-                            onOpenItem = viewModel::openDetails,
-                            onResumeContinueWatching = viewModel::resumeFromContinueWatching,
-                            onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
-                            contentPadding = PaddingValues(
-                                top = topBarOffset,
-                                bottom = innerPadding.calculateBottomPadding() + 24.dp
-                            )
-                        )
-                    } else {
-                        when (val state = catalogState) {
-                            is CatalogUiState.Loading -> {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        CircularProgressIndicator(color = NetflixRed)
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        Text(
-                                            text = "Caricamento catalogo live da TMDB…",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = NetflixLightGray
+                    AnimatedContent(
+                        targetState = sectionKey,
+                        transitionSpec = {
+                            when {
+                                targetState.isSearch != initialState.isSearch -> {
+                                    (fadeIn(tween(240)) + slideInVertically(tween(260, easing = FastOutSlowInEasing)) { it / 18 })
+                                        .togetherWith(fadeOut(tween(170)))
+                                }
+                                targetState.tab != initialState.tab -> {
+                                    val forward = targetState.tab.ordinal >= initialState.tab.ordinal
+                                    (fadeIn(tween(260)) + slideInHorizontally(
+                                        animationSpec = tween(280, easing = FastOutSlowInEasing),
+                                        initialOffsetX = { width -> if (forward) width / 10 else -width / 10 }
+                                    )).togetherWith(
+                                        fadeOut(tween(180)) + slideOutHorizontally(
+                                            animationSpec = tween(220, easing = FastOutSlowInEasing),
+                                            targetOffsetX = { width -> if (forward) -width / 14 else width / 14 }
                                         )
-                                    }
+                                    )
+                                }
+                                else -> {
+                                    (fadeIn(tween(280)) + scaleIn(initialScale = 0.98f, animationSpec = tween(280)))
+                                        .togetherWith(fadeOut(tween(180)))
                                 }
                             }
-
-                            is CatalogUiState.Error -> {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(28.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        },
+                        label = "mainContentTransition",
+                        modifier = Modifier.fillMaxSize()
+                    ) { currentSection ->
+                        if (currentSection.isSearch) {
+                            SearchResultsGrid(
+                                query = searchQuery,
+                                isSearching = isSearching,
+                                results = searchResults,
+                                isTvLayout = useTvNavigationRail,
+                                onItemClick = viewModel::openDetails,
+                                contentPadding = PaddingValues(
+                                    top = topBarOffset + 46.dp,
+                                    bottom = innerPadding.calculateBottomPadding() + 24.dp,
+                                    start = 16.dp,
+                                    end = 16.dp
+                                )
+                            )
+                        } else if (currentSection.tab == NavTab.GITHUB) {
+                            GitHubUpdateSectionScreen(
+                                state = gitHubState,
+                                onRepoSlugChange = viewModel::updateGitHubRepoSlug,
+                                onCheckUpdates = { slug -> viewModel.checkForGitHubUpdates(slug, showPopupIfAvailable = false) },
+                                onTriggerUpdate = { viewModel.performInAppUpdate(context) },
+                                onUpdateTmdbKey = viewModel::updateTmdbApiKey,
+                                onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
+                                contentPadding = PaddingValues(
+                                    top = topBarOffset,
+                                    bottom = innerPadding.calculateBottomPadding()
+                                )
+                            )
+                        } else if (currentSection.tab == NavTab.MY_LIST) {
+                            MyListScreen(
+                                watchlist = watchlist,
+                                continueWatching = continueWatching,
+                                onOpenItem = viewModel::openDetails,
+                                onResumeContinueWatching = viewModel::resumeFromContinueWatching,
+                                onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
+                                contentPadding = PaddingValues(
+                                    top = topBarOffset,
+                                    bottom = innerPadding.calculateBottomPadding() + 24.dp
+                                )
+                            )
+                        } else {
+                            when (val state = catalogState) {
+                                is CatalogUiState.Loading -> {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.ErrorOutline,
-                                            contentDescription = null,
-                                            tint = NetflixRed,
-                                            modifier = Modifier.size(52.dp)
-                                        )
-                                        Text(
-                                            text = "Connessione TMDB Richiesta",
-                                            style = MaterialTheme.typography.headlineMedium,
-                                            color = NetflixWhite,
-                                            textAlign = TextAlign.Center
-                                        )
-                                        Text(
-                                            text = state.message,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = NetflixLightGray,
-                                            textAlign = TextAlign.Center
-                                        )
-                                        var retryFocused by remember { mutableStateOf(false) }
-                                        Button(
-                                            onClick = viewModel::loadCatalog,
-                                            border = if (retryFocused) BorderStroke(2.5.dp, NetflixWhite) else null,
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = NetflixRed,
-                                                contentColor = NetflixWhite
-                                            ),
-                                            shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier
-                                                .onFocusChanged { retryFocused = it.isFocused }
-                                                .testTag("retry_tmdb_button")
-                                        ) {
-                                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Riprova Connessione TMDB")
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            CircularProgressIndicator(color = NetflixRed)
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            Text(
+                                                text = "Caricamento catalogo live da TMDB…",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = NetflixLightGray
+                                            )
                                         }
                                     }
                                 }
-                            }
 
-                            is CatalogUiState.Success -> {
-                                CatalogFeedContent(
-                                    feed = state.feed,
-                                    selectedTab = selectedTab,
-                                    continueWatching = continueWatching,
-                                    watchlist = watchlist,
-                                    isTvLayout = useTvNavigationRail,
-                                    heroPlayFocusRequester = heroPlayFocusRequester,
-                                    onPlayItem = { item -> viewModel.startPlayback(item) },
-                                    onOpenDetails = viewModel::openDetails,
-                                    onToggleWatchlist = viewModel::toggleWatchlist,
-                                    onResumeContinueWatching = viewModel::resumeFromContinueWatching,
-                                    onInfoContinueWatching = { entry ->
-                                        viewModel.openDetails(
-                                            MediaItem(
-                                                id = entry.tmdbId,
-                                                mediaType = entry.mediaType,
-                                                title = entry.title,
-                                                overview = entry.overview,
-                                                posterPath = entry.posterPath,
-                                                backdropPath = entry.backdropPath,
-                                                voteAverage = entry.voteAverage,
-                                                releaseYear = entry.releaseYear
+                                is CatalogUiState.Error -> {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(28.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ErrorOutline,
+                                                contentDescription = null,
+                                                tint = NetflixRed,
+                                                modifier = Modifier.size(52.dp)
                                             )
-                                        )
-                                    },
-                                    onRemoveContinueWatching = { entry ->
-                                        viewModel.removeContinueWatching(entry.id)
-                                    },
-                                    bottomPadding = innerPadding.calculateBottomPadding()
-                                )
+                                            Text(
+                                                text = "Connessione TMDB Richiesta",
+                                                style = MaterialTheme.typography.headlineMedium,
+                                                color = NetflixWhite,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            Text(
+                                                text = state.message,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = NetflixLightGray,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            var retryFocused by remember { mutableStateOf(false) }
+                                            Button(
+                                                onClick = viewModel::loadCatalog,
+                                                border = if (retryFocused) BorderStroke(2.5.dp, NetflixWhite) else null,
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = NetflixRed,
+                                                    contentColor = NetflixWhite
+                                                ),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier
+                                                    .onFocusChanged { retryFocused = it.isFocused }
+                                                    .testTag("retry_tmdb_button")
+                                            ) {
+                                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Riprova Connessione TMDB")
+                                            }
+                                        }
+                                    }
+                                }
+
+                                is CatalogUiState.Success -> {
+                                    CatalogFeedContent(
+                                        feed = state.feed,
+                                        selectedTab = currentSection.tab,
+                                        continueWatching = continueWatching,
+                                        watchlist = watchlist,
+                                        isTvLayout = useTvNavigationRail,
+                                        heroPlayFocusRequester = heroPlayFocusRequester,
+                                        onPlayItem = { item -> viewModel.startPlayback(item) },
+                                        onOpenDetails = viewModel::openDetails,
+                                        onToggleWatchlist = viewModel::toggleWatchlist,
+                                        onResumeContinueWatching = viewModel::resumeFromContinueWatching,
+                                        onInfoContinueWatching = { entry ->
+                                            viewModel.openDetails(
+                                                MediaItem(
+                                                    id = entry.tmdbId,
+                                                    mediaType = entry.mediaType,
+                                                    title = entry.title,
+                                                    overview = entry.overview,
+                                                    posterPath = entry.posterPath,
+                                                    backdropPath = entry.backdropPath,
+                                                    voteAverage = entry.voteAverage,
+                                                    releaseYear = entry.releaseYear
+                                                )
+                                            )
+                                        },
+                                        onRemoveContinueWatching = { entry ->
+                                            viewModel.removeContinueWatching(entry.id)
+                                        },
+                                        bottomPadding = innerPadding.calculateBottomPadding()
+                                    )
+                                }
                             }
                         }
                     }
@@ -493,8 +522,96 @@ fun VixFlixAppScreen(
                 }
             }
         }
+
+        // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (apertura fluida da locandina con zoom+slide)
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isDetailVisible && !isPlayerVisible,
+            enter = fadeIn(tween(260)) +
+                slideInVertically(tween(320, easing = FastOutSlowInEasing)) { it / 8 } +
+                scaleIn(initialScale = 0.94f, animationSpec = tween(300, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(200)) +
+                slideOutVertically(tween(220, easing = FastOutSlowInEasing)) { it / 10 } +
+                scaleOut(targetScale = 0.95f, animationSpec = tween(220)),
+            modifier = Modifier
+                .fillMaxSize()
+                .focusProperties { canFocus = !isPlayerVisible }
+        ) {
+            val currentDetail = lastDetailSnapshot
+            if (currentDetail != null) {
+                val savedEntry = continueWatching.firstOrNull { it.id == currentDetail.mediaItem.uniqueKey }
+                val inList = watchlist.any { it.id == currentDetail.mediaItem.uniqueKey }
+                MediaDetailScreen(
+                    state = currentDetail,
+                    savedProgress = savedEntry,
+                    isInWatchlist = inList,
+                    isInteractive = isDetailVisible && !isPlayerVisible,
+                    onClose = viewModel::closeDetails,
+                    onPlayMain = { restartFromZero ->
+                        viewModel.startPlayback(
+                            item = currentDetail.mediaItem,
+                            seasonNumber = if (currentDetail.mediaItem.isSeries) (savedEntry?.seasonNumber ?: currentDetail.selectedSeason) else null,
+                            episodeNumber = if (currentDetail.mediaItem.isSeries) (savedEntry?.episodeNumber ?: 1) else null,
+                            episodeTitle = savedEntry?.episodeTitle,
+                            explicitStartPositionMs = if (restartFromZero) 0L else null
+                        )
+                    },
+                    onPlayEpisode = { season, episode, epTitle ->
+                        viewModel.startPlayback(
+                            item = currentDetail.mediaItem,
+                            seasonNumber = season,
+                            episodeNumber = episode,
+                            episodeTitle = epTitle
+                        )
+                    },
+                    onOpenYouTubeTrailerPopup = viewModel::openYouTubeTrailerPopup,
+                    onSelectYouTubeTrailer = viewModel::selectYouTubeTrailer,
+                    onRetryYouTubeTrailer = viewModel::retryCurrentYouTubeTrailer,
+                    onCloseTrailer = viewModel::closeTrailerPlayer,
+                    onSelectSeason = { seasonNum ->
+                        viewModel.selectSeason(currentDetail.mediaItem.id, seasonNum)
+                    },
+                    onToggleWatchlist = {
+                        viewModel.toggleWatchlist(currentDetail.mediaItem)
+                    },
+                    onSelectSimilar = { similarItem ->
+                        viewModel.openDetails(similarItem)
+                    }
+                )
+            }
+        }
+
+        // 3. LIVELLO SUPERIORE: Player Video a Tutto Schermo (ExoPlayer + VixSrc) con ingresso fluido e chiusura istantanea
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isPlayerVisible,
+            enter = fadeIn(tween(240)) + scaleIn(
+                initialScale = 0.96f,
+                animationSpec = tween(260, easing = FastOutSlowInEasing)
+            ),
+            exit = ExitTransition.None,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            playbackSession?.let { activeSession ->
+                VixPlayerScreen(
+                    session = activeSession,
+                    streamLang = streamLang,
+                    vixSrcResolver = viewModel.repository.vixSrcResolver,
+                    onDynamicHlsFound = viewModel::onDynamicHlsIntercepted,
+                    onTogglePlayerMode = viewModel::togglePlayerMode,
+                    onToggleLanguage = viewModel::setStreamLanguage,
+                    onProgressUpdate = viewModel::onPlaybackProgressUpdate,
+                    onNextEpisode = viewModel::playNextEpisode,
+                    onClose = viewModel::closePlayer
+                )
+            }
+        }
     }
 }
+
+private data class MainSectionKey(
+    val isSearch: Boolean,
+    val tab: NavTab,
+    val catalogStage: String
+)
 
 @Composable
 private fun CatalogFeedContent(
@@ -769,7 +886,13 @@ private fun SearchResultsGrid(
                 item = item,
                 itemIndex = index,
                 onClick = { onItemClick(item) },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .animateItem(
+                        fadeInSpec = tween(250),
+                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                        fadeOutSpec = tween(180)
+                    )
             )
         }
     }

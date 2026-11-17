@@ -19,8 +19,14 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -116,6 +122,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.R
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbTrailerResolver
@@ -507,22 +514,41 @@ fun YouTubeTrailerDialog(
                 .testTag("in_app_trailer_overlay"),
             contentAlignment = Alignment.Center
         ) {
-            // Card Modale Cinematografica Centrata
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-                border = BorderStroke(1.dp, NetflixElevatedSurface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 24.dp),
+            var cardEntered by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                cardEntered = true
+            }
+
+            // Card Modale Cinematografica Centrata con ingresso morbido
+            androidx.compose.animation.AnimatedVisibility(
+                visible = cardEntered,
+                enter = fadeIn(tween(220)) +
+                    scaleIn(
+                        initialScale = 0.91f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioLowBouncy,
+                            stiffness = Spring.StiffnessMedium
+                        )
+                    ) +
+                    slideInVertically(tween(240, easing = FastOutSlowInEasing)) { it / 12 },
                 modifier = Modifier
                     .widthIn(max = 880.dp)
                     .fillMaxWidth(0.96f)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = {} // Blocca la propagazione click verso lo scrim esterno
-                    )
-                    .testTag("youtube_trailer_modal_card")
             ) {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 24.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {} // Blocca la propagazione click verso lo scrim esterno
+                        )
+                        .testTag("youtube_trailer_modal_card")
+                ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1073,7 +1099,11 @@ fun YouTubeTrailerDialog(
                                         isSelected = candidate.videoId == selectedVideo?.videoId,
                                         itemIndex = index,
                                         listState = playlistState,
-                                        onClick = { onSelectTrailer(candidate) }
+                                        onClick = { onSelectTrailer(candidate) },
+                                        modifier = Modifier.animateItem(
+                                            fadeInSpec = tween(220),
+                                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                        )
                                     )
                                 }
                             }
@@ -1088,6 +1118,7 @@ fun YouTubeTrailerDialog(
                     }
                 }
             }
+            }
         }
     }
 }
@@ -1098,9 +1129,17 @@ private fun YouTubeModalTrailerCard(
     isSelected: Boolean,
     itemIndex: Int,
     listState: LazyListState,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val thumbRequest = remember(context, candidate.thumbnailUrl) {
+        ImageRequest.Builder(context)
+            .data(candidate.thumbnailUrl)
+            .crossfade(250)
+            .build()
+    }
 
     Card(
         shape = RoundedCornerShape(10.dp),
@@ -1115,7 +1154,7 @@ private fun YouTubeModalTrailerCard(
                 else -> NetflixElevatedSurface
             }
         ),
-        modifier = Modifier
+        modifier = modifier
             .width(206.dp)
             .animatedPosterShowcase(
                 itemIndex = itemIndex,
@@ -1136,7 +1175,7 @@ private fun YouTubeModalTrailerCard(
                     .background(NetflixBlack)
             ) {
                 AsyncImage(
-                    model = candidate.thumbnailUrl,
+                    model = thumbRequest,
                     contentDescription = candidate.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()

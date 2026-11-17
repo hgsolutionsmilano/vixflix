@@ -12,11 +12,13 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -104,9 +106,15 @@ fun Modifier.tvFocusableControl(
     onClick: (() -> Unit)? = null
 ): Modifier = composed {
     var isFocused by remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
 
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) focusedScale else 1f,
+        targetValue = when {
+            isPressed -> 0.94f
+            isFocused -> focusedScale
+            else -> 1f
+        },
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
@@ -153,8 +161,12 @@ fun Modifier.tvFocusableControl(
                             false
                         }
                     }
-                    .focusable()
-                    .clickable { onClick() }
+                    .focusable(interactionSource = interactionSource)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = LocalIndication.current,
+                        onClick = onClick
+                    )
             } else {
                 Modifier
             }
@@ -204,6 +216,16 @@ fun Modifier.animatedPosterShowcase(
     )
 
     val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.94f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "posterPressScale"
+    )
 
     this
         .zIndex(if (isFocused) 10f else 0f)
@@ -233,7 +255,7 @@ fun Modifier.animatedPosterShowcase(
                 }
             }
 
-            val finalScale = if (isFocused) focusScale else scrollScale
+            val finalScale = (if (isFocused) focusScale else scrollScale) * pressScale
             scaleX = finalScale
             scaleY = finalScale
             rotationY = if (isFocused) 0f else scrollRotationY
