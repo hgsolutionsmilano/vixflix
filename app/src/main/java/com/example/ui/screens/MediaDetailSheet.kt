@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.net.Uri
+import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -94,10 +95,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
@@ -787,25 +790,34 @@ private fun InAppTrailerPlayerOverlay(
     val resolved = trailerState.resolvedTrailer
     val activeSourceLabel = resolved?.sourceLabel ?: "${trailerState.video.typeBadge} • ${trailerState.video.name}"
 
-    var isBuffering by remember(trailerState.video.id) { mutableStateOf(true) }
-    var isPlaying by remember { mutableStateOf(true) }
+    var isBuffering by remember(trailerState.video.id) { mutableStateOf(trailerState.isLoading) }
+    var isPlaying by remember { mutableStateOf(false) }
     var currentPosMs by remember(trailerState.video.id) { mutableLongStateOf(0L) }
     var durationMs by remember(trailerState.video.id) { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
-    var hasSeekedInitial by remember(trailerState.video.id, resolved?.streamUrl) { mutableStateOf(false) }
     var playbackError by remember(trailerState.video.id, trailerState.errorMessage) {
         mutableStateOf(trailerState.errorMessage)
     }
 
-    val okHttpDataSourceFactory = remember(vixSrcResolver, resolved?.referer, resolved?.userAgent) {
-        val headers = mapOf(
-            "Referer" to (resolved?.referer ?: "https://vixsrc.to/"),
-            "Origin" to "https://vixsrc.to"
-        )
-        OkHttpDataSource.Factory(vixSrcResolver.exoOkHttpClient)
+    // Client OkHttp pulito per stream TMDB / YouTube / Vimeo (senza VixSrcOkHttpInterceptor né header vixsrc.to)
+    val trailerOkHttpClient = remember {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
+    val okHttpDataSourceFactory = remember(trailerOkHttpClient, resolved?.referer, resolved?.userAgent) {
+        val factory = OkHttpDataSource.Factory(trailerOkHttpClient)
             .setUserAgent(resolved?.userAgent ?: "Mozilla/5.0")
-            .setDefaultRequestProperties(headers)
+        val ref = resolved?.referer.orEmpty()
+        if (ref.isNotBlank()) {
+            factory.setDefaultRequestProperties(mapOf("Referer" to ref))
+        }
+        factory
     }
 
     val exoPlayer = remember(context) {
@@ -818,18 +830,48 @@ private fun InAppTrailerPlayerOverlay(
             }
     }
 
-    LaunchedEffect(resolved?.streamUrl, trailerState.isLoading) {
-        if (trailerState.isLoading || resolved == null || resolved.streamUrl.isBlank()) return@LaunchedEffect
+    // Gestione immediata di fallimento risoluzione TMDB/YouTube o preparazione media source reale
+    LaunchedEffect(
+        resolved?.streamUrl,
+        resolved?.audioStreamUrl,
+        trailerState.isLoading,
+        trailerState.errorMessage,
+        okHttpDataSourceFactory
+    ) {
+        if (trailerState.isLoading) {
+            isBuffering = true
+            playbackError = null
+            return@LaunchedEffect
+        }
+
+        if (!trailerState.errorMessage.isNullOrBlank()) {
+            isBuffering = false
+            isPlaying = false
+            showControls = true
+            playbackError = trailerState.errorMessage
+            exoPlayer.stop()
+            return@LaunchedEffect
+        }
+
+        if (resolved == null || resolved.streamUrl.isBlank()) {
+            isBuffering = false
+            isPlaying = false
+            showControls = true
+            playbackError = "Trailer non disponibile o non riproducibile da TMDB/YouTube."
+            exoPlayer.stop()
+            return@LaunchedEffect
+        }
+
         playbackError = null
         isBuffering = true
 
-        val uri = Uri.parse(resolved.streamUrl)
-        val itemBuilder = ExoMediaItem.Builder().setUri(uri)
+        val videoUri = Uri.parse(resolved.streamUrl)
+        val itemBuilder = ExoMediaItem.Builder().setUri(videoUri)
         if (resolved.isHls) {
             itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
         }
 
-        val mediaSource = if (resolved.isHls) {
+        val primarySource = if (resolved.isHls) {
             HlsMediaSource.Factory(okHttpDataSourceFactory)
                 .setAllowChunklessPreparation(true)
                 .createMediaSource(itemBuilder.build())
@@ -838,13 +880,31 @@ private fun InAppTrailerPlayerOverlay(
                 .createMediaSource(itemBuilder.build())
         }
 
-        exoPlayer.setMediaSource(mediaSource)
-        if (resolved.clipStartMs > 0L && !hasSeekedInitial) {
-            exoPlayer.seekTo(resolved.clipStartMs)
-            hasSeekedInitial = true
+        val finalMediaSource = if (!resolved.audioStreamUrl.isNullOrBlank() && !resolved.isHls) {
+            val audioSource = ProgressiveMediaSource.Factory(okHttpDataSourceFactory)
+                .createMediaSource(ExoMediaItem.Builder().setUri(Uri.parse(resolved.audioStreamUrl)).build())
+            MergingMediaSource(primarySource, audioSource)
+        } else {
+            primarySource
         }
+
+        exoPlayer.setMediaSource(finalMediaSource)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
+    }
+
+    // Watchdog anti-blocco: se il buffering del trailer supera 15 secondi senza partire, mostra errore chiaro
+    LaunchedEffect(resolved?.streamUrl, isBuffering, trailerState.isLoading, playbackError) {
+        if (!trailerState.isLoading && isBuffering && playbackError == null && resolved != null) {
+            delay(15_000L)
+            if (isBuffering && playbackError == null && exoPlayer.playbackState != Player.STATE_READY) {
+                exoPlayer.stop()
+                isBuffering = false
+                isPlaying = false
+                showControls = true
+                playbackError = "Impossibile avviare il trailer da TMDB/YouTube (timeout buffering)."
+            }
+        }
     }
 
     // Aggiorna periodicamente la posizione del trailer e nasconde automaticamente i controlli durante la riproduzione
@@ -872,6 +932,10 @@ private fun InAppTrailerPlayerOverlay(
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (!playbackError.isNullOrBlank()) {
+                    isBuffering = false
+                    return
+                }
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
                     playbackError = null
@@ -880,6 +944,10 @@ private fun InAppTrailerPlayerOverlay(
                     if (dur > 0L) {
                         durationMs = dur
                     }
+                } else if (playbackState == Player.STATE_ENDED) {
+                    isBuffering = false
+                    isPlaying = false
+                    showControls = true
                 }
             }
 
@@ -892,6 +960,7 @@ private fun InAppTrailerPlayerOverlay(
 
             override fun onPlayerError(error: PlaybackException) {
                 isBuffering = false
+                isPlaying = false
                 showControls = true
                 playbackError = "Impossibile riprodurre questo trailer (${error.errorCodeName})."
             }
@@ -920,14 +989,13 @@ private fun InAppTrailerPlayerOverlay(
                 .clickable { showControls = !showControls }
                 .testTag("in_app_trailer_overlay")
         ) {
-            // 1. Video a tutto schermo (100% della superficie del popup)
+            // 1. Video a tutto schermo (TextureView dedicata al Dialog per evitare schermate nere/buffer bloccati)
             AndroidView(
                 factory = { ctx ->
-                    PlayerView(ctx).apply {
+                    (LayoutInflater.from(ctx).inflate(R.layout.trailer_player_view, null, false) as PlayerView).apply {
                         player = exoPlayer
                         useController = false
                         keepScreenOn = true
-                        setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
                         this.resizeMode = resizeMode
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -944,8 +1012,25 @@ private fun InAppTrailerPlayerOverlay(
                     .testTag("fullscreen_trailer_player_view")
             )
 
-            // 2. Stato di caricamento iniziale / buffering con anteprima poster
-            if (trailerState.isLoading || isBuffering) {
+            // 2. Stato errore (ha la priorità su qualsiasi stato di buffering) o caricamento
+            if (!playbackError.isNullOrBlank()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(NetflixBlack.copy(alpha = 0.88f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = playbackError.orEmpty(),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = NetflixRed,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .padding(horizontal = 28.dp)
+                            .testTag("trailer_error_text")
+                    )
+                }
+            } else if (trailerState.isLoading || isBuffering) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -993,37 +1078,6 @@ private fun InAppTrailerPlayerOverlay(
                             color = NetflixLightGray,
                             textAlign = TextAlign.Center
                         )
-                    }
-                }
-            } else if (!playbackError.isNullOrBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(NetflixBlack.copy(alpha = 0.85f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(24.dp)
-                    ) {
-                        Text(
-                            text = playbackError.orEmpty(),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = NetflixRed,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = { onSelectTrailer(trailerState.video) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = NetflixRed,
-                                contentColor = Color.White
-                            )
-                        ) {
-                            Icon(imageVector = Icons.Default.Replay, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Riprova Trailer")
-                        }
                     }
                 }
             }
