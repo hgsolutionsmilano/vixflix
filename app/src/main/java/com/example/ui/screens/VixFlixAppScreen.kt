@@ -1,23 +1,29 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -36,15 +42,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
@@ -63,7 +77,9 @@ import com.example.ui.components.MediaPosterCard
 import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
 import com.example.ui.components.Top10Section
+import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.theme.NetflixBlack
+import com.example.ui.theme.NetflixCardSurface
 import com.example.ui.theme.NetflixDarkSurface
 import com.example.ui.theme.NetflixElevatedSurface
 import com.example.ui.theme.NetflixLightGray
@@ -76,6 +92,7 @@ fun VixFlixAppScreen(
     viewModel: VixFlixViewModel
 ) {
     val context = LocalContext.current
+    val isTvDevice = rememberIsTvDevice()
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val catalogState by viewModel.catalogState.collectAsStateWithLifecycle()
     val continueWatching by viewModel.continueWatching.collectAsStateWithLifecycle()
@@ -89,6 +106,8 @@ fun VixFlixAppScreen(
     val gitHubState by viewModel.gitHubState.collectAsStateWithLifecycle()
 
     var isSearchBarVisible by remember { mutableStateOf(false) }
+    val heroPlayFocusRequester = remember { FocusRequester() }
+    val searchInputFocusRequester = remember { FocusRequester() }
 
     // 1. Se c'è una sessione di riproduzione attiva, mostra a tutto schermo il player ExoPlayer + VixSrc
     val activeSession = playbackSession
@@ -150,6 +169,28 @@ fun VixFlixAppScreen(
         return
     }
 
+    // Gestione tasto INDIETRO del telecomando Android TV / Google TV
+    BackHandler(enabled = isSearchBarVisible || selectedTab != NavTab.HOME) {
+        if (isSearchBarVisible) {
+            isSearchBarVisible = false
+            viewModel.clearSearch()
+        } else if (selectedTab != NavTab.HOME) {
+            viewModel.selectTab(NavTab.HOME)
+        }
+    }
+
+    LaunchedEffect(isSearchBarVisible) {
+        if (isSearchBarVisible) {
+            runCatching { searchInputFocusRequester.requestFocus() }
+        }
+    }
+
+    LaunchedEffect(isTvDevice, catalogState is CatalogUiState.Success) {
+        if (isTvDevice && catalogState is CatalogUiState.Success) {
+            runCatching { heroPlayFocusRequester.requestFocus() }
+        }
+    }
+
     // 3. Popup automatico se GitHub Releases segnala una nuova versione
     GitHubUpdateDialog(
         state = gitHubState,
@@ -158,222 +199,298 @@ fun VixFlixAppScreen(
         onOpenGitHubTab = { viewModel.selectTab(NavTab.GITHUB) }
     )
 
-    Scaffold(
-        containerColor = NetflixBlack,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        bottomBar = {
-            NavigationBar(
-                containerColor = NetflixDarkSurface,
-                contentColor = NetflixWhite,
-                windowInsets = WindowInsets.navigationBars
+    val navItems = remember {
+        listOf(
+            Triple(NavTab.HOME, "Home", Icons.Default.Home),
+            Triple(NavTab.SERIES, "Serie TV", Icons.Default.Tv),
+            Triple(NavTab.MOVIES, "Film", Icons.Default.Movie),
+            Triple(NavTab.NEW_POPULAR, "Top & Nuovi", Icons.Default.NewReleases),
+            Triple(NavTab.MY_LIST, "La Mia Lista", Icons.Default.BookmarkBorder),
+            Triple(NavTab.GITHUB, "GitHub CI", Icons.Default.CloudDownload)
+        )
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(NetflixBlack)
+    ) {
+        val useTvNavigationRail = isTvDevice || maxWidth >= 840.dp
+
+        Scaffold(
+            containerColor = NetflixBlack,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            bottomBar = {
+                if (!useTvNavigationRail) {
+                    NavigationBar(
+                        containerColor = NetflixDarkSurface,
+                        contentColor = NetflixWhite,
+                        windowInsets = WindowInsets.navigationBars
+                    ) {
+                        navItems.forEach { (tab, label, icon) ->
+                            var navFocused by remember { mutableStateOf(false) }
+                            NavigationBarItem(
+                                selected = selectedTab == tab,
+                                onClick = {
+                                    isSearchBarVisible = false
+                                    viewModel.clearSearch()
+                                    viewModel.selectTab(tab)
+                                },
+                                icon = {
+                                    Icon(imageVector = icon, contentDescription = label)
+                                },
+                                label = {
+                                    Text(text = label, maxLines = 1)
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = NetflixRed,
+                                    selectedTextColor = NetflixWhite,
+                                    indicatorColor = if (navFocused) NetflixRed.copy(alpha = 0.32f) else NetflixElevatedSurface,
+                                    unselectedIconColor = if (navFocused) NetflixWhite else NetflixMutedGray,
+                                    unselectedTextColor = if (navFocused) NetflixWhite else NetflixMutedGray
+                                ),
+                                modifier = Modifier
+                                    .onFocusChanged { navFocused = it.isFocused }
+                                    .testTag("bottom_nav_${tab.name.lowercase()}")
+                            )
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(NetflixBlack)
             ) {
-                val navItems = listOf(
-                    Triple(NavTab.HOME, "Home", Icons.Default.Home),
-                    Triple(NavTab.SERIES, "Serie TV", Icons.Default.Tv),
-                    Triple(NavTab.MOVIES, "Film", Icons.Default.Movie),
-                    Triple(NavTab.NEW_POPULAR, "Top & Nuovi", Icons.Default.NewReleases),
-                    Triple(NavTab.MY_LIST, "La Mia Lista", Icons.Default.BookmarkBorder),
-                    Triple(NavTab.GITHUB, "GitHub CI", Icons.Default.CloudDownload)
-                )
-                navItems.forEach { (tab, label, icon) ->
-                    NavigationBarItem(
-                        selected = selectedTab == tab,
-                        onClick = {
+                // NavigationRail laterale stile Google TV / Android TV navigabile comodamente con il telecomando
+                if (useTvNavigationRail) {
+                    NavigationRail(
+                        containerColor = NetflixDarkSurface,
+                        contentColor = NetflixWhite,
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .statusBarsPadding()
+                            .padding(top = 12.dp, bottom = 12.dp)
+                            .testTag("tv_navigation_rail")
+                    ) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        navItems.forEach { (tab, label, icon) ->
+                            var itemFocused by remember { mutableStateOf(false) }
+                            NavigationRailItem(
+                                selected = selectedTab == tab,
+                                onClick = {
+                                    isSearchBarVisible = false
+                                    viewModel.clearSearch()
+                                    viewModel.selectTab(tab)
+                                },
+                                icon = {
+                                    Icon(imageVector = icon, contentDescription = label)
+                                },
+                                label = {
+                                    Text(text = label, maxLines = 1)
+                                },
+                                colors = NavigationRailItemDefaults.colors(
+                                    selectedIconColor = NetflixRed,
+                                    selectedTextColor = NetflixWhite,
+                                    indicatorColor = if (itemFocused) NetflixRed.copy(alpha = 0.35f) else NetflixElevatedSurface,
+                                    unselectedIconColor = if (itemFocused) NetflixWhite else NetflixMutedGray,
+                                    unselectedTextColor = if (itemFocused) NetflixWhite else NetflixMutedGray
+                                ),
+                                modifier = Modifier
+                                    .onFocusChanged { itemFocused = it.isFocused }
+                                    .testTag("tv_rail_${tab.name.lowercase()}")
+                            )
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(NetflixBlack)
+                ) {
+                    val topBarOffset = if (useTvNavigationRail) 78.dp else 122.dp
+
+                    if (isSearchBarVisible && searchQuery.isNotBlank()) {
+                        SearchResultsGrid(
+                            query = searchQuery,
+                            isSearching = isSearching,
+                            results = searchResults,
+                            isTvLayout = useTvNavigationRail,
+                            onItemClick = viewModel::openDetails,
+                            contentPadding = PaddingValues(
+                                top = topBarOffset + 46.dp,
+                                bottom = innerPadding.calculateBottomPadding() + 24.dp,
+                                start = 16.dp,
+                                end = 16.dp
+                            )
+                        )
+                    } else if (selectedTab == NavTab.GITHUB) {
+                        GitHubUpdateSectionScreen(
+                            state = gitHubState,
+                            onRepoSlugChange = viewModel::updateGitHubRepoSlug,
+                            onCheckUpdates = { slug -> viewModel.checkForGitHubUpdates(slug, showPopupIfAvailable = false) },
+                            onTriggerUpdate = { viewModel.performInAppUpdate(context) },
+                            onUpdateTmdbKey = viewModel::updateTmdbApiKey,
+                            onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
+                            contentPadding = PaddingValues(
+                                top = topBarOffset,
+                                bottom = innerPadding.calculateBottomPadding()
+                            )
+                        )
+                    } else if (selectedTab == NavTab.MY_LIST) {
+                        MyListScreen(
+                            watchlist = watchlist,
+                            continueWatching = continueWatching,
+                            onOpenItem = viewModel::openDetails,
+                            onResumeContinueWatching = viewModel::resumeFromContinueWatching,
+                            onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
+                            contentPadding = PaddingValues(
+                                top = topBarOffset,
+                                bottom = innerPadding.calculateBottomPadding() + 24.dp
+                            )
+                        )
+                    } else {
+                        when (val state = catalogState) {
+                            is CatalogUiState.Loading -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        CircularProgressIndicator(color = NetflixRed)
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(
+                                            text = "Caricamento catalogo live da TMDB…",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = NetflixLightGray
+                                        )
+                                    }
+                                }
+                            }
+
+                            is CatalogUiState.Error -> {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(28.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ErrorOutline,
+                                            contentDescription = null,
+                                            tint = NetflixRed,
+                                            modifier = Modifier.size(52.dp)
+                                        )
+                                        Text(
+                                            text = "Connessione TMDB Richiesta",
+                                            style = MaterialTheme.typography.headlineMedium,
+                                            color = NetflixWhite,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Text(
+                                            text = state.message,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = NetflixLightGray,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        var retryFocused by remember { mutableStateOf(false) }
+                                        Button(
+                                            onClick = viewModel::loadCatalog,
+                                            border = if (retryFocused) BorderStroke(2.5.dp, NetflixWhite) else null,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NetflixRed,
+                                                contentColor = NetflixWhite
+                                            ),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier
+                                                .onFocusChanged { retryFocused = it.isFocused }
+                                                .testTag("retry_tmdb_button")
+                                        ) {
+                                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Riprova Connessione TMDB")
+                                        }
+                                    }
+                                }
+                            }
+
+                            is CatalogUiState.Success -> {
+                                CatalogFeedContent(
+                                    feed = state.feed,
+                                    selectedTab = selectedTab,
+                                    continueWatching = continueWatching,
+                                    watchlist = watchlist,
+                                    isTvLayout = useTvNavigationRail,
+                                    heroPlayFocusRequester = heroPlayFocusRequester,
+                                    onPlayItem = { item -> viewModel.startPlayback(item) },
+                                    onOpenDetails = viewModel::openDetails,
+                                    onToggleWatchlist = viewModel::toggleWatchlist,
+                                    onResumeContinueWatching = viewModel::resumeFromContinueWatching,
+                                    onInfoContinueWatching = { entry ->
+                                        viewModel.openDetails(
+                                            MediaItem(
+                                                id = entry.tmdbId,
+                                                mediaType = entry.mediaType,
+                                                title = entry.title,
+                                                overview = entry.overview,
+                                                posterPath = entry.posterPath,
+                                                backdropPath = entry.backdropPath,
+                                                voteAverage = entry.voteAverage,
+                                                releaseYear = entry.releaseYear
+                                            )
+                                        )
+                                    },
+                                    onRemoveContinueWatching = { entry ->
+                                        viewModel.removeContinueWatching(entry.id)
+                                    },
+                                    bottomPadding = innerPadding.calculateBottomPadding()
+                                )
+                            }
+                        }
+                    }
+
+                    // Top bar flottante stile Netflix (compatibile D-pad Android TV)
+                    NetflixTopBar(
+                        selectedTab = selectedTab,
+                        onSelectTab = { tab ->
                             isSearchBarVisible = false
                             viewModel.clearSearch()
                             viewModel.selectTab(tab)
                         },
-                        icon = {
-                            Icon(imageVector = icon, contentDescription = label)
+                        searchQuery = searchQuery,
+                        isSearchOpen = isSearchBarVisible,
+                        onToggleSearch = {
+                            isSearchBarVisible = !isSearchBarVisible
+                            if (!isSearchBarVisible) {
+                                viewModel.clearSearch()
+                            }
                         },
-                        label = {
-                            Text(text = label, maxLines = 1)
+                        onSearchQueryChange = viewModel::onSearchQueryChange,
+                        streamLang = streamLang,
+                        onToggleLang = {
+                            viewModel.setStreamLanguage(if (streamLang == "it") "en" else "it")
                         },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = NetflixRed,
-                            selectedTextColor = NetflixWhite,
-                            indicatorColor = NetflixElevatedSurface,
-                            unselectedIconColor = NetflixMutedGray,
-                            unselectedTextColor = NetflixMutedGray
-                        ),
-                        modifier = Modifier.testTag("bottom_nav_${tab.name.lowercase()}")
+                        hasUpdateAvailable = gitHubState.releaseInfo?.isUpdateAvailable == true,
+                        onClickUpdateIcon = {
+                            if (gitHubState.releaseInfo?.isUpdateAvailable == true) {
+                                viewModel.openUpdateDialog()
+                            } else {
+                                viewModel.selectTab(NavTab.GITHUB)
+                            }
+                        },
+                        isTvLayout = useTvNavigationRail,
+                        searchFocusRequester = searchInputFocusRequester,
+                        modifier = Modifier.align(Alignment.TopCenter)
                     )
                 }
             }
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(NetflixBlack)
-        ) {
-            if (isSearchBarVisible && searchQuery.isNotBlank()) {
-                SearchResultsGrid(
-                    query = searchQuery,
-                    isSearching = isSearching,
-                    results = searchResults,
-                    onItemClick = viewModel::openDetails,
-                    contentPadding = PaddingValues(
-                        top = 148.dp,
-                        bottom = innerPadding.calculateBottomPadding() + 24.dp,
-                        start = 16.dp,
-                        end = 16.dp
-                    )
-                )
-            } else if (selectedTab == NavTab.GITHUB) {
-                GitHubUpdateSectionScreen(
-                    state = gitHubState,
-                    onRepoSlugChange = viewModel::updateGitHubRepoSlug,
-                    onCheckUpdates = { slug -> viewModel.checkForGitHubUpdates(slug, showPopupIfAvailable = false) },
-                    onTriggerUpdate = { viewModel.performInAppUpdate(context) },
-                    onUpdateTmdbKey = viewModel::updateTmdbApiKey,
-                    onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
-                    contentPadding = PaddingValues(
-                        top = 118.dp,
-                        bottom = innerPadding.calculateBottomPadding()
-                    )
-                )
-            } else if (selectedTab == NavTab.MY_LIST) {
-                MyListScreen(
-                    watchlist = watchlist,
-                    continueWatching = continueWatching,
-                    onOpenItem = viewModel::openDetails,
-                    onResumeContinueWatching = viewModel::resumeFromContinueWatching,
-                    onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
-                    contentPadding = PaddingValues(
-                        top = 122.dp,
-                        bottom = innerPadding.calculateBottomPadding() + 24.dp
-                    )
-                )
-            } else {
-                when (val state = catalogState) {
-                    is CatalogUiState.Loading -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                CircularProgressIndicator(color = NetflixRed)
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "Caricamento catalogo live da TMDB…",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = NetflixLightGray
-                                )
-                            }
-                        }
-                    }
-
-                    is CatalogUiState.Error -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(28.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ErrorOutline,
-                                    contentDescription = null,
-                                    tint = NetflixRed,
-                                    modifier = Modifier.size(52.dp)
-                                )
-                                Text(
-                                    text = "Connessione TMDB Richiesta",
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    color = NetflixWhite,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = state.message,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = NetflixLightGray,
-                                    textAlign = TextAlign.Center
-                                )
-                                Button(
-                                    onClick = viewModel::loadCatalog,
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = NetflixRed,
-                                        contentColor = NetflixWhite
-                                    ),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.testTag("retry_tmdb_button")
-                                ) {
-                                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Riprova Connessione TMDB")
-                                }
-                            }
-                        }
-                    }
-
-                    is CatalogUiState.Success -> {
-                        CatalogFeedContent(
-                            feed = state.feed,
-                            selectedTab = selectedTab,
-                            continueWatching = continueWatching,
-                            watchlist = watchlist,
-                            onPlayItem = { item -> viewModel.startPlayback(item) },
-                            onOpenDetails = viewModel::openDetails,
-                            onToggleWatchlist = viewModel::toggleWatchlist,
-                            onResumeContinueWatching = viewModel::resumeFromContinueWatching,
-                            onInfoContinueWatching = { entry ->
-                                viewModel.openDetails(
-                                    MediaItem(
-                                        id = entry.tmdbId,
-                                        mediaType = entry.mediaType,
-                                        title = entry.title,
-                                        overview = entry.overview,
-                                        posterPath = entry.posterPath,
-                                        backdropPath = entry.backdropPath,
-                                        voteAverage = entry.voteAverage,
-                                        releaseYear = entry.releaseYear
-                                    )
-                                )
-                            },
-                            onRemoveContinueWatching = { entry ->
-                                viewModel.removeContinueWatching(entry.id)
-                            },
-                            bottomPadding = innerPadding.calculateBottomPadding()
-                        )
-                    }
-                }
-            }
-
-            // Top bar flottante stile Netflix
-            NetflixTopBar(
-                selectedTab = selectedTab,
-                onSelectTab = { tab ->
-                    isSearchBarVisible = false
-                    viewModel.clearSearch()
-                    viewModel.selectTab(tab)
-                },
-                searchQuery = searchQuery,
-                isSearchOpen = isSearchBarVisible,
-                onToggleSearch = {
-                    isSearchBarVisible = !isSearchBarVisible
-                    if (!isSearchBarVisible) {
-                        viewModel.clearSearch()
-                    }
-                },
-                onSearchQueryChange = viewModel::onSearchQueryChange,
-                streamLang = streamLang,
-                onToggleLang = {
-                    viewModel.setStreamLanguage(if (streamLang == "it") "en" else "it")
-                },
-                hasUpdateAvailable = gitHubState.releaseInfo?.isUpdateAvailable == true,
-                onClickUpdateIcon = {
-                    if (gitHubState.releaseInfo?.isUpdateAvailable == true) {
-                        viewModel.openUpdateDialog()
-                    } else {
-                        viewModel.selectTab(NavTab.GITHUB)
-                    }
-                },
-                modifier = Modifier.align(Alignment.TopCenter)
-            )
         }
     }
 }
@@ -384,6 +501,8 @@ private fun CatalogFeedContent(
     selectedTab: NavTab,
     continueWatching: List<WatchProgressEntity>,
     watchlist: List<WatchlistEntity>,
+    isTvLayout: Boolean,
+    heroPlayFocusRequester: FocusRequester,
     onPlayItem: (MediaItem) -> Unit,
     onOpenDetails: (MediaItem) -> Unit,
     onToggleWatchlist: (MediaItem) -> Unit,
@@ -420,11 +539,13 @@ private fun CatalogFeedContent(
                     savedProgress = savedProgress,
                     onPlayClick = { onPlayItem(heroItem) },
                     onToggleWatchlist = { onToggleWatchlist(heroItem) },
-                    onInfoClick = { onOpenDetails(heroItem) }
+                    onInfoClick = { onOpenDetails(heroItem) },
+                    playButtonFocusRequester = heroPlayFocusRequester,
+                    isTvLayout = isTvLayout
                 )
             }
         } else {
-            item { Spacer(modifier = Modifier.height(118.dp)) }
+            item { Spacer(modifier = Modifier.height(if (isTvLayout) 84.dp else 118.dp)) }
         }
 
         // Sezione "Continua a guardare" (Room DB + startAt VixSrc API)
@@ -602,6 +723,7 @@ private fun SearchResultsGrid(
     query: String,
     isSearching: Boolean,
     results: List<MediaItem>,
+    isTvLayout: Boolean,
     onItemClick: (MediaItem) -> Unit,
     contentPadding: PaddingValues
 ) {
@@ -633,17 +755,18 @@ private fun SearchResultsGrid(
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 110.dp),
+        columns = GridCells.Adaptive(minSize = if (isTvLayout) 136.dp else 110.dp),
         contentPadding = contentPadding,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier
             .fillMaxSize()
             .testTag("search_results_grid")
     ) {
-        items(results, key = { "search_${it.uniqueKey}" }) { item ->
+        itemsIndexed(results, key = { _, it -> "search_${it.uniqueKey}" }) { index, item ->
             MediaPosterCard(
                 item = item,
+                itemIndex = index,
                 onClick = { onItemClick(item) },
                 modifier = Modifier.fillMaxWidth()
             )

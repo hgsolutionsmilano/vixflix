@@ -1,0 +1,38 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <!-- Sfondo scuro cinematografico Android TV -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M0,0h320v180h-320z" />
+    <!-- Fascia diagonale rossa VixFlix -->
+    <path
+        android:fillColor="#B20710"
+        android:fillAlpha="0.35"
+        android:pathData="M0,180 L190,0 L260,0 L70,180 Z" />
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M0,172 L320,172 L320,180 L0,180 Z" />
+    <!-- Scudo centrale rosso con lettera V stilizzata -->
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M62,48 L126,48 A12,12 0 0,1 138,60 L138,120 A12,12 0 0,1 126,132 L62,132 A12,12 0 0,1 50,120 L50,60 A12,12 0 0,1 62,48 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M72,66 L85,66 L94,104 L103,66 L116,66 L100,116 L88,116 Z" />
+    <!-- Wordmark VIXFLIX TV -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M158,72 L166,72 L173,100 L180,72 L188,72 L177,110 L169,110 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M196,72 L204,72 L204,110 L196,110 Z" />
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M214,72 L223,72 L231,85 L239,72 L248,72 L236,91 L249,110 L240,110 L231,96 L222,110 L213,110 L226,91 Z" />
+    <path
+        android:fillColor="#B3B3B3"
+        android:pathData="M158,120 L248,120 L248,125 L158,125 Z" />
+</vector>

@@ -23,9 +23,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -60,8 +64,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -111,7 +122,10 @@ import com.example.data.remote.VixSrcStreamResolver
 import com.example.ui.DetailUiState
 import com.example.ui.TrailerPlaybackState
 import com.example.ui.components.MediaCatalogRow
+import com.example.ui.components.animatedPosterShowcase
 import com.example.ui.components.formatSecondsToMmSs
+import com.example.ui.components.rememberIsTvDevice
+import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
 import com.example.ui.theme.NetflixDarkSurface
@@ -149,6 +163,14 @@ fun MediaDetailScreen(
     val item = state.mediaItem
     val details = state.details
     val trailers = details?.trailers.orEmpty()
+    val isTvDevice = rememberIsTvDevice()
+    val detailPlayFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(item.id, state.activeTrailer) {
+        if (isTvDevice && state.activeTrailer == null) {
+            runCatching { detailPlayFocusRequester.requestFocus() }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -193,9 +215,13 @@ fun MediaDetailScreen(
                         modifier = Modifier
                             .size(64.dp)
                             .align(Alignment.Center)
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusedScale = 1.12f,
+                                onClick = { onPlayMain(false) }
+                            )
                             .clip(CircleShape)
-                            .background(NetflixRed.copy(alpha = 0.9f))
-                            .clickable { onPlayMain(false) },
+                            .background(NetflixRed.copy(alpha = 0.9f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -214,6 +240,7 @@ fun MediaDetailScreen(
                             .statusBarsPadding()
                             .padding(12.dp)
                             .size(38.dp)
+                            .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
                             .clip(CircleShape)
                             .background(NetflixBlack.copy(alpha = 0.75f))
                             .testTag("detail_close_button")
@@ -360,6 +387,12 @@ fun MediaDetailScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
+                            .focusRequester(detailPlayFocusRequester)
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(6.dp),
+                                focusedScale = 1.03f,
+                                focusedBorderColor = NetflixRed
+                            )
                             .testTag("detail_play_button")
                     ) {
                         Icon(
@@ -398,6 +431,11 @@ fun MediaDetailScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(46.dp)
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(6.dp),
+                                    focusedScale = 1.03f,
+                                    focusedBorderColor = NetflixWhite
+                                )
                                 .testTag("detail_watch_trailer_button")
                         ) {
                             Icon(
@@ -434,6 +472,10 @@ fun MediaDetailScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp)
+                                    .tvFocusableControl(
+                                        shape = RoundedCornerShape(6.dp),
+                                        focusedScale = 1.03f
+                                    )
                                     .testTag("detail_restart_button")
                             ) {
                                 Icon(
@@ -460,6 +502,10 @@ fun MediaDetailScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(44.dp)
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(6.dp),
+                                    focusedScale = 1.03f
+                                )
                                 .testTag("detail_watchlist_button")
                         ) {
                             Icon(
@@ -549,14 +595,18 @@ fun MediaDetailScreen(
 
                         Spacer(modifier = Modifier.height(8.dp))
 
+                        val trailersListState = rememberLazyListState()
                         LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            state = trailersListState,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            items(trailers, key = { it.id }) { video ->
+                            itemsIndexed(trailers, key = { _, it -> it.id }) { index, video ->
                                 TmdbTrailerCard(
                                     video = video,
                                     fallbackBackdropUrl = item.backdropUrl,
+                                    itemIndex = index,
+                                    listState = trailersListState,
                                     onClick = { onPlayTrailer(video) }
                                 )
                             }
@@ -615,9 +665,11 @@ fun MediaDetailScreen(
                                             1.dp,
                                             if (isSelected) NetflixRed else NetflixElevatedSurface
                                         ),
-                                        modifier = Modifier.clickable {
-                                            onSelectSeason(season.seasonNumber)
-                                        }
+                                        modifier = Modifier.tvFocusableControl(
+                                            shape = RoundedCornerShape(8.dp),
+                                            focusedScale = 1.06f,
+                                            onClick = { onSelectSeason(season.seasonNumber) }
+                                        )
                                     ) {
                                         Text(
                                             text = "Stagione ${season.seasonNumber} (${season.episodeCount})",
@@ -694,15 +746,27 @@ fun MediaDetailScreen(
 private fun TmdbTrailerCard(
     video: TmdbVideoDto,
     fallbackBackdropUrl: String?,
+    itemIndex: Int,
+    listState: LazyListState?,
     onClick: () -> Unit
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-        border = BorderStroke(1.dp, NetflixElevatedSurface),
+        border = BorderStroke(1.dp, if (isFocused) NetflixWhite else NetflixElevatedSurface),
         modifier = Modifier
-            .width(230.dp)
-            .clickable { onClick() }
+            .width(236.dp)
+            .animatedPosterShowcase(
+                itemIndex = itemIndex,
+                listState = listState,
+                isFocused = isFocused,
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.08f,
+                onFocusedChanged = { isFocused = it },
+                onClick = onClick
+            )
             .testTag("trailer_card_${video.key}")
     ) {
         Column {
@@ -799,6 +863,11 @@ private fun InAppTrailerPlayerOverlay(
     var playbackError by remember(trailerState.video.id, trailerState.errorMessage) {
         mutableStateOf(trailerState.errorMessage)
     }
+    var interactionTick by remember { mutableLongStateOf(0L) }
+    val isTvDevice = rememberIsTvDevice()
+    val trailerPlayPauseFocusRequester = remember { FocusRequester() }
+    val trailerCloseFocusRequester = remember { FocusRequester() }
+    val trailerRootFocusRequester = remember { FocusRequester() }
 
     // Client OkHttp pulito per stream TMDB / YouTube / Vimeo (senza VixSrcOkHttpInterceptor né header vixsrc.to)
     val trailerOkHttpClient = remember {
@@ -922,10 +991,23 @@ private fun InAppTrailerPlayerOverlay(
         }
     }
 
-    LaunchedEffect(showControls, isPlaying, isBuffering, trailerState.isLoading) {
+    LaunchedEffect(showControls, isPlaying, isBuffering, trailerState.isLoading, interactionTick) {
         if (showControls && isPlaying && !isBuffering && !trailerState.isLoading) {
             delay(3800L)
             showControls = false
+            if (isTvDevice) {
+                runCatching { trailerRootFocusRequester.requestFocus() }
+            }
+        }
+    }
+
+    LaunchedEffect(showControls, playbackError, isBuffering, trailerState.isLoading) {
+        if (!playbackError.isNullOrBlank()) {
+            runCatching { trailerCloseFocusRequester.requestFocus() }
+        } else if (showControls && !isBuffering && !trailerState.isLoading) {
+            runCatching { trailerPlayPauseFocusRequester.requestFocus() }
+        } else if (!showControls && isTvDevice) {
+            runCatching { trailerRootFocusRequester.requestFocus() }
         }
     }
 
@@ -986,6 +1068,63 @@ private fun InAppTrailerPlayerOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .focusRequester(trailerRootFocusRequester)
+                .onPreviewKeyEvent { keyEvent ->
+                    interactionTick++
+                    if (keyEvent.type == KeyEventType.KeyDown) {
+                        when (keyEvent.key) {
+                            Key.MediaPlayPause -> {
+                                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                                showControls = true
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaPlay -> {
+                                exoPlayer.play()
+                                showControls = true
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaPause -> {
+                                exoPlayer.pause()
+                                showControls = true
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaFastForward -> {
+                                exoPlayer.seekTo(exoPlayer.currentPosition + 10_000L)
+                                showControls = true
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaRewind -> {
+                                exoPlayer.seekTo((exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L))
+                                showControls = true
+                                return@onPreviewKeyEvent true
+                            }
+                            else -> Unit
+                        }
+
+                        if (!showControls && playbackError.isNullOrBlank() && !trailerState.isLoading && !isBuffering) {
+                            when (keyEvent.key) {
+                                Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
+                                Key.DirectionUp, Key.DirectionDown -> {
+                                    showControls = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                Key.DirectionLeft -> {
+                                    exoPlayer.seekTo((exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L))
+                                    showControls = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                Key.DirectionRight -> {
+                                    exoPlayer.seekTo(exoPlayer.currentPosition + 10_000L)
+                                    showControls = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                else -> Unit
+                            }
+                        }
+                    }
+                    false
+                }
+                .focusable()
                 .clickable { showControls = !showControls }
                 .testTag("in_app_trailer_overlay")
         ) {
@@ -996,6 +1135,8 @@ private fun InAppTrailerPlayerOverlay(
                         player = exoPlayer
                         useController = false
                         keepScreenOn = true
+                        isFocusable = false
+                        isFocusableInTouchMode = false
                         this.resizeMode = resizeMode
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1159,13 +1300,17 @@ private fun InAppTrailerPlayerOverlay(
                                 shape = RoundedCornerShape(20.dp),
                                 border = BorderStroke(1.dp, NetflixElevatedSurface),
                                 modifier = Modifier
-                                    .clickable {
-                                        resizeMode = if (resizeMode == AspectRatioFrameLayout.RESIZE_MODE_FIT) {
-                                            AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                        } else {
-                                            AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    .tvFocusableControl(
+                                        shape = RoundedCornerShape(20.dp),
+                                        focusedScale = 1.08f,
+                                        onClick = {
+                                            resizeMode = if (resizeMode == AspectRatioFrameLayout.RESIZE_MODE_FIT) {
+                                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                            } else {
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                            }
                                         }
-                                    }
+                                    )
                                     .testTag("toggle_trailer_aspect_button")
                             ) {
                                 Row(
@@ -1199,6 +1344,8 @@ private fun InAppTrailerPlayerOverlay(
                                 onClick = onClose,
                                 modifier = Modifier
                                     .size(40.dp)
+                                    .focusRequester(trailerCloseFocusRequester)
+                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
                                     .clip(CircleShape)
                                     .background(NetflixBlack.copy(alpha = 0.75f))
                                     .testTag("close_trailer_overlay_button")
@@ -1225,6 +1372,7 @@ private fun InAppTrailerPlayerOverlay(
                                 },
                                 modifier = Modifier
                                     .size(52.dp)
+                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                                     .clip(CircleShape)
                                     .background(NetflixBlack.copy(alpha = 0.65f))
                             ) {
@@ -1246,6 +1394,8 @@ private fun InAppTrailerPlayerOverlay(
                                 },
                                 modifier = Modifier
                                     .size(68.dp)
+                                    .focusRequester(trailerPlayPauseFocusRequester)
+                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                                     .clip(CircleShape)
                                     .background(NetflixRed.copy(alpha = 0.9f))
                             ) {
@@ -1263,6 +1413,7 @@ private fun InAppTrailerPlayerOverlay(
                                 },
                                 modifier = Modifier
                                     .size(52.dp)
+                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
                                     .clip(CircleShape)
                                     .background(NetflixBlack.copy(alpha = 0.65f))
                             ) {
@@ -1339,7 +1490,11 @@ private fun InAppTrailerPlayerOverlay(
                                             1.dp,
                                             if (isSelected) NetflixRed else NetflixElevatedSurface
                                         ),
-                                        modifier = Modifier.clickable { onSelectTrailer(vid) }
+                                        modifier = Modifier.tvFocusableControl(
+                                            shape = RoundedCornerShape(6.dp),
+                                            focusedScale = 1.05f,
+                                            onClick = { onSelectTrailer(vid) }
+                                        )
                                     ) {
                                         Text(
                                             text = "${vid.typeBadge}: ${vid.name}",
@@ -1367,6 +1522,11 @@ private fun InAppTrailerPlayerOverlay(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(46.dp)
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(8.dp),
+                                    focusedScale = 1.03f,
+                                    focusedBorderColor = NetflixRed
+                                )
                                 .testTag("start_main_stream_from_trailer_button")
                         ) {
                             Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
@@ -1430,13 +1590,24 @@ private fun EpisodeRowItem(
     fallbackBackdropUrl: String?,
     onPlayEpisode: () -> Unit
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+
     Card(
         shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(containerColor = NetflixDarkSurface),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isFocused) NetflixCardSurface else NetflixDarkSurface
+        ),
+        border = if (isFocused) BorderStroke(2.dp, NetflixWhite) else null,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
-            .clickable { onPlayEpisode() }
+            .tvFocusableControl(
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.02f,
+                focusedBorderColor = NetflixWhite,
+                onFocusChange = { isFocused = it },
+                onClick = onPlayEpisode
+            )
             .testTag("episode_card_${episode.seasonNumber}_${episode.episodeNumber}")
     ) {
         Column(modifier = Modifier.padding(10.dp)) {

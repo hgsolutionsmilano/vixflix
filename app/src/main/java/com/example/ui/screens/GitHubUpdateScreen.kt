@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
 import com.example.data.remote.TmdbApiConfig
 import com.example.ui.GitHubUpdateUiState
+import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
 import com.example.ui.theme.NetflixDarkSurface
@@ -197,6 +198,7 @@ fun GitHubUpdateSectionScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
+                            .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.03f)
                             .testTag("check_github_updates_button")
                     ) {
                         if (state.isChecking) {
@@ -343,6 +345,7 @@ fun GitHubUpdateSectionScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(46.dp)
+                                .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.03f)
                                 .testTag("download_update_apk_button")
                         ) {
                             Icon(imageVector = Icons.Default.CloudDownload, contentDescription = null)
@@ -497,6 +500,7 @@ fun GitHubUpdateSectionScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(44.dp)
+                                .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.03f)
                                 .testTag("save_tmdb_key_button")
                         ) {
                             Text("Applica Chiave", style = MaterialTheme.typography.labelLarge)
@@ -512,6 +516,7 @@ fun GitHubUpdateSectionScreen(
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
                             modifier = Modifier
                                 .height(44.dp)
+                                .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.04f)
                                 .testTag("copy_tmdb_key_button")
                         ) {
                             Icon(
@@ -532,7 +537,9 @@ fun GitHubUpdateSectionScreen(
                                 shape = RoundedCornerShape(8.dp),
                                 border = BorderStroke(1.dp, NetflixElevatedSurface),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixLightGray),
-                                modifier = Modifier.height(44.dp)
+                                modifier = Modifier
+                                    .height(44.dp)
+                                    .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.04f)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Restore,
@@ -703,7 +710,8 @@ fun GitHubUpdateDialog(
                 colors = ButtonDefaults.buttonColors(
                     containerColor = NetflixRed,
                     contentColor = Color.White
-                )
+                ),
+                modifier = Modifier.tvFocusableControl(shape = RoundedCornerShape(20.dp), focusedScale = 1.05f)
             ) {
                 Text(
                     if (state.isDownloadingApk) {
@@ -716,13 +724,19 @@ fun GitHubUpdateDialog(
         },
         dismissButton = {
             Row {
-                TextButton(onClick = {
-                    onDismiss()
-                    onOpenGitHubTab()
-                }) {
+                TextButton(
+                    onClick = {
+                        onDismiss()
+                        onOpenGitHubTab()
+                    },
+                    modifier = Modifier.tvFocusableControl(shape = RoundedCornerShape(20.dp), focusedScale = 1.04f)
+                ) {
                     Text("Dettagli CI", color = NetflixLightGray)
                 }
-                TextButton(onClick = onDismiss) {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.tvFocusableControl(shape = RoundedCornerShape(20.dp), focusedScale = 1.04f)
+                ) {
                     Text("Più tardi", color = NetflixMutedGray)
                 }
             }

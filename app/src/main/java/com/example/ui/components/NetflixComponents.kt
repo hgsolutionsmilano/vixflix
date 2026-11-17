@@ -1,6 +1,10 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,9 +26,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,9 +56,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeJoin
@@ -96,6 +108,8 @@ fun NetflixTopBar(
     onToggleLang: () -> Unit,
     hasUpdateAvailable: Boolean,
     onClickUpdateIcon: () -> Unit,
+    isTvLayout: Boolean = false,
+    searchFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -111,18 +125,24 @@ fun NetflixTopBar(
                 )
             )
             .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(horizontal = if (isTvLayout) 28.dp else 16.dp, vertical = 8.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Logo VixFlix
+            // Logo VixFlix (navigabile con D-pad)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .clickable { onSelectTab(NavTab.HOME) }
+                    .clip(RoundedCornerShape(8.dp))
+                    .tvFocusableControl(
+                        shape = RoundedCornerShape(8.dp),
+                        focusedBorderColor = NetflixRed,
+                        onClick = { onSelectTab(NavTab.HOME) }
+                    )
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
                     .testTag("brand_logo")
             ) {
                 Box(
@@ -154,7 +174,7 @@ fun NetflixTopBar(
                     shape = RoundedCornerShape(4.dp)
                 ) {
                     Text(
-                        text = "v${BuildConfig.VERSION_NAME}",
+                        text = if (isTvLayout) "TV • v${BuildConfig.VERSION_NAME}" else "v${BuildConfig.VERSION_NAME}",
                         style = MaterialTheme.typography.labelSmall,
                         color = NetflixLightGray,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -164,7 +184,7 @@ fun NetflixTopBar(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // Switch lingua Audio/Sub VixSrc (IT / EN)
                 Surface(
@@ -172,7 +192,11 @@ fun NetflixTopBar(
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(1.dp, NetflixElevatedSurface),
                     modifier = Modifier
-                        .clickable { onToggleLang() }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(8.dp),
+                            focusedBorderColor = NetflixWhite,
+                            onClick = onToggleLang
+                        )
                         .testTag("lang_toggle_button")
                 ) {
                     Text(
@@ -187,7 +211,12 @@ fun NetflixTopBar(
                 Box {
                     IconButton(
                         onClick = onClickUpdateIcon,
-                        modifier = Modifier.testTag("github_update_button")
+                        modifier = Modifier
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusedBorderColor = NetflixWhite
+                            )
+                            .testTag("github_update_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.CloudDownload,
@@ -210,7 +239,12 @@ fun NetflixTopBar(
                 // Pulsante Cerca TMDB
                 IconButton(
                     onClick = onToggleSearch,
-                    modifier = Modifier.testTag("search_toggle_button")
+                    modifier = Modifier
+                        .tvFocusableControl(
+                            shape = CircleShape,
+                            focusedBorderColor = NetflixWhite
+                        )
+                        .testTag("search_toggle_button")
                 ) {
                     Icon(
                         imageVector = if (isSearchOpen) Icons.Default.Close else Icons.Default.Search,
@@ -241,7 +275,10 @@ fun NetflixTopBar(
                 },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchQueryChange("") }) {
+                        IconButton(
+                            onClick = { onSearchQueryChange("") },
+                            modifier = Modifier.tvFocusableControl(shape = CircleShape)
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Cancella ricerca",
@@ -264,38 +301,52 @@ fun NetflixTopBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp)
+                    .then(
+                        if (searchFocusRequester != null) {
+                            Modifier.focusRequester(searchFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
                     .testTag("search_input_field")
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        if (!isTvLayout) {
+            Spacer(modifier = Modifier.height(8.dp))
 
-        // Pillole categorie stile Netflix
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            NavTab.entries.forEach { tab ->
-                val isSelected = selectedTab == tab
-                Surface(
-                    color = if (isSelected) NetflixRed else NetflixCardSurface.copy(alpha = 0.85f),
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (isSelected) NetflixRed else NetflixElevatedSurface
-                    ),
-                    modifier = Modifier
-                        .clickable { onSelectTab(tab) }
-                        .testTag("nav_tab_${tab.name.lowercase()}")
-                ) {
-                    Text(
-                        text = tab.label,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = NetflixWhite,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-                    )
+            // Pillole categorie stile Netflix (completamente focusabili anche con D-pad)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                NavTab.entries.forEach { tab ->
+                    val isSelected = selectedTab == tab
+                    Surface(
+                        color = if (isSelected) NetflixRed else NetflixCardSurface.copy(alpha = 0.85f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (isSelected) NetflixRed else NetflixElevatedSurface
+                        ),
+                        modifier = Modifier
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(50),
+                                focusedBorderColor = NetflixWhite,
+                                onClick = { onSelectTab(tab) }
+                            )
+                            .testTag("nav_tab_${tab.name.lowercase()}")
+                    ) {
+                        Text(
+                            text = tab.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = NetflixWhite,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                        )
+                    }
                 }
             }
         }
@@ -310,14 +361,19 @@ fun NetflixHeroBanner(
     onPlayClick: () -> Unit,
     onToggleWatchlist: () -> Unit,
     onInfoClick: () -> Unit,
+    playButtonFocusRequester: FocusRequester? = null,
+    isTvLayout: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val genres = TmdbGenreMap.namesFor(item.genreIds)
+    var watchFocused by remember { mutableStateOf(false) }
+    var playFocused by remember { mutableStateOf(false) }
+    var infoFocused by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(500.dp)
+            .height(if (isTvLayout) 410.dp else 500.dp)
             .clickable { onInfoClick() }
             .testTag("hero_banner_card")
     ) {
@@ -346,7 +402,7 @@ fun NetflixHeroBanner(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(horizontal = 24.dp, vertical = 18.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
@@ -426,20 +482,25 @@ fun NetflixHeroBanner(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Pulsante + La mia lista
                 OutlinedButton(
                     onClick = onToggleWatchlist,
                     shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    border = BorderStroke(
+                        if (watchFocused) 2.5.dp else 1.dp,
+                        if (watchFocused) NetflixWhite else NetflixElevatedSurface
+                    ),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = NetflixCardSurface.copy(alpha = 0.8f),
+                        containerColor = if (watchFocused) NetflixElevatedSurface else NetflixCardSurface.copy(alpha = 0.8f),
                         contentColor = NetflixWhite
                     ),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    modifier = Modifier.testTag("hero_watchlist_button")
+                    modifier = Modifier
+                        .onFocusChanged { watchFocused = it.isFocused }
+                        .testTag("hero_watchlist_button")
                 ) {
                     Icon(
                         imageVector = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
@@ -453,16 +514,26 @@ fun NetflixHeroBanner(
                     )
                 }
 
-                // Pulsante principale Riproduci (Bianco stile Netflix)
+                // Pulsante principale Riproduci (Bianco stile Netflix, fuoco iniziale TV)
                 Button(
                     onClick = onPlayClick,
                     shape = RoundedCornerShape(6.dp),
+                    border = if (playFocused) BorderStroke(3.dp, NetflixRed) else null,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NetflixWhite,
                         contentColor = NetflixBlack
                     ),
-                    contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
-                    modifier = Modifier.testTag("hero_play_button")
+                    contentPadding = PaddingValues(horizontal = 24.dp, vertical = 11.dp),
+                    modifier = Modifier
+                        .then(
+                            if (playButtonFocusRequester != null) {
+                                Modifier.focusRequester(playButtonFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .onFocusChanged { playFocused = it.isFocused }
+                        .testTag("hero_play_button")
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
@@ -485,13 +556,18 @@ fun NetflixHeroBanner(
                 OutlinedButton(
                     onClick = onInfoClick,
                     shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    border = BorderStroke(
+                        if (infoFocused) 2.5.dp else 1.dp,
+                        if (infoFocused) NetflixWhite else NetflixElevatedSurface
+                    ),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = NetflixCardSurface.copy(alpha = 0.8f),
+                        containerColor = if (infoFocused) NetflixElevatedSurface else NetflixCardSurface.copy(alpha = 0.8f),
                         contentColor = NetflixWhite
                     ),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    modifier = Modifier.testTag("hero_info_button")
+                    modifier = Modifier
+                        .onFocusChanged { infoFocused = it.isFocused }
+                        .testTag("hero_info_button")
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Info,
@@ -523,16 +599,18 @@ fun ContinueWatchingSection(
 ) {
     if (entries.isEmpty()) return
 
+    val listState = rememberLazyListState()
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 10.dp)
+            .padding(vertical = 8.dp)
             .testTag("continue_watching_section")
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -559,12 +637,15 @@ fun ContinueWatchingSection(
         }
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            items(entries, key = { it.id }) { entry ->
+            itemsIndexed(entries, key = { _, it -> it.id }) { index, entry ->
                 ContinueWatchingCard(
                     entry = entry,
+                    itemIndex = index,
+                    listState = listState,
                     onResume = { onResumeClick(entry) },
                     onInfo = { onInfoClick(entry) },
                     onRemove = { onRemoveClick(entry) }
@@ -577,26 +658,37 @@ fun ContinueWatchingSection(
 @Composable
 private fun ContinueWatchingCard(
     entry: WatchProgressEntity,
+    itemIndex: Int,
+    listState: LazyListState,
     onResume: () -> Unit,
     onInfo: () -> Unit,
     onRemove: () -> Unit
 ) {
     val imageUrl = entry.backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" }
         ?: entry.posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+    var isFocused by remember { mutableStateOf(false) }
 
     Card(
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
         modifier = Modifier
-            .width(220.dp)
-            .clickable { onResume() }
+            .width(228.dp)
+            .animatedPosterShowcase(
+                itemIndex = itemIndex,
+                listState = listState,
+                isFocused = isFocused,
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.07f,
+                onFocusedChanged = { isFocused = it },
+                onClick = onResume
+            )
             .testTag("continue_watching_card_${entry.id}")
     ) {
         Column {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(124.dp)
+                    .height(126.dp)
             ) {
                 AsyncImage(
                     model = imageUrl,
@@ -608,12 +700,12 @@ private fun ContinueWatchingCard(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(NetflixBlack.copy(alpha = 0.35f))
+                        .background(NetflixBlack.copy(alpha = if (isFocused) 0.2f else 0.38f))
                 )
 
                 // Badge Episodio / Minuto di partenza API
                 Surface(
-                    color = NetflixBlack.copy(alpha = 0.78f),
+                    color = NetflixBlack.copy(alpha = 0.8f),
                     shape = RoundedCornerShape(4.dp),
                     modifier = Modifier
                         .align(Alignment.TopStart)
@@ -632,14 +724,19 @@ private fun ContinueWatchingCard(
                     )
                 }
 
-                // Icona Play centrale con cerchio bianco
+                // Icona Play centrale con cerchio bianco (evidenziata su focus TV)
+                val playBorderColor by animateColorAsState(
+                    targetValue = if (isFocused) NetflixRed else NetflixWhite,
+                    animationSpec = tween(180),
+                    label = "cwPlayBorder"
+                )
                 Box(
                     modifier = Modifier
                         .size(46.dp)
                         .align(Alignment.Center)
                         .clip(CircleShape)
-                        .background(NetflixBlack.copy(alpha = 0.65f))
-                        .border(2.dp, NetflixWhite, CircleShape),
+                        .background(if (isFocused) NetflixRed.copy(alpha = 0.9f) else NetflixBlack.copy(alpha = 0.65f))
+                        .border(2.dp, playBorderColor, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -693,7 +790,9 @@ private fun ContinueWatchingCard(
 
                 IconButton(
                     onClick = onInfo,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier
+                        .size(34.dp)
+                        .tvFocusableControl(shape = CircleShape)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Info,
@@ -705,7 +804,9 @@ private fun ContinueWatchingCard(
 
                 IconButton(
                     onClick = onRemove,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier
+                        .size(34.dp)
+                        .tvFocusableControl(shape = CircleShape)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
@@ -728,25 +829,30 @@ fun Top10Section(
 ) {
     if (items.isEmpty()) return
 
+    val listState = rememberLazyListState()
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 10.dp)
+            .padding(vertical = 8.dp)
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.titleLarge,
             color = NetflixWhite,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
         )
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             itemsIndexed(items, key = { _, item -> "top10_${item.uniqueKey}" }) { index, item ->
                 Top10PosterCard(
                     rank = index + 1,
+                    itemIndex = index,
+                    listState = listState,
                     item = item,
                     onClick = { onItemClick(item) }
                 )
@@ -758,14 +864,26 @@ fun Top10Section(
 @Composable
 private fun Top10PosterCard(
     rank: Int,
+    itemIndex: Int,
+    listState: LazyListState,
     item: MediaItem,
     onClick: () -> Unit
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
-            .width(172.dp)
-            .height(185.dp)
-            .clickable { onClick() }
+            .width(176.dp)
+            .height(190.dp)
+            .animatedPosterShowcase(
+                itemIndex = itemIndex,
+                listState = listState,
+                isFocused = isFocused,
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.10f,
+                onFocusedChanged = { isFocused = it },
+                onClick = onClick
+            )
             .testTag("top10_card_$rank")
     ) {
         // Numero gigante stilizzato Netflix in basso a sinistra
@@ -775,7 +893,7 @@ private fun Top10PosterCard(
                 fontFamily = BebasNeueFontFamily,
                 fontSize = 132.sp,
                 fontWeight = FontWeight.Bold,
-                color = NetflixElevatedSurface,
+                color = if (isFocused) NetflixRed else NetflixElevatedSurface,
                 drawStyle = Stroke(
                     width = 6f,
                     join = StrokeJoin.Round
@@ -800,10 +918,10 @@ private fun Top10PosterCard(
         )
 
         Card(
-            shape = RoundedCornerShape(8.dp),
+            shape = RoundedCornerShape(10.dp),
             colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
             modifier = Modifier
-                .width(122.dp)
+                .width(124.dp)
                 .fillMaxHeight()
                 .align(Alignment.CenterEnd)
         ) {
@@ -828,6 +946,34 @@ private fun Top10PosterCard(
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
+
+                // Sovrimpressione animata con il titolo quando evidenziato con il telecomando
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isFocused,
+                    enter = fadeIn(tween(180)),
+                    exit = fadeOut(tween(140)),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.Transparent, NetflixBlack.copy(alpha = 0.94f))
+                                )
+                            )
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = item.title,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
     }
@@ -842,25 +988,30 @@ fun MediaCatalogRow(
 ) {
     if (items.isEmpty()) return
 
+    val listState = rememberLazyListState()
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp)
+            .padding(vertical = 6.dp)
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.titleLarge,
             color = NetflixWhite,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
         )
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(items, key = { "${title}_${it.uniqueKey}" }) { item ->
+            itemsIndexed(items, key = { _, item -> "${title}_${item.uniqueKey}" }) { index, item ->
                 MediaPosterCard(
                     item = item,
+                    itemIndex = index,
+                    listState = listState,
                     onClick = { onItemClick(item) }
                 )
             }
@@ -872,15 +1023,27 @@ fun MediaCatalogRow(
 fun MediaPosterCard(
     item: MediaItem,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    itemIndex: Int = 0,
+    listState: LazyListState? = null
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+
     Card(
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
         modifier = modifier
-            .width(126.dp)
+            .width(130.dp)
             .aspectRatio(0.67f)
-            .clickable { onClick() }
+            .animatedPosterShowcase(
+                itemIndex = itemIndex,
+                listState = listState,
+                isFocused = isFocused,
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.12f,
+                onFocusedChanged = { isFocused = it },
+                onClick = onClick
+            )
             .testTag("poster_card_${item.uniqueKey}")
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -893,7 +1056,7 @@ fun MediaPosterCard(
 
             // Badge tipo media (SERIE / FILM) in alto a sinistra
             Surface(
-                color = NetflixBlack.copy(alpha = 0.75f),
+                color = NetflixBlack.copy(alpha = 0.78f),
                 shape = RoundedCornerShape(bottomEnd = 6.dp),
                 modifier = Modifier.align(Alignment.TopStart)
             ) {
@@ -910,7 +1073,7 @@ fun MediaPosterCard(
             // Voto TMDB in alto a destra
             if (item.voteAverage > 0.0) {
                 Surface(
-                    color = NetflixBlack.copy(alpha = 0.75f),
+                    color = NetflixBlack.copy(alpha = 0.78f),
                     shape = RoundedCornerShape(bottomStart = 6.dp),
                     modifier = Modifier.align(Alignment.TopEnd)
                 ) {
@@ -930,6 +1093,46 @@ fun MediaPosterCard(
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 10.sp,
                             color = NetflixWhite
+                        )
+                    }
+                }
+            }
+
+            // Overlay titolo + anno animato quando la locandina è selezionata/evidenziata col telecomando TV
+            androidx.compose.animation.AnimatedVisibility(
+                visible = isFocused,
+                enter = fadeIn(tween(180)),
+                exit = fadeOut(tween(140)),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                0.35f to NetflixBlack.copy(alpha = 0.85f),
+                                1f to NetflixBlack.copy(alpha = 0.96f)
+                            )
+                        )
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = NetflixWhite,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (item.releaseYear.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "${item.releaseYear} • OK per aprire",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 9.sp,
+                            color = NetflixMatchGreen,
+                            maxLines = 1
                         )
                     }
                 }
