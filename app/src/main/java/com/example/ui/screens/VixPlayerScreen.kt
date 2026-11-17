@@ -101,6 +101,7 @@ import coil.compose.AsyncImage
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.ui.PlaybackSession
+import com.example.ui.components.TvSeekTimeBar
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.tvFocusableControl
@@ -143,8 +144,13 @@ fun VixPlayerScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var interactionTick by remember { mutableLongStateOf(0L) }
+    var isRemoteScrubbing by remember { mutableStateOf(false) }
+    var isTimeBarFocused by remember { mutableStateOf(false) }
+    var focusTimeBarOnReveal by remember { mutableStateOf(false) }
+    var wasControlsVisible by remember { mutableStateOf(false) }
     val isTvDevice = rememberIsTvDevice()
     val playPauseFocusRequester = remember { FocusRequester() }
+    val timeBarFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
     val rootFocusRequester = remember { FocusRequester() }
 
@@ -267,7 +273,7 @@ fun VixPlayerScreen(
     LaunchedEffect(exoPlayer) {
         var tick = 0
         while (true) {
-            if (exoPlayer.isPlaying) {
+            if (exoPlayer.isPlaying && !isRemoteScrubbing) {
                 val pos = exoPlayer.currentPosition
                 val dur = exoPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: durationMs
                 if (pos > 0L) {
@@ -283,9 +289,17 @@ fun VixPlayerScreen(
         }
     }
 
-    // Auto-hide dei controlli dopo 4.5 secondi (reset ad ogni pressione tasto telecomando)
-    LaunchedEffect(controlsVisible, isPlaying, playerErrorMessage, isBuffering, session.isResolvingStream, interactionTick) {
-        if (controlsVisible && isPlaying && !isBuffering && !session.isResolvingStream && playerErrorMessage == null) {
+    // Auto-hide dei controlli dopo 4.5 secondi (sospeso durante lo scorrimento sulla barra del tempo)
+    LaunchedEffect(
+        controlsVisible,
+        isPlaying,
+        playerErrorMessage,
+        isBuffering,
+        session.isResolvingStream,
+        isRemoteScrubbing,
+        interactionTick
+    ) {
+        if (controlsVisible && isPlaying && !isBuffering && !session.isResolvingStream && !isRemoteScrubbing && playerErrorMessage == null) {
             delay(4_500L)
             controlsVisible = false
             if (isTvDevice) {
@@ -294,15 +308,32 @@ fun VixPlayerScreen(
         }
     }
 
-    // Sposta automaticamente il focus sui controlli TV quando diventano visibili o su Riprova in caso di errore
+    // Sposta automaticamente il focus sui controlli TV solo quando compaiono (senza rubare focus alla barra del tempo durante i seek)
     LaunchedEffect(controlsVisible, playerErrorMessage, session.errorMessage, isBuffering, session.isResolvingStream) {
         val hasErr = (playerErrorMessage ?: session.errorMessage) != null && !session.isResolvingStream
         if (hasErr) {
             runCatching { retryFocusRequester.requestFocus() }
-        } else if (controlsVisible && !isBuffering && !session.isResolvingStream) {
-            runCatching { playPauseFocusRequester.requestFocus() }
-        } else if (!controlsVisible && isTvDevice) {
-            runCatching { rootFocusRequester.requestFocus() }
+            wasControlsVisible = false
+            return@LaunchedEffect
+        }
+
+        val readyControls = controlsVisible && !isBuffering && !session.isResolvingStream
+        if (readyControls) {
+            if (!wasControlsVisible && !isTimeBarFocused) {
+                if (focusTimeBarOnReveal) {
+                    focusTimeBarOnReveal = false
+                    runCatching { timeBarFocusRequester.requestFocus() }
+                } else {
+                    runCatching { playPauseFocusRequester.requestFocus() }
+                }
+            }
+            wasControlsVisible = true
+        } else if (!controlsVisible) {
+            wasControlsVisible = false
+            focusTimeBarOnReveal = false
+            if (isTvDevice && !isBuffering && !session.isResolvingStream) {
+                runCatching { rootFocusRequester.requestFocus() }
+            }
         }
     }
 
@@ -370,14 +401,17 @@ fun VixPlayerScreen(
                                 exoPlayer.seekTo(target)
                                 currentPositionMs = target
                                 onProgressUpdate(currentPositionMs, durationMs)
+                                focusTimeBarOnReveal = true
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
                             }
                             Key.DirectionRight -> {
-                                val target = exoPlayer.currentPosition + 10_000L
+                                val maxDur = durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
+                                val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(maxDur)
                                 exoPlayer.seekTo(target)
                                 currentPositionMs = target
                                 onProgressUpdate(currentPositionMs, durationMs)
+                                focusTimeBarOnReveal = true
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
                             }
@@ -729,21 +763,31 @@ fun VixPlayerScreen(
                         .navigationBarsPadding()
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
-                    val sliderMax = durationMs.coerceAtLeast(currentPositionMs + 60_000L).toFloat()
-                    Slider(
-                        value = currentPositionMs.toFloat().coerceIn(0f, sliderMax),
-                        onValueChange = { newVal ->
-                            currentPositionMs = newVal.toLong()
-                            exoPlayer.seekTo(currentPositionMs)
-                            onProgressUpdate(currentPositionMs, durationMs)
+                    TvSeekTimeBar(
+                        currentPositionMs = currentPositionMs,
+                        durationMs = durationMs,
+                        onSeekPreview = { previewMs ->
+                            currentPositionMs = previewMs
+                            interactionTick++
                         },
-                        valueRange = 0f..sliderMax,
-                        colors = SliderDefaults.colors(
-                            thumbColor = NetflixRed,
-                            activeTrackColor = NetflixRed,
-                            inactiveTrackColor = NetflixElevatedSurface
-                        ),
-                        modifier = Modifier.fillMaxWidth()
+                        onSeekCommit = { targetMs ->
+                            currentPositionMs = targetMs
+                            exoPlayer.seekTo(targetMs)
+                            onProgressUpdate(targetMs, durationMs)
+                            interactionTick++
+                        },
+                        onTogglePlayPause = {
+                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                            interactionTick++
+                        },
+                        onInteraction = { interactionTick++ },
+                        onFocusChanged = { isTimeBarFocused = it },
+                        onScrubbingChanged = { isRemoteScrubbing = it },
+                        focusRequester = timeBarFocusRequester,
+                        compact = false,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("player_time_bar")
                     )
 
                     Row(

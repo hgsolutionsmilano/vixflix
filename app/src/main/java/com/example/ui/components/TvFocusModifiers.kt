@@ -4,6 +4,7 @@ import android.app.UiModeManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -11,21 +12,42 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -39,13 +61,18 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.example.ui.theme.NetflixBlack
+import com.example.ui.theme.NetflixElevatedSurface
 import com.example.ui.theme.NetflixGold
+import com.example.ui.theme.NetflixLightGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
 import kotlin.math.abs
+import kotlinx.coroutines.delay
 
 /**
  * Rileva se l'app è eseguita su Android TV / Google TV (o dispositivo con interfaccia Leanback).
@@ -276,4 +303,290 @@ fun Modifier.animatedPosterShowcase(
             indication = null,
             onClick = onClick
         )
+}
+
+/**
+ * Barra del tempo (Seekbar) ottimizzata per il telecomando su Android TV / Google TV:
+ * - Riceve chiaramente il focus D-pad (bordo bianco luminoso, cursore evidenziato, badge tempo e suggerimenti).
+ * - Frecce Sinistra/Destra sul telecomando scorrono avanti/indietro lungo la timeline con accelerazione
+ *   progressiva se tenute premute e commit fluido al rilascio (o entro 650ms).
+ * - Tasto OK / Invio conferma lo spostamento o mette in Play/Pausa.
+ * - Mantiene pienamente il trascinamento touch su smartphone e tablet.
+ */
+@Composable
+fun TvSeekTimeBar(
+    currentPositionMs: Long,
+    durationMs: Long,
+    onSeekPreview: (Long) -> Unit,
+    onSeekCommit: (Long) -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onInteraction: () -> Unit = {},
+    onFocusChanged: (Boolean) -> Unit = {},
+    onScrubbingChanged: (Boolean) -> Unit = {},
+    focusRequester: FocusRequester = remember { FocusRequester() },
+    compact: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val maxMs = if (durationMs > 0L) {
+        durationMs.coerceAtLeast(1_000L)
+    } else {
+        (currentPositionMs + 60_000L).coerceAtLeast(1_000L)
+    }
+
+    var isFocused by remember { mutableStateOf(false) }
+    var isRemoteScrubbing by remember { mutableStateOf(false) }
+    var remotePreviewMs by remember { mutableLongStateOf(currentPositionMs) }
+    var scrubStartMs by remember { mutableLongStateOf(currentPositionMs) }
+    var consecutivePresses by remember { mutableIntStateOf(0) }
+    var lastDirection by remember { mutableIntStateOf(0) }
+    var scrubTick by remember { mutableLongStateOf(0L) }
+
+    val displayPosMs = (if (isRemoteScrubbing) remotePreviewMs else currentPositionMs).coerceIn(0L, maxMs)
+
+    // Auto-commit di sicurezza se il telecomando non invia KeyUp dopo lo scorrimento
+    LaunchedEffect(isRemoteScrubbing, scrubTick) {
+        if (isRemoteScrubbing) {
+            delay(650L)
+            if (isRemoteScrubbing) {
+                val target = remotePreviewMs
+                isRemoteScrubbing = false
+                consecutivePresses = 0
+                lastDirection = 0
+                onScrubbingChanged(false)
+                onSeekCommit(target)
+            }
+        }
+    }
+
+    val borderColor by animateColorAsState(
+        targetValue = when {
+            isRemoteScrubbing -> NetflixGold
+            isFocused -> NetflixWhite
+            else -> Color.Transparent
+        },
+        animationSpec = tween(durationMillis = 150),
+        label = "seekBarFocusBorder"
+    )
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (isFocused || isRemoteScrubbing) {
+                    NetflixBlack.copy(alpha = 0.78f)
+                } else {
+                    Color.Transparent
+                }
+            )
+            .then(
+                if (borderColor != Color.Transparent) {
+                    Modifier.border(
+                        width = 2.dp,
+                        color = borderColor,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .padding(
+                horizontal = if (isFocused || isRemoteScrubbing) 10.dp else 0.dp,
+                vertical = if (isFocused || isRemoteScrubbing) 6.dp else 0.dp
+            )
+            .focusRequester(focusRequester)
+            .onFocusChanged { state ->
+                val focusedNow = state.isFocused || state.hasFocus
+                if (isFocused && !focusedNow && isRemoteScrubbing) {
+                    val target = remotePreviewMs
+                    isRemoteScrubbing = false
+                    consecutivePresses = 0
+                    lastDirection = 0
+                    onScrubbingChanged(false)
+                    onSeekCommit(target)
+                }
+                isFocused = focusedNow
+                onFocusChanged(focusedNow)
+            }
+            .onPreviewKeyEvent { keyEvent ->
+                if (!isFocused) return@onPreviewKeyEvent false
+
+                when (keyEvent.key) {
+                    Key.DirectionLeft, Key.DirectionRight -> {
+                        val dir = if (keyEvent.key == Key.DirectionLeft) -1 else 1
+                        when (keyEvent.type) {
+                            KeyEventType.KeyDown -> {
+                                onInteraction()
+                                if (!isRemoteScrubbing) {
+                                    scrubStartMs = currentPositionMs.coerceIn(0L, maxMs)
+                                    remotePreviewMs = scrubStartMs
+                                    isRemoteScrubbing = true
+                                    onScrubbingChanged(true)
+                                }
+                                if (lastDirection == dir) {
+                                    consecutivePresses++
+                                } else {
+                                    lastDirection = dir
+                                    consecutivePresses = 1
+                                }
+
+                                val isLongVideo = durationMs == 0L || durationMs > 5 * 60_000L
+                                val stepMs = if (isLongVideo) {
+                                    when {
+                                        consecutivePresses <= 1 -> 10_000L
+                                        consecutivePresses <= 5 -> 20_000L
+                                        consecutivePresses <= 12 -> 45_000L
+                                        else -> 90_000L
+                                    }
+                                } else {
+                                    when {
+                                        consecutivePresses <= 1 -> 5_000L
+                                        consecutivePresses <= 5 -> 10_000L
+                                        else -> 15_000L
+                                    }
+                                }
+
+                                val nextTarget = (remotePreviewMs + dir * stepMs).coerceIn(0L, maxMs)
+                                remotePreviewMs = nextTarget
+                                scrubTick++
+                                onSeekPreview(nextTarget)
+                                return@onPreviewKeyEvent true
+                            }
+                            KeyEventType.KeyUp -> {
+                                if (isRemoteScrubbing) {
+                                    val commitTarget = remotePreviewMs
+                                    isRemoteScrubbing = false
+                                    consecutivePresses = 0
+                                    lastDirection = 0
+                                    onScrubbingChanged(false)
+                                    onSeekCommit(commitTarget)
+                                }
+                                return@onPreviewKeyEvent true
+                            }
+                            else -> return@onPreviewKeyEvent true
+                        }
+                    }
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                        if (keyEvent.type == KeyEventType.KeyUp) {
+                            onInteraction()
+                            if (isRemoteScrubbing) {
+                                val commitTarget = remotePreviewMs
+                                isRemoteScrubbing = false
+                                consecutivePresses = 0
+                                lastDirection = 0
+                                onScrubbingChanged(false)
+                                onSeekCommit(commitTarget)
+                            } else {
+                                onTogglePlayPause()
+                            }
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    else -> Unit
+                }
+                false
+            }
+            .focusable()
+    ) {
+        AnimatedVisibility(visible = isFocused || isRemoteScrubbing) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 2.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        color = if (isRemoteScrubbing) NetflixRed else NetflixElevatedSurface,
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = formatSecondsToMmSs(displayPosMs / 1000L),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+
+                    if (isRemoteScrubbing) {
+                        val deltaSec = (remotePreviewMs - scrubStartMs) / 1000L
+                        val deltaSign = if (deltaSec >= 0L) "+" else ""
+                        Text(
+                            text = "$deltaSign${deltaSec}s",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixGold
+                        )
+                    }
+                }
+
+                Text(
+                    text = if (compact) "◀ ▶ Scorri • OK Pausa/Play" else "◀ ▶ Avanti/Indietro • OK Pausa/Play",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NetflixLightGray
+                )
+            }
+        }
+
+        if (compact) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = formatSecondsToMmSs(displayPosMs / 1000L),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isRemoteScrubbing) NetflixGold else NetflixWhite
+                )
+                Slider(
+                    value = displayPosMs.toFloat().coerceIn(0f, maxMs.toFloat()),
+                    onValueChange = { newValue ->
+                        val target = newValue.toLong().coerceIn(0L, maxMs)
+                        onInteraction()
+                        onSeekPreview(target)
+                        onSeekCommit(target)
+                    },
+                    valueRange = 0f..maxMs.toFloat(),
+                    colors = SliderDefaults.colors(
+                        thumbColor = if (isFocused || isRemoteScrubbing) NetflixWhite else NetflixRed,
+                        activeTrackColor = NetflixRed,
+                        inactiveTrackColor = NetflixElevatedSurface
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusProperties { canFocus = false }
+                )
+                Text(
+                    text = formatSecondsToMmSs(durationMs / 1000L),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NetflixLightGray
+                )
+            }
+        } else {
+            Slider(
+                value = displayPosMs.toFloat().coerceIn(0f, maxMs.toFloat()),
+                onValueChange = { newValue ->
+                    val target = newValue.toLong().coerceIn(0L, maxMs)
+                    onInteraction()
+                    onSeekPreview(target)
+                    onSeekCommit(target)
+                },
+                valueRange = 0f..maxMs.toFloat(),
+                colors = SliderDefaults.colors(
+                    thumbColor = if (isFocused || isRemoteScrubbing) NetflixWhite else NetflixRed,
+                    activeTrackColor = NetflixRed,
+                    inactiveTrackColor = NetflixElevatedSurface
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusProperties { canFocus = false }
+            )
+        }
+    }
 }

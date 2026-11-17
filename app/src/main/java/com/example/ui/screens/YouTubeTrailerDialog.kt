@@ -121,6 +121,7 @@ import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.ui.TrailerPlaybackState
+import com.example.ui.components.TvSeekTimeBar
 import com.example.ui.components.animatedPosterShowcase
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
@@ -169,6 +170,7 @@ fun YouTubeTrailerDialog(
         mutableStateOf(trailerState.errorMessage)
     }
     var interactionTick by remember { mutableLongStateOf(0L) }
+    var isRemoteScrubbing by remember { mutableStateOf(false) }
     var embedRetryNonce by remember { mutableIntStateOf(0) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
@@ -370,7 +372,9 @@ fun YouTubeTrailerDialog(
         if (useWebEmbed) return@LaunchedEffect
         while (true) {
             delay(500L)
-            currentPosMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            if (!isRemoteScrubbing) {
+                currentPosMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            }
             val dur = exoPlayer.duration
             if (dur > 0L) {
                 durationMs = dur
@@ -382,8 +386,8 @@ fun YouTubeTrailerDialog(
     }
 
     // Auto-scomparsa controlli interni sul riquadro 16:9
-    LaunchedEffect(showControls, isPlaying, isBuffering, trailerState.isSearching, trailerState.isLoadingStream, interactionTick) {
-        if (showControls && isPlaying && !isBuffering && !trailerState.isSearching && !trailerState.isLoadingStream) {
+    LaunchedEffect(showControls, isPlaying, isBuffering, isRemoteScrubbing, trailerState.isSearching, trailerState.isLoadingStream, interactionTick) {
+        if (showControls && isPlaying && !isBuffering && !isRemoteScrubbing && !trailerState.isSearching && !trailerState.isLoadingStream) {
             delay(3800L)
             showControls = false
         }
@@ -738,7 +742,9 @@ fun YouTubeTrailerDialog(
                                     }
                                 },
                                 onProgress = { posMs, durMs ->
-                                    currentPosMs = posMs
+                                    if (!isRemoteScrubbing) {
+                                        currentPosMs = posMs
+                                    }
                                     if (durMs > 0L) durationMs = durMs
                                 },
                                 onError = { msg ->
@@ -980,11 +986,9 @@ fun YouTubeTrailerDialog(
                                         }
                                     }
 
-                                    // Seekbar temporale inferiore
+                                    // Seekbar temporale inferiore compatibile con telecomando TV
                                     if (durationMs > 0L) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .align(Alignment.BottomCenter)
@@ -996,28 +1000,23 @@ fun YouTubeTrailerDialog(
                                                 )
                                                 .padding(horizontal = 12.dp, vertical = 6.dp)
                                         ) {
-                                            Text(
-                                                text = formatSecondsToMmSs(currentPosMs / 1000L),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = NetflixWhite
-                                            )
-                                            Slider(
-                                                value = currentPosMs.toFloat().coerceIn(0f, durationMs.toFloat()),
-                                                onValueChange = { newValue ->
-                                                    seekToAction(newValue.toLong())
+                                            TvSeekTimeBar(
+                                                currentPositionMs = currentPosMs,
+                                                durationMs = durationMs,
+                                                onSeekPreview = { previewMs ->
+                                                    currentPosMs = previewMs
+                                                    interactionTick++
                                                 },
-                                                valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
-                                                colors = SliderDefaults.colors(
-                                                    thumbColor = NetflixRed,
-                                                    activeTrackColor = NetflixRed,
-                                                    inactiveTrackColor = NetflixElevatedSurface
-                                                ),
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            Text(
-                                                text = formatSecondsToMmSs(durationMs / 1000L),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = NetflixLightGray
+                                                onSeekCommit = { targetMs ->
+                                                    seekToAction(targetMs)
+                                                },
+                                                onTogglePlayPause = togglePlayPause,
+                                                onInteraction = { interactionTick++ },
+                                                onScrubbingChanged = { isRemoteScrubbing = it },
+                                                compact = true,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("trailer_time_bar")
                                             )
                                         }
                                     }
