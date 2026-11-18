@@ -1564,141 +1564,6 @@ private fun CatalogFeedContent(
                 }
 
                 if (activePlatform != null) {
-                    item(key = "platform_catalog_header_${activePlatform.providerId}", contentType = "platform_header") {
-                        val brandColor = remember(activePlatform.brandColorHex) { Color(activePlatform.brandColorHex) }
-                        Surface(
-                            color = NetflixCardSurface,
-                            shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(1.dp, brandColor.copy(alpha = 0.65f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp, vertical = 8.dp)
-                                .testTag("platform_catalog_section")
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            colors = listOf(
-                                                brandColor.copy(alpha = 0.22f),
-                                                NetflixCardSurface
-                                            )
-                                        )
-                                    )
-                                    .padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        PlatformLogoBadge(
-                                            provider = activePlatform,
-                                            size = 52.dp
-                                        )
-                                        Column {
-                                            Text(
-                                                text = "Catalogo ${activePlatform.displayName}",
-                                                style = MaterialTheme.typography.titleLarge,
-                                                fontWeight = FontWeight.Bold,
-                                                color = NetflixWhite
-                                            )
-                                            val subtitle = when {
-                                                platformState.isLoading -> "Ricerca titoli di ${activePlatform.displayName} su TMDB…"
-                                                platformState.errorMessage != null -> "Errore di connessione TMDB"
-                                                else -> "${platformState.movies.size} Film • ${platformState.series.size} Serie TV su TMDB"
-                                            }
-                                            Text(
-                                                text = subtitle,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = NetflixLightGray
-                                            )
-                                        }
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = { onSelectStreamingPlatform(null) },
-                                        shape = RoundedCornerShape(50),
-                                        border = BorderStroke(1.dp, NetflixElevatedSurface),
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                                        modifier = Modifier
-                                            .heightIn(min = 48.dp)
-                                            .focusProperties {
-                                                navRailFocusRequester.takeIfAttached()?.let { left = it }
-                                                platformStripFocusRequester.takeIfAttached()?.let { up = it }
-                                            }
-                                            .tvFocusableControl(
-                                                shape = RoundedCornerShape(50),
-                                                focusedBorderColor = NetflixWhite,
-                                                onClick = { onSelectStreamingPlatform(null) }
-                                            )
-                                            .testTag("clear_platform_filter_button")
-                                    ) {
-                                        Text("Tutte le piattaforme", style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
-
-                                // Selettore rapido tipo media (Tutti / Film / Serie TV) per la piattaforma scelta
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.focusGroup()
-                                ) {
-                                    PlatformFilterMediaType.entries.forEach { filterType ->
-                                        val isFilterSelected = platformState.mediaTypeFilter == filterType
-                                        val tagSuffix = when (filterType) {
-                                            PlatformFilterMediaType.ALL -> "all"
-                                            PlatformFilterMediaType.MOVIES -> "movies"
-                                            PlatformFilterMediaType.SERIES -> "series"
-                                        }
-                                        val countBadge = when (filterType) {
-                                            PlatformFilterMediaType.ALL -> platformState.allTitles.size
-                                            PlatformFilterMediaType.MOVIES -> platformState.movies.size
-                                            PlatformFilterMediaType.SERIES -> platformState.series.size
-                                        }
-                                        Surface(
-                                            color = if (isFilterSelected) brandColor else NetflixElevatedSurface,
-                                            shape = RoundedCornerShape(50),
-                                            modifier = Modifier
-                                                .heightIn(min = 40.dp)
-                                                .tvFocusableControl(
-                                                    shape = RoundedCornerShape(50),
-                                                    focusedBorderColor = NetflixWhite,
-                                                    unfocusedBorderColor = if (isFilterSelected) brandColor else NetflixElevatedSurface,
-                                                    onClick = { onSelectPlatformMediaTypeFilter(filterType) }
-                                                )
-                                                .testTag("platform_filter_$tagSuffix")
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-                                            ) {
-                                                Text(
-                                                    text = if (!platformState.isLoading && countBadge > 0) {
-                                                        "${filterType.label} ($countBadge)"
-                                                    } else {
-                                                        filterType.label
-                                                    },
-                                                    style = MaterialTheme.typography.labelLarge,
-                                                    fontWeight = if (isFilterSelected) FontWeight.Bold else FontWeight.Medium,
-                                                    color = Color.White
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     when {
                         platformState.isLoading -> {
                             item(key = "platform_titles_loading", contentType = "status") {
@@ -1831,7 +1696,9 @@ private fun CatalogFeedContent(
                                     },
                                     style = MaterialTheme.typography.titleLarge,
                                     color = NetflixWhite,
-                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
+                                    modifier = Modifier
+                                        .padding(horizontal = 24.dp, vertical = 6.dp)
+                                        .testTag("platform_catalog_section")
                                 )
                             }
 
