@@ -255,7 +255,8 @@ class CacheSystemTest {
         assertEquals(120, freshSnapshot.feed.heroBanner.id)
 
         // Simula snapshot vecchio di 20 minuti (> 15m freshness threshold)
-        val rawSnapshot = dao.getCatalogSnapshot("home_feed_v1")!!
+        val scopedSnapshotId = "u${"http://api.themoviedb.org:${server.port}/3/".hashCode()}_home_feed_v1"
+        val rawSnapshot = dao.getCatalogSnapshot(scopedSnapshotId)!!
         dao.upsertCatalogSnapshot(
             CatalogSnapshotEntity(
                 id = rawSnapshot.id,
@@ -363,6 +364,32 @@ class CacheSystemTest {
     }
 
     @Test
+    fun `fetchWatchProviders prioritizes Disney+, Paramount+, Prime Video, and Netflix with official TMDB logos and discovers titles`() = runBlocking {
+        val providers = repository.fetchWatchProviders()
+        assertTrue("Should return streaming platforms", providers.size >= 4)
+        assertEquals(337, providers[0].providerId)
+        assertEquals("Disney+", providers[0].displayName)
+        assertTrue(providers[0].logoUrl?.contains("image.tmdb.org/t/p/w300") == true)
+
+        assertEquals(531, providers[1].providerId)
+        assertEquals("Paramount+", providers[1].displayName)
+
+        assertEquals(119, providers[2].providerId)
+        assertEquals("Prime Video", providers[2].displayName)
+
+        assertEquals(8, providers[3].providerId)
+        assertEquals("Netflix", providers[3].displayName)
+
+        val catalogRes = repository.fetchTitlesByWatchProvider(providers[0])
+        assertTrue("Platform catalog discovery must succeed: ${catalogRes.exceptionOrNull()}", catalogRes.isSuccess)
+        val content = catalogRes.getOrThrow()
+        assertEquals(337, content.provider.providerId)
+        assertTrue(content.movies.isNotEmpty())
+        assertTrue(content.series.isNotEmpty())
+        assertTrue(content.allCombined.isNotEmpty())
+    }
+
+    @Test
     fun `VixFlixViewModel toggles background prefetch and increments cacheClearedFeedbackNonce`() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val prefs = AppPreferences(app)
@@ -442,6 +469,44 @@ class CacheSystemTest {
                 val path = parts[1]
 
                 when {
+                    path.startsWith("/3/watch/providers/movie") ||
+                        path.startsWith("/3/watch/providers/tv") -> {
+                        val json = """
+                            {
+                              "results": [
+                                {"provider_id": 8, "provider_name": "Netflix", "logo_path": "/pbpMk2JmcoNnQwx5JGpXngfoWtp.jpg", "display_priority": 1},
+                                {"provider_id": 119, "provider_name": "Amazon Prime Video", "logo_path": "/pvske1MyAoymrs5bguRfVqYiM9a.jpg", "display_priority": 2},
+                                {"provider_id": 337, "provider_name": "Disney Plus", "logo_path": "/97yvRBw1GzX7fXprcF80er19ot.jpg", "display_priority": 3},
+                                {"provider_id": 531, "provider_name": "Paramount Plus", "logo_path": "/h5DcR0J2EESLitnhR8xLG1QymTE.jpg", "display_priority": 4}
+                              ]
+                            }
+                        """.trimIndent()
+                        writeResponse(s, 200, "application/json", json.toByteArray(), method == "HEAD")
+                    }
+
+                    path.startsWith("/3/discover/tv") -> {
+                        val json = """
+                            {
+                              "page": 1,
+                              "results": [
+                                {
+                                  "id": 82856,
+                                  "media_type": "tv",
+                                  "name": "The Mandalorian",
+                                  "overview": "Star Wars series",
+                                  "poster_path": "/mandalorian.jpg",
+                                  "backdrop_path": "/mandalorian_bg.jpg",
+                                  "vote_average": 8.5,
+                                  "first_air_date": "2019-11-12"
+                                }
+                              ],
+                              "total_pages": 1,
+                              "total_results": 1
+                            }
+                        """.trimIndent()
+                        writeResponse(s, 200, "application/json", json.toByteArray(), method == "HEAD")
+                    }
+
                     // TMDB catalog list endpoints
                     path.startsWith("/3/trending/") ||
                         path.startsWith("/3/movie/popular") ||
@@ -480,8 +545,8 @@ class CacheSystemTest {
                               "season_number": 1,
                               "name": "Stagione 1",
                               "episodes": [
-                                {"id": 63056, "episode_number": 1, "name": "L'inverno sta arrivando", "overview": "Ep 1", "runtime": 62},
-                                {"id": 63057, "episode_number": 2, "name": "La strada del Re", "overview": "Ep 2", "runtime": 56}
+                                {"id": 63056, "season_number": 1, "episode_number": 1, "name": "L'inverno sta arrivando", "overview": "Ep 1", "runtime": 62},
+                                {"id": 63057, "season_number": 1, "episode_number": 2, "name": "La strada del Re", "overview": "Ep 2", "runtime": 56}
                               ]
                             }
                         """.trimIndent()
@@ -506,7 +571,7 @@ class CacheSystemTest {
                               "seasons": [{"id": 3624, "season_number": 1, "name": "Stagione 1", "episode_count": 2}],
                               "credits": {"cast": [{"id": 1, "name": "Sean Bean", "character": "Ned Stark"}]},
                               "similar": {"results": []},
-                              "videos": {"results": []}
+                              "videos": {"results": [{"id": "v1", "key": "KPLWWIOCOOQ", "name": "Trailer", "site": "YouTube", "type": "Trailer", "official": true}]}
                             }
                         """.trimIndent()
                         writeResponse(s, 200, "application/json", json.toByteArray(), method == "HEAD")

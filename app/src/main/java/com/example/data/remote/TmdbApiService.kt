@@ -118,4 +118,35 @@ interface TmdbApiService {
         @Query("include_adult") includeAdult: Boolean = false,
         @Query("page") page: Int = 1
     ): TmdbPagedResponse<TmdbMediaItemDto>
+
+    @GET("watch/providers/movie")
+    suspend fun getMovieWatchProviders(
+        @Query("language") language: String = "it-IT",
+        @Query("watch_region") watchRegion: String = "IT"
+    ): TmdbWatchProvidersResponse
+
+    @GET("watch/providers/tv")
+    suspend fun getTvWatchProviders(
+        @Query("language") language: String = "it-IT",
+        @Query("watch_region") watchRegion: String = "IT"
+    ): TmdbWatchProvidersResponse
+
+    @GET("discover/movie")
+    suspend fun discoverMoviesByProvider(
+        @Query("with_watch_providers") providerIds: String,
+        @Query("watch_region") watchRegion: String = "IT",
+        @Query("sort_by") sortBy: String = "popularity.desc",
+        @Query("language") language: String = "it-IT",
+        @Query("page") page: Int = 1
+    ): TmdbPagedResponse<TmdbMediaItemDto>
+
+    @GET("discover/tv")
+    suspend fun discoverTvByProvider(
+        @Query("with_watch_providers") providerIds: String,
+        @Query("watch_region") watchRegion: String = "IT",
+        @Query("sort_by") sortBy: String = "popularity.desc",
+        @Query("language") language: String = "it-IT",
+        @Query("page") page: Int = 1
+    ): TmdbPagedResponse<TmdbMediaItemDto>
 }
+

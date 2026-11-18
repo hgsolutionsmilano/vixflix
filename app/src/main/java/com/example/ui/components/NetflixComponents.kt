@@ -108,6 +108,7 @@ import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
+import com.example.data.remote.TmdbWatchProviderDto
 import com.example.ui.NavTab
 import com.example.ui.theme.BebasNeueFontFamily
 import com.example.ui.theme.NetflixBlack
@@ -1562,3 +1563,305 @@ fun formatSecondsToMmSs(totalSeconds: Long): String {
         String.format("%02d:%02d", minutes, seconds)
     }
 }
+
+@Composable
+fun StreamingPlatformsStrip(
+    providers: List<TmdbWatchProviderDto>,
+    selectedProvider: TmdbWatchProviderDto?,
+    onSelectProvider: (TmdbWatchProviderDto?) -> Unit,
+    showHeader: Boolean = true,
+    firstItemFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
+    onItemFocused: ((FocusRequester) -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val safeProviders = remember(providers) { providers.distinctBy { it.providerId } }
+    if (safeProviders.isEmpty()) return
+
+    val listState = rememberLazyListState()
+    val targetIndex = remember(safeProviders, selectedProvider) {
+        if (selectedProvider == null) {
+            0
+        } else {
+            val found = safeProviders.indexOfFirst { it.providerId == selectedProvider.providerId }
+            if (found >= 0) found else 0
+        }
+    }
+
+    LaunchedEffect(targetIndex, selectedProvider?.providerId) {
+        if (targetIndex >= 0) {
+            runCatching { listState.animateScrollToItem(targetIndex) }
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+    ) {
+        if (showHeader) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 4.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "Piattaforme Streaming",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = NetflixWhite
+                    )
+                    Text(
+                        text = "Disney+, Paramount+, Prime Video, Netflix e altre da TMDB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixLightGray
+                    )
+                }
+
+                if (selectedProvider != null) {
+                    Surface(
+                        color = NetflixElevatedSurface,
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(1.dp, NetflixRed),
+                        modifier = Modifier
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(50),
+                                focusedBorderColor = NetflixWhite,
+                                onClick = { onSelectProvider(null) }
+                            )
+                            .testTag("platform_strip_reset_badge")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Mostra tutte",
+                                tint = NetflixWhite,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "Mostra Home completa",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = NetflixWhite
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        LazyRow(
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusGroup()
+                .testTag("streaming_platforms_strip")
+        ) {
+            if (selectedProvider != null) {
+                item(key = "platform_all_reset", contentType = "platform_chip") {
+                    GenreFilterChipItem(
+                        label = "Tutte",
+                        isSelected = false,
+                        onClick = { onSelectProvider(null) },
+                        modifier = Modifier
+                            .focusProperties {
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
+                            }
+                            .testTag("platform_card_all")
+                    )
+                }
+            }
+
+            itemsIndexed(
+                items = safeProviders,
+                key = { _, provider -> "platform_${provider.providerId}" },
+                contentType = { _, _ -> "platform_card" }
+            ) { index, provider ->
+                val isSelected = selectedProvider?.providerId == provider.providerId
+                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                    firstItemFocusRequester
+                } else {
+                    remember(provider.providerId) { FocusRequester() }
+                }
+                StreamingPlatformCard(
+                    provider = provider,
+                    isSelected = isSelected,
+                    onClick = {
+                        if (isSelected) {
+                            onSelectProvider(null)
+                        } else {
+                            onSelectProvider(provider)
+                        }
+                    },
+                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
+                    modifier = Modifier
+                        .safeFocusRequester(itemFocusRequester)
+                        .focusProperties {
+                            if (index == 0 && selectedProvider == null) {
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            }
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
+                        }
+                        .testTag("platform_card_${provider.providerId}")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamingPlatformCard(
+    provider: TmdbWatchProviderDto,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onFocused: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val brandColor = remember(provider.brandColorHex) { Color(provider.brandColorHex) }
+
+    val borderColor = when {
+        isFocused -> NetflixWhite
+        isSelected -> brandColor
+        else -> NetflixElevatedSurface
+    }
+
+    val containerBrush = remember(isSelected, isFocused, brandColor) {
+        when {
+            isSelected -> Brush.horizontalGradient(
+                colors = listOf(
+                    brandColor.copy(alpha = 0.34f),
+                    NetflixCardSurface
+                )
+            )
+            isFocused -> Brush.horizontalGradient(
+                colors = listOf(
+                    brandColor.copy(alpha = 0.24f),
+                    NetflixElevatedSurface
+                )
+            )
+            else -> Brush.horizontalGradient(
+                colors = listOf(
+                    NetflixCardSurface,
+                    NetflixDarkSurface
+                )
+            )
+        }
+    }
+
+    Surface(
+        color = Color.Transparent,
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+            .heightIn(min = 62.dp)
+            .tvFocusableControl(
+                shape = RoundedCornerShape(14.dp),
+                focusedScale = 1.06f,
+                focusedBorderColor = NetflixWhite,
+                unfocusedBorderColor = borderColor,
+                borderWidth = if (isFocused || isSelected) 2.dp else 1.dp,
+                onFocusChange = { focused ->
+                    isFocused = focused
+                    if (focused) onFocused()
+                },
+                onClick = onClick
+            )
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier
+                .background(containerBrush, RoundedCornerShape(14.dp))
+                .padding(horizontal = 14.dp, vertical = 9.dp)
+        ) {
+            PlatformLogoBadge(
+                provider = provider,
+                size = 44.dp
+            )
+
+            Column(
+                verticalArrangement = Arrangement.Center
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = provider.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = NetflixWhite,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (isSelected) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            tint = NetflixMatchGreen,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = if (isSelected) "Catalogo attivo" else "Catalogo TMDB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isSelected) NetflixMatchGreen else NetflixLightGray,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PlatformLogoBadge(
+    provider: TmdbWatchProviderDto,
+    size: Dp = 44.dp,
+    modifier: Modifier = Modifier
+) {
+    val brandColor = remember(provider.brandColorHex) { Color(provider.brandColorHex) }
+    val shape = RoundedCornerShape(10.dp)
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(size)
+            .clip(shape)
+            .background(brandColor)
+            .border(1.dp, NetflixWhite.copy(alpha = 0.18f), shape)
+    ) {
+        Text(
+            text = provider.shortBadge,
+            fontFamily = BebasNeueFontFamily,
+            fontSize = (size.value * 0.45f).sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+        if (!provider.logoUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = rememberSizedImageRequest(provider.logoUrl, size, size),
+                contentDescription = "Logo ${provider.displayName}",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(shape)
+            )
+        }
+    }
+}
+

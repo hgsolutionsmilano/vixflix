@@ -23,8 +23,11 @@ import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
+import com.example.data.remote.TmdbWatchProviderDto
+import com.example.data.remote.TmdbWatchProviderMap
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
+import com.example.data.repository.PlatformCatalogContent
 import com.example.data.repository.VixFlixRepository
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +67,31 @@ data class MovieGenreFilterUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null
 )
+
+enum class PlatformFilterMediaType(val label: String) {
+    ALL("Tutti"),
+    MOVIES("Film"),
+    SERIES("Serie TV")
+}
+
+@Immutable
+data class StreamingPlatformUiState(
+    val providers: List<TmdbWatchProviderDto> = TmdbWatchProviderMap.defaultProviders,
+    val selectedProvider: TmdbWatchProviderDto? = null,
+    val mediaTypeFilter: PlatformFilterMediaType = PlatformFilterMediaType.ALL,
+    val movies: List<MediaItem> = emptyList(),
+    val series: List<MediaItem> = emptyList(),
+    val allTitles: List<MediaItem> = emptyList(),
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null
+) {
+    val displayedTitles: List<MediaItem>
+        get() = when (mediaTypeFilter) {
+            PlatformFilterMediaType.ALL -> allTitles
+            PlatformFilterMediaType.MOVIES -> movies
+            PlatformFilterMediaType.SERIES -> series
+        }
+}
 
 @Immutable
 data class TrailerPlaybackState(
@@ -197,12 +225,17 @@ class VixFlixViewModel @JvmOverloads constructor(
     private val _movieGenreState = MutableStateFlow(MovieGenreFilterUiState())
     val movieGenreState: StateFlow<MovieGenreFilterUiState> = _movieGenreState.asStateFlow()
 
+    private val _platformState = MutableStateFlow(StreamingPlatformUiState())
+    val platformState: StateFlow<StreamingPlatformUiState> = _platformState.asStateFlow()
+
     private val movieGenreCache = mutableMapOf<Int, List<MediaItem>>()
+    private val platformCatalogCache = mutableMapOf<Int, PlatformCatalogContent>()
 
     private var catalogLoadJob: Job? = null
     private var imagePrefetchJob: Job? = null
     private var searchJob: Job? = null
     private var movieGenreJob: Job? = null
+    private var platformLoadJob: Job? = null
     private var seasonProgressJob: Job? = null
     private var seasonLoadJob: Job? = null
     private var trailerJob: Job? = null
@@ -251,6 +284,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                 feed = feed,
                 continueWatching = continueWatching.value,
                 watchlist = watchlist.value,
+                providers = _platformState.value.providers,
                 isTvDevice = isTvEnvironment(),
                 shouldContinue = {
                     backgroundPrefetchEnabled.value && _playbackSession.value == null
@@ -283,6 +317,10 @@ class VixFlixViewModel @JvmOverloads constructor(
                 _movieGenreState.value = _movieGenreState.value.copy(genres = cached.genres)
                 _catalogState.value = CatalogUiState.Success(cached.feed)
                 launch { repository.vixSrcResolver.prewarmConnection() }
+                launch {
+                    val providers = repository.fetchWatchProviders()
+                    _platformState.value = _platformState.value.copy(providers = providers)
+                }
                 scheduleCatalogImagePrefetch(cached.feed)
                 refreshCacheStats()
 
@@ -293,7 +331,9 @@ class VixFlixViewModel @JvmOverloads constructor(
                 _isBackgroundCatalogRefreshing.value = true
                 try {
                     val genres = repository.fetchMovieGenres()
+                    val providers = repository.fetchWatchProviders()
                     _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
+                    _platformState.value = _platformState.value.copy(providers = providers)
                     repository.fetchLiveCatalogFeed(genresToPersist = genres).onSuccess { freshFeed ->
                         val currentSuccess = (_catalogState.value as? CatalogUiState.Success)?.feed
                         if (currentSuccess != freshFeed) {
@@ -316,8 +356,11 @@ class VixFlixViewModel @JvmOverloads constructor(
 
             try {
                 val genresDef = async { repository.fetchMovieGenres() }
+                val providersDef = async { repository.fetchWatchProviders() }
                 val genres = genresDef.await()
+                val providers = providersDef.await()
                 _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
+                _platformState.value = _platformState.value.copy(providers = providers)
                 val result = repository.fetchLiveCatalogFeed(genresToPersist = genres)
                 result.fold(
                     onSuccess = { feed ->
@@ -398,6 +441,111 @@ class VixFlixViewModel @JvmOverloads constructor(
         val current = _movieGenreState.value.selectedGenre ?: return
         movieGenreCache.remove(current.id)
         selectMovieGenre(current)
+    }
+
+    fun selectStreamingPlatform(provider: TmdbWatchProviderDto?) {
+        platformLoadJob?.cancel()
+        if (provider == null) {
+            _platformState.value = _platformState.value.copy(
+                selectedProvider = null,
+                mediaTypeFilter = PlatformFilterMediaType.ALL,
+                movies = emptyList(),
+                series = emptyList(),
+                allTitles = emptyList(),
+                isLoading = false,
+                errorMessage = null
+            )
+            return
+        }
+
+        val cached = platformCatalogCache[provider.providerId]
+        if (cached != null && cached.allCombined.isNotEmpty()) {
+            _platformState.value = _platformState.value.copy(
+                selectedProvider = provider,
+                mediaTypeFilter = PlatformFilterMediaType.ALL,
+                movies = cached.movies,
+                series = cached.series,
+                allTitles = cached.allCombined,
+                isLoading = false,
+                errorMessage = null
+            )
+            return
+        }
+
+        _platformState.value = _platformState.value.copy(
+            selectedProvider = provider,
+            mediaTypeFilter = PlatformFilterMediaType.ALL,
+            movies = emptyList(),
+            series = emptyList(),
+            allTitles = emptyList(),
+            isLoading = true,
+            errorMessage = null
+        )
+
+        platformLoadJob = viewModelScope.launch {
+            repository.fetchTitlesByWatchProvider(provider).fold(
+                onSuccess = { content ->
+                    platformCatalogCache[provider.providerId] = content
+                    if (_platformState.value.selectedProvider?.providerId == provider.providerId) {
+                        _platformState.value = _platformState.value.copy(
+                            movies = content.movies,
+                            series = content.series,
+                            allTitles = content.allCombined,
+                            isLoading = false,
+                            errorMessage = null
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    if (_platformState.value.selectedProvider?.providerId == provider.providerId) {
+                        _platformState.value = _platformState.value.copy(
+                            isLoading = false,
+                            errorMessage = err.localizedMessage
+                                ?: "Impossibile caricare i titoli per ${provider.displayName}."
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun selectPlatformMediaTypeFilter(filter: PlatformFilterMediaType) {
+        _platformState.value = _platformState.value.copy(mediaTypeFilter = filter)
+    }
+
+    fun retrySelectedStreamingPlatform() {
+        val current = _platformState.value.selectedProvider ?: return
+        platformCatalogCache.remove(current.providerId)
+        platformLoadJob?.cancel()
+        _platformState.value = _platformState.value.copy(
+            isLoading = true,
+            errorMessage = null
+        )
+        platformLoadJob = viewModelScope.launch {
+            repository.fetchTitlesByWatchProvider(current, forceRefresh = true).fold(
+                onSuccess = { content ->
+                    platformCatalogCache[current.providerId] = content
+                    if (_platformState.value.selectedProvider?.providerId == current.providerId) {
+                        _platformState.value = _platformState.value.copy(
+                            movies = content.movies,
+                            series = content.series,
+                            allTitles = content.allCombined,
+                            isLoading = false,
+                            errorMessage = null
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    if (_platformState.value.selectedProvider?.providerId == current.providerId) {
+                        _platformState.value = _platformState.value.copy(
+                            isLoading = false,
+                            errorMessage = err.localizedMessage
+                                ?: "Impossibile caricare i titoli per ${current.displayName}."
+                        )
+                    }
+                }
+            )
+        }
     }
 
     fun onSearchQueryChange(newQuery: String) {
@@ -1188,6 +1336,7 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun clearLocalCache() {
         imagePrefetchJob?.cancel()
         movieGenreCache.clear()
+        platformCatalogCache.clear()
         viewModelScope.launch {
             repository.clearAllLocalCaches {
                 imagePrefetcher.clearCoilCaches()

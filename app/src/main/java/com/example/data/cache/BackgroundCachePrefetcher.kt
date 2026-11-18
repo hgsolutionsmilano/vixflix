@@ -11,6 +11,8 @@ import com.example.data.local.WatchlistEntity
 import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbEpisodeDto
+import com.example.data.remote.TmdbWatchProviderDto
+import com.example.data.remote.TmdbWatchProviderMap
 import com.example.data.repository.CatalogFeed
 import java.io.File
 import kotlin.math.roundToInt
@@ -65,11 +67,12 @@ class BackgroundCachePrefetcher(private val context: Context) {
         feed: CatalogFeed,
         continueWatching: List<WatchProgressEntity>,
         watchlist: List<WatchlistEntity>,
+        providers: List<TmdbWatchProviderDto> = TmdbWatchProviderMap.defaultProviders,
         isTvDevice: Boolean,
         shouldContinue: () -> Boolean
     ) {
         if (!shouldContinue()) return
-        val specs = buildCatalogPrefetchSpecs(feed, continueWatching, watchlist, isTvDevice)
+        val specs = buildCatalogPrefetchSpecs(feed, continueWatching, watchlist, providers, isTvDevice)
         executeSpecs(specs, shouldContinue)
     }
 
@@ -106,6 +109,7 @@ class BackgroundCachePrefetcher(private val context: Context) {
         feed: CatalogFeed,
         continueWatching: List<WatchProgressEntity>,
         watchlist: List<WatchlistEntity>,
+        providers: List<TmdbWatchProviderDto>,
         isTvDevice: Boolean
     ): List<PrefetchSpec> {
         val specs = LinkedHashMap<String, PrefetchSpec>()
@@ -124,14 +128,19 @@ class BackgroundCachePrefetcher(private val context: Context) {
             heightDp = if (isTvDevice) 410f else 500f
         )
 
-        // 2. Continua a guardare (backdrop 16:9 usati subito sotto l'Hero)
+        // 2. Loghi piattaforme streaming TMDB nella striscia orizzontale Home
+        providers.take(10).forEach { provider ->
+            addSpec(provider.logoUrl, 44f, 44f)
+        }
+
+        // 3. Continua a guardare (backdrop 16:9 usati subito sotto l'Hero)
         continueWatching.take(6).forEach { entry ->
             val cwUrl = entry.backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" }
                 ?: entry.posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
             addSpec(cwUrl, 228f, 126f)
         }
 
-        // 3. Top 10 di oggi (prime card visibili)
+        // 4. Top 10 di oggi (prime card visibili)
         feed.top10Today.take(8).forEach { item ->
             addSpec(item.posterUrl, 130f, 194f)
         }

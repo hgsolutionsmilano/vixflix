@@ -247,3 +247,223 @@ object TmdbGenreMap {
 
     fun namesFor(ids: List<Int>): List<String> = ids.mapNotNull { genres[it] }.take(3)
 }
+
+@Immutable
+data class TmdbWatchProviderDto(
+    @Json(name = "provider_id") val providerId: Int,
+    @Json(name = "provider_name") val providerName: String,
+    @Json(name = "logo_path") val logoPath: String? = null,
+    @Json(name = "display_priority") val displayPriority: Int = 999
+) {
+    val logoUrl: String?
+        get() = logoPath?.takeIf { it.isNotBlank() }?.let { path ->
+            if (path.startsWith("http")) path else "https://image.tmdb.org/t/p/w300$path"
+        }
+
+    val displayName: String
+        get() = TmdbWatchProviderMap.cleanDisplayName(providerId, providerName)
+
+    val shortBadge: String
+        get() = TmdbWatchProviderMap.shortBadgeFor(providerId, displayName)
+
+    val brandColorHex: Long
+        get() = TmdbWatchProviderMap.brandColorFor(providerId)
+}
+
+data class TmdbWatchProvidersResponse(
+    @Json(name = "results") val results: List<TmdbWatchProviderDto> = emptyList()
+)
+
+object TmdbWatchProviderMap {
+    const val ID_DISNEY_PLUS = 337
+    const val ID_PARAMOUNT_PLUS = 531
+    const val ID_PRIME_VIDEO = 119
+    const val ID_NETFLIX = 8
+    const val ID_APPLE_TV_PLUS = 350
+    const val ID_NOW = 39
+    const val ID_CRUNCHYROLL = 283
+    const val ID_RAKUTEN_TV = 35
+    const val ID_MEDIASET_INFINITY = 359
+    const val ID_MUBI = 11
+
+    /**
+     * Ordine prioritario richiesto nella Home:
+     * Disney+, Paramount+, Prime Video, Netflix, seguiti dalle altre piattaforme principali TMDB Italia.
+     */
+    val priorityOrderIds: List<Int> = listOf(
+        ID_DISNEY_PLUS,
+        ID_PARAMOUNT_PLUS,
+        ID_PRIME_VIDEO,
+        ID_NETFLIX,
+        ID_APPLE_TV_PLUS,
+        ID_NOW,
+        ID_CRUNCHYROLL,
+        ID_RAKUTEN_TV,
+        ID_MEDIASET_INFINITY,
+        ID_MUBI
+    )
+
+    val defaultProviders: List<TmdbWatchProviderDto> = listOf(
+        TmdbWatchProviderDto(
+            providerId = ID_DISNEY_PLUS,
+            providerName = "Disney+",
+            logoPath = "/97yvRBw1GzX7fXprcF80er19ot.jpg",
+            displayPriority = 1
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_PARAMOUNT_PLUS,
+            providerName = "Paramount+",
+            logoPath = "/h5DcR0J2EESLitnhR8xLG1QymTE.jpg",
+            displayPriority = 2
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_PRIME_VIDEO,
+            providerName = "Prime Video",
+            logoPath = "/dQeAar5H991VYporEjUspolDarG.jpg",
+            displayPriority = 3
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_NETFLIX,
+            providerName = "Netflix",
+            logoPath = "/pbpMk2JmcoNnQwx5JGpXngfoWtp.jpg",
+            displayPriority = 4
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_APPLE_TV_PLUS,
+            providerName = "Apple TV+",
+            logoPath = "/2E03IAZsX4ZaUqM7tXlctEPMGWS.jpg",
+            displayPriority = 5
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_NOW,
+            providerName = "NOW",
+            logoPath = "/g0E9h3JAeIwmdvxlT73jiEuxdNj.jpg",
+            displayPriority = 6
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_CRUNCHYROLL,
+            providerName = "Crunchyroll",
+            logoPath = "/mXeC4TrcgdU6ltE9bCBCEORwSQR.jpg",
+            displayPriority = 7
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_RAKUTEN_TV,
+            providerName = "Rakuten TV",
+            logoPath = "/bZvc9dXrXNly7cA0V4D9pR8yJwm.jpg",
+            displayPriority = 8
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_MEDIASET_INFINITY,
+            providerName = "Mediaset Infinity",
+            logoPath = "/cDzkhg6Sr4GW2aRdV22uDuRrQqZ.jpg",
+            displayPriority = 9
+        ),
+        TmdbWatchProviderDto(
+            providerId = ID_MUBI,
+            providerName = "MUBI",
+            logoPath = "/fj9Y8i4Qr3TF4A1L96t7b29sW5M.jpg",
+            displayPriority = 10
+        )
+    )
+
+    fun cleanDisplayName(providerId: Int, rawName: String): String = when (providerId) {
+        ID_DISNEY_PLUS -> "Disney+"
+        ID_PARAMOUNT_PLUS -> "Paramount+"
+        ID_PRIME_VIDEO, 9 -> "Prime Video"
+        ID_NETFLIX -> "Netflix"
+        ID_APPLE_TV_PLUS, 2 -> "Apple TV+"
+        ID_NOW, 29 -> "NOW"
+        ID_CRUNCHYROLL -> "Crunchyroll"
+        ID_RAKUTEN_TV -> "Rakuten TV"
+        ID_MEDIASET_INFINITY -> "Infinity+"
+        ID_MUBI -> "MUBI"
+        else -> rawName
+            .replace("Amazon Prime Video", "Prime Video", ignoreCase = true)
+            .replace("Disney Plus", "Disney+", ignoreCase = true)
+            .replace("Paramount Plus", "Paramount+", ignoreCase = true)
+            .replace("Apple TV Plus", "Apple TV+", ignoreCase = true)
+            .trim()
+    }
+
+    fun shortBadgeFor(providerId: Int, displayName: String): String = when (providerId) {
+        ID_DISNEY_PLUS -> "D+"
+        ID_PARAMOUNT_PLUS -> "P+"
+        ID_PRIME_VIDEO, 9 -> "PV"
+        ID_NETFLIX -> "N"
+        ID_APPLE_TV_PLUS, 2 -> "TV+"
+        ID_NOW -> "NOW"
+        ID_CRUNCHYROLL -> "CR"
+        ID_RAKUTEN_TV -> "R"
+        ID_MEDIASET_INFINITY -> "INF"
+        ID_MUBI -> "M"
+        else -> displayName.take(2).uppercase()
+    }
+
+    fun brandColorFor(providerId: Int): Long = when (providerId) {
+        ID_DISNEY_PLUS -> 0xFF0063E5L
+        ID_PARAMOUNT_PLUS -> 0xFF0064FFL
+        ID_PRIME_VIDEO, 9 -> 0xFF00A8E1L
+        ID_NETFLIX -> 0xFFE50914L
+        ID_APPLE_TV_PLUS, 2 -> 0xFF8E8E93L
+        ID_NOW -> 0xFF00D69EL
+        ID_CRUNCHYROLL -> 0xFFF47521L
+        ID_RAKUTEN_TV -> 0xFFBF0000L
+        ID_MEDIASET_INFINITY -> 0xFF7B2CBFL
+        ID_MUBI -> 0xFF0038A8L
+        else -> 0xFFE50914L
+    }
+
+    /**
+     * Restituisce gli ID provider TMDB da interrogare su `/discover/movie` e `/discover/tv`
+     * (includendo eventuali alias regionali TMDB separati da pipe OR `|`).
+     */
+    fun providerQueryExpression(providerId: Int): String = when (providerId) {
+        ID_PRIME_VIDEO, 9 -> "119|9"
+        ID_PARAMOUNT_PLUS -> "531|582"
+        ID_APPLE_TV_PLUS -> "350|2"
+        ID_NOW -> "39|29"
+        else -> providerId.toString()
+    }
+
+    /**
+     * Unisce i provider live restituiti da TMDB con le piattaforme principali, aggiornando
+     * i `logo_path` ufficiali TMDB e mantenendo in testa Disney+, Paramount+, Prime Video e Netflix.
+     */
+    fun mergeAndSortProviders(liveProviders: List<TmdbWatchProviderDto>): List<TmdbWatchProviderDto> {
+        if (liveProviders.isEmpty()) return defaultProviders
+
+        val liveById = liveProviders
+            .filter { it.providerId > 0 && it.providerName.isNotBlank() }
+            .associateBy { provider ->
+                if (provider.providerId == 9) ID_PRIME_VIDEO else provider.providerId
+            }
+
+        val prioritized = defaultProviders.map { fallback ->
+            val live = liveById[fallback.providerId]
+            if (live != null) {
+                fallback.copy(
+                    providerName = cleanDisplayName(fallback.providerId, live.providerName),
+                    logoPath = live.logoPath?.takeIf { it.isNotBlank() } ?: fallback.logoPath
+                )
+            } else {
+                fallback
+            }
+        }
+
+        val prioritizedIds = prioritized.map { it.providerId }.toSet()
+        val extraFromTmdb = liveProviders
+            .filter { candidate ->
+                val normId = if (candidate.providerId == 9) ID_PRIME_VIDEO else candidate.providerId
+                normId !in prioritizedIds &&
+                    !candidate.providerName.contains("Channel", ignoreCase = true) &&
+                    !candidate.providerName.contains("With Ads", ignoreCase = true) &&
+                    !candidate.logoPath.isNullOrBlank()
+            }
+            .sortedBy { it.displayPriority }
+            .distinctBy { cleanDisplayName(it.providerId, it.providerName).lowercase() }
+            .take(6)
+
+        return prioritized + extraFromTmdb
+    }
+}
+

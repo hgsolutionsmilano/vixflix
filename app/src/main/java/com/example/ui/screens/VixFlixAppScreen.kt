@@ -114,12 +114,15 @@ import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
+import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.repository.CatalogFeed
 import com.example.ui.CatalogUiState
 import com.example.ui.DetailUiState
 import com.example.ui.MovieGenreFilterUiState
 import com.example.ui.NavTab
+import com.example.ui.PlatformFilterMediaType
 import com.example.ui.PlaybackSession
+import com.example.ui.StreamingPlatformUiState
 import com.example.ui.VixFlixViewModel
 import com.example.ui.components.ContinueWatchingSection
 import com.example.ui.components.MediaCatalogRow
@@ -127,6 +130,8 @@ import com.example.ui.components.MediaPosterCard
 import com.example.ui.components.MovieGenreChipBar
 import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
+import com.example.ui.components.PlatformLogoBadge
+import com.example.ui.components.StreamingPlatformsStrip
 import com.example.ui.components.Top10Section
 import com.example.ui.components.VixFlixSplashScreen
 import com.example.ui.components.formatSecondsToMmSs
@@ -175,6 +180,7 @@ fun VixFlixAppScreen(
     val playbackSession by viewModel.playbackSession.collectAsStateWithLifecycle()
     val gitHubState by viewModel.gitHubState.collectAsStateWithLifecycle()
     val movieGenreState by viewModel.movieGenreState.collectAsStateWithLifecycle()
+    val platformState by viewModel.platformState.collectAsStateWithLifecycle()
 
     var isSplashVisible by remember { mutableStateOf(splashMinDurationMs > 0L) }
     var isSearchBarVisible by remember { mutableStateOf(false) }
@@ -188,6 +194,7 @@ fun VixFlixAppScreen(
 
     val heroPlayFocusRequester = remember { FocusRequester() }
     val movieGenreBarFocusRequester = remember { FocusRequester() }
+    val platformStripFocusRequester = remember { FocusRequester() }
     val firstRowFocusRequester = remember { FocusRequester() }
     val navRailSelectedFocusRequester = remember { FocusRequester() }
     val topBarBrandFocusRequester = remember { FocusRequester() }
@@ -197,7 +204,11 @@ fun VixFlixAppScreen(
     val retryButtonFocusRequester = remember { FocusRequester() }
 
     // Memoria del focus TV per evitare di tornare sempre in cima all'Hero chiudendo una locandina
-    var lastFocusedContentRequester by remember(selectedTab, movieGenreState.selectedGenre?.id) {
+    var lastFocusedContentRequester by remember(
+        selectedTab,
+        movieGenreState.selectedGenre?.id,
+        platformState.selectedProvider?.providerId
+    ) {
         mutableStateOf<FocusRequester?>(null)
     }
     var wasOverlayActive by remember { mutableStateOf(false) }
@@ -239,7 +250,11 @@ fun VixFlixAppScreen(
         else -> when (catalogState) {
             is CatalogUiState.Error -> retryButtonFocusRequester
             is CatalogUiState.Success -> {
-                if (selectedTab == NavTab.NEW_POPULAR) firstRowFocusRequester else heroPlayFocusRequester
+                when {
+                    selectedTab == NavTab.NEW_POPULAR -> firstRowFocusRequester
+                    selectedTab == NavTab.HOME && platformState.selectedProvider != null -> platformStripFocusRequester
+                    else -> heroPlayFocusRequester
+                }
             }
             is CatalogUiState.Loading -> null
         }
@@ -346,6 +361,9 @@ fun VixFlixAppScreen(
                     if (!lastFocusedContentRequester.safeRequestFocus()) {
                         tabContentEntryFocusRequester.safeRequestFocus()
                     }
+                }
+                selectedTab == NavTab.HOME && platformState.selectedProvider != null -> {
+                    viewModel.selectStreamingPlatform(null)
                 }
                 useTvNavigationRail && !isRailFocused -> {
                     navRailSelectedFocusRequester.safeRequestFocus()
@@ -612,14 +630,19 @@ fun VixFlixAppScreen(
                                         continueWatching = continueWatching,
                                         watchlist = watchlist,
                                         movieGenreState = movieGenreState,
+                                        platformState = platformState,
                                         isTvLayout = useTvNavigationRail,
                                         heroPlayFocusRequester = heroPlayFocusRequester,
                                         movieGenreBarFocusRequester = movieGenreBarFocusRequester,
+                                        platformStripFocusRequester = platformStripFocusRequester,
                                         firstRowFocusRequester = firstRowFocusRequester,
                                         navRailFocusRequester = navRailSelectedFocusRequester,
                                         topBarFocusRequester = topBarBrandFocusRequester,
                                         onSelectMovieGenre = viewModel::selectMovieGenre,
                                         onRetryMovieGenre = viewModel::retrySelectedMovieGenre,
+                                        onSelectStreamingPlatform = viewModel::selectStreamingPlatform,
+                                        onSelectPlatformMediaTypeFilter = viewModel::selectPlatformMediaTypeFilter,
+                                        onRetryStreamingPlatform = viewModel::retrySelectedStreamingPlatform,
                                         onPlayItem = { item -> viewModel.startPlayback(item) },
                                         onOpenDetails = viewModel::openDetails,
                                         onToggleWatchlist = viewModel::toggleWatchlist,
@@ -696,6 +719,7 @@ fun VixFlixAppScreen(
                         downToContentFocusRequester = when {
                             isSearchBarVisible && searchQuery.isNotBlank() -> searchFirstItemFocusRequester
                             selectedTab == NavTab.MOVIES && catalogState is CatalogUiState.Success -> movieGenreBarFocusRequester
+                            selectedTab == NavTab.HOME && platformState.selectedProvider != null && catalogState is CatalogUiState.Success -> platformStripFocusRequester
                             else -> activeContentEntryFocusRequester
                         },
                         modifier = Modifier.align(Alignment.TopCenter)
@@ -1362,14 +1386,19 @@ private fun CatalogFeedContent(
     continueWatching: List<WatchProgressEntity>,
     watchlist: List<WatchlistEntity>,
     movieGenreState: MovieGenreFilterUiState,
+    platformState: StreamingPlatformUiState,
     isTvLayout: Boolean,
     heroPlayFocusRequester: FocusRequester,
     movieGenreBarFocusRequester: FocusRequester,
+    platformStripFocusRequester: FocusRequester,
     firstRowFocusRequester: FocusRequester,
     navRailFocusRequester: FocusRequester,
     topBarFocusRequester: FocusRequester,
     onSelectMovieGenre: (TmdbGenreDto?) -> Unit,
     onRetryMovieGenre: () -> Unit,
+    onSelectStreamingPlatform: (TmdbWatchProviderDto?) -> Unit,
+    onSelectPlatformMediaTypeFilter: (PlatformFilterMediaType) -> Unit,
+    onRetryStreamingPlatform: () -> Unit,
     onPlayItem: (MediaItem) -> Unit,
     onOpenDetails: (MediaItem) -> Unit,
     onToggleWatchlist: (MediaItem) -> Unit,
@@ -1382,6 +1411,8 @@ private fun CatalogFeedContent(
     bottomPadding: androidx.compose.ui.unit.Dp
 ) {
     val activeMovieGenre = if (selectedTab == NavTab.MOVIES) movieGenreState.selectedGenre else null
+    val activePlatform = if (selectedTab == NavTab.HOME) platformState.selectedProvider else null
+
     val heroItem = remember(selectedTab, feed) {
         when (selectedTab) {
             NavTab.SERIES -> feed.trendingTv.firstOrNull() ?: feed.popularTv.firstOrNull() ?: feed.heroBanner
@@ -1404,10 +1435,11 @@ private fun CatalogFeedContent(
         continueWatching.associateBy { it.id }
     }
 
-    val showHero = selectedTab != NavTab.NEW_POPULAR && activeMovieGenre == null
-    val hasContinueWatching = filteredContinueWatching.isNotEmpty() && activeMovieGenre == null
+    val showHero = selectedTab != NavTab.NEW_POPULAR && activeMovieGenre == null && activePlatform == null
+    val hasContinueWatching = filteredContinueWatching.isNotEmpty() && activeMovieGenre == null && activePlatform == null
     val firstRowUpTarget = when {
         selectedTab == NavTab.MOVIES && !showHero -> movieGenreBarFocusRequester
+        selectedTab == NavTab.HOME && activePlatform != null -> platformStripFocusRequester
         showHero -> heroPlayFocusRequester
         else -> topBarFocusRequester
     }
@@ -1423,6 +1455,12 @@ private fun CatalogFeedContent(
 
         val genreRows = remember(movieGenreState.movies, gridColumns) {
             movieGenreState.movies
+                .distinctBy { it.uniqueKey }
+                .chunked(gridColumns)
+        }
+
+        val platformRows = remember(platformState.displayedTitles, gridColumns) {
+            platformState.displayedTitles
                 .distinctBy { it.uniqueKey }
                 .chunked(gridColumns)
         }
@@ -1455,6 +1493,12 @@ private fun CatalogFeedContent(
                 }
             }
 
+            if (selectedTab == NavTab.HOME && activePlatform != null) {
+                item(key = "home_platform_top_spacer", contentType = "spacer") {
+                    Spacer(modifier = Modifier.height(if (isTvLayout) 74.dp else 118.dp))
+                }
+            }
+
             if (showHero) {
                 item(key = "hero_${heroItem.uniqueKey}", contentType = "hero") {
                     val isInWatchlist = heroItem.uniqueKey in watchlistIds
@@ -1469,7 +1513,7 @@ private fun CatalogFeedContent(
                         playButtonFocusRequester = heroPlayFocusRequester,
                         navRailFocusRequester = navRailFocusRequester,
                         topBarFocusRequester = if (selectedTab == NavTab.MOVIES) movieGenreBarFocusRequester else topBarFocusRequester,
-                        firstRowFocusRequester = firstRowFocusRequester,
+                        firstRowFocusRequester = if (selectedTab == NavTab.HOME && !hasContinueWatching) platformStripFocusRequester else firstRowFocusRequester,
                         isTvLayout = isTvLayout
                     )
                 }
@@ -1499,111 +1543,461 @@ private fun CatalogFeedContent(
 
         when (selectedTab) {
             NavTab.HOME -> {
-                val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
-                val trendingMoviesIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
+                // Striscia orizzontale con tutte le piattaforme streaming e relativo logo ufficiale TMDB
+                // (Disney+, Paramount+, Prime Video, Netflix e le altre principali)
+                item(key = "row_streaming_platforms_strip", contentType = "platform_strip") {
+                    StreamingPlatformsStrip(
+                        providers = platformState.providers,
+                        selectedProvider = activePlatform,
+                        onSelectProvider = onSelectStreamingPlatform,
+                        showHeader = true,
+                        firstItemFocusRequester = platformStripFocusRequester,
+                        upFocusRequester = if (activePlatform != null) topBarFocusRequester else heroPlayFocusRequester,
+                        downFocusRequester = if (activePlatform != null && (platformState.isLoading || (platformState.errorMessage == null && platformState.displayedTitles.isEmpty()))) {
+                            null
+                        } else {
+                            firstRowFocusRequester
+                        },
+                        navRailFocusRequester = navRailFocusRequester,
+                        onItemFocused = onRememberContentFocus
+                    )
+                }
 
-                item(key = "row_top_10", contentType = "top10_row") {
-                    Top10Section(
-                        title = "Top 10 in Italia Oggi",
-                        items = feed.top10Today,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        firstItemFocusRequester = if (top10IsFirstRow) firstRowFocusRequester else null,
-                        upFocusRequester = if (top10IsFirstRow) firstRowUpTarget else null,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_trending_movies", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Film di Tendenza su TMDB",
-                        items = feed.trendingMovies,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        firstItemFocusRequester = if (trendingMoviesIsFirstRow) firstRowFocusRequester else null,
-                        upFocusRequester = if (trendingMoviesIsFirstRow) firstRowUpTarget else null,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_trending_tv", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Serie TV del Momento",
-                        items = feed.trendingTv,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_popular_movies", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Film Popolari su VixFlix",
-                        items = feed.popularMovies,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_popular_tv", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Serie TV Acclamate",
-                        items = feed.popularTv,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_now_playing", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Ora al Cinema",
-                        items = feed.nowPlayingMovies,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_top_rated", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Più Votati dalla Critica",
-                        items = feed.topRatedMovies,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_action", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Azione & Adrenalina",
-                        items = feed.actionMovies,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
-                }
-                item(key = "row_scifi", contentType = "media_row") {
-                    MediaCatalogRow(
-                        title = "Fantascienza & Mondi Futuri",
-                        items = feed.sciFiMovies,
-                        onItemClick = onOpenDetails,
-                        onItemQuickPlay = onPlayItem,
-                        onItemLongClick = onTvLongPressPoster,
-                        onItemFocused = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
+                if (activePlatform != null) {
+                    item(key = "platform_catalog_header_${activePlatform.providerId}", contentType = "platform_header") {
+                        val brandColor = remember(activePlatform.brandColorHex) { Color(activePlatform.brandColorHex) }
+                        Surface(
+                            color = NetflixCardSurface,
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, brandColor.copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 8.dp)
+                                .testTag("platform_catalog_section")
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            colors = listOf(
+                                                brandColor.copy(alpha = 0.22f),
+                                                NetflixCardSurface
+                                            )
+                                        )
+                                    )
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        PlatformLogoBadge(
+                                            provider = activePlatform,
+                                            size = 52.dp
+                                        )
+                                        Column {
+                                            Text(
+                                                text = "Catalogo ${activePlatform.displayName}",
+                                                style = MaterialTheme.typography.titleLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                color = NetflixWhite
+                                            )
+                                            val subtitle = when {
+                                                platformState.isLoading -> "Ricerca titoli di ${activePlatform.displayName} su TMDB…"
+                                                platformState.errorMessage != null -> "Errore di connessione TMDB"
+                                                else -> "${platformState.movies.size} Film • ${platformState.series.size} Serie TV su TMDB"
+                                            }
+                                            Text(
+                                                text = subtitle,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = NetflixLightGray
+                                            )
+                                        }
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { onSelectStreamingPlatform(null) },
+                                        shape = RoundedCornerShape(50),
+                                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .focusProperties {
+                                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                                platformStripFocusRequester.takeIfAttached()?.let { up = it }
+                                            }
+                                            .tvFocusableControl(
+                                                shape = RoundedCornerShape(50),
+                                                focusedBorderColor = NetflixWhite,
+                                                onClick = { onSelectStreamingPlatform(null) }
+                                            )
+                                            .testTag("clear_platform_filter_button")
+                                    ) {
+                                        Text("Tutte le piattaforme", style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+
+                                // Selettore rapido tipo media (Tutti / Film / Serie TV) per la piattaforma scelta
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.focusGroup()
+                                ) {
+                                    PlatformFilterMediaType.entries.forEach { filterType ->
+                                        val isFilterSelected = platformState.mediaTypeFilter == filterType
+                                        val tagSuffix = when (filterType) {
+                                            PlatformFilterMediaType.ALL -> "all"
+                                            PlatformFilterMediaType.MOVIES -> "movies"
+                                            PlatformFilterMediaType.SERIES -> "series"
+                                        }
+                                        val countBadge = when (filterType) {
+                                            PlatformFilterMediaType.ALL -> platformState.allTitles.size
+                                            PlatformFilterMediaType.MOVIES -> platformState.movies.size
+                                            PlatformFilterMediaType.SERIES -> platformState.series.size
+                                        }
+                                        Surface(
+                                            color = if (isFilterSelected) brandColor else NetflixElevatedSurface,
+                                            shape = RoundedCornerShape(50),
+                                            modifier = Modifier
+                                                .heightIn(min = 40.dp)
+                                                .tvFocusableControl(
+                                                    shape = RoundedCornerShape(50),
+                                                    focusedBorderColor = NetflixWhite,
+                                                    unfocusedBorderColor = if (isFilterSelected) brandColor else NetflixElevatedSurface,
+                                                    onClick = { onSelectPlatformMediaTypeFilter(filterType) }
+                                                )
+                                                .testTag("platform_filter_$tagSuffix")
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (!platformState.isLoading && countBadge > 0) {
+                                                        "${filterType.label} ($countBadge)"
+                                                    } else {
+                                                        filterType.label
+                                                    },
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    fontWeight = if (isFilterSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    color = Color.White
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    when {
+                        platformState.isLoading -> {
+                            item(key = "platform_titles_loading", contentType = "status") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 56.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        CircularProgressIndicator(color = NetflixRed)
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(
+                                            text = "Caricamento titoli ${activePlatform.displayName} da TMDB…",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = NetflixLightGray
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        platformState.errorMessage != null -> {
+                            item(key = "platform_titles_error", contentType = "status") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 24.dp, vertical = 40.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ErrorOutline,
+                                            contentDescription = null,
+                                            tint = NetflixRed,
+                                            modifier = Modifier.size(44.dp)
+                                        )
+                                        Text(
+                                            text = platformState.errorMessage,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = NetflixLightGray,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Button(
+                                            onClick = onRetryStreamingPlatform,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NetflixRed,
+                                                contentColor = Color.White
+                                            ),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier
+                                                .safeFocusRequester(firstRowFocusRequester)
+                                                .focusProperties {
+                                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                                    platformStripFocusRequester.takeIfAttached()?.let { up = it }
+                                                }
+                                                .tvFocusableControl(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    onClick = onRetryStreamingPlatform
+                                                )
+                                                .testTag("retry_platform_titles_button")
+                                        ) {
+                                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Riprova")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        platformState.displayedTitles.isEmpty() -> {
+                            item(key = "platform_titles_empty", contentType = "status") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 24.dp, vertical = 48.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Nessun titolo trovato su TMDB per ${activePlatform.displayName}.",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = NetflixLightGray,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+
+                        else -> {
+                            if (platformState.mediaTypeFilter == PlatformFilterMediaType.ALL &&
+                                platformState.movies.isNotEmpty() &&
+                                platformState.series.isNotEmpty()
+                            ) {
+                                item(key = "platform_${activePlatform.providerId}_movies_row", contentType = "media_row") {
+                                    MediaCatalogRow(
+                                        title = "Film Popolari su ${activePlatform.displayName}",
+                                        items = platformState.movies,
+                                        onItemClick = onOpenDetails,
+                                        onItemQuickPlay = onPlayItem,
+                                        onItemLongClick = onTvLongPressPoster,
+                                        onItemFocused = onRememberContentFocus,
+                                        firstItemFocusRequester = firstRowFocusRequester,
+                                        upFocusRequester = platformStripFocusRequester,
+                                        navRailFocusRequester = navRailFocusRequester
+                                    )
+                                }
+                                item(key = "platform_${activePlatform.providerId}_series_row", contentType = "media_row") {
+                                    MediaCatalogRow(
+                                        title = "Serie TV Popolari su ${activePlatform.displayName}",
+                                        items = platformState.series,
+                                        onItemClick = onOpenDetails,
+                                        onItemQuickPlay = onPlayItem,
+                                        onItemLongClick = onTvLongPressPoster,
+                                        onItemFocused = onRememberContentFocus,
+                                        navRailFocusRequester = navRailFocusRequester
+                                    )
+                                }
+                            }
+
+                            item(key = "platform_${activePlatform.providerId}_grid_title", contentType = "section_label") {
+                                Text(
+                                    text = when (platformState.mediaTypeFilter) {
+                                        PlatformFilterMediaType.ALL -> "Tutti i Titoli su ${activePlatform.displayName}"
+                                        PlatformFilterMediaType.MOVIES -> "Film su ${activePlatform.displayName}"
+                                        PlatformFilterMediaType.SERIES -> "Serie TV su ${activePlatform.displayName}"
+                                    },
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = NetflixWhite,
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
+                                )
+                            }
+
+                            val gridHasFirstRowRequester = !(
+                                platformState.mediaTypeFilter == PlatformFilterMediaType.ALL &&
+                                    platformState.movies.isNotEmpty() &&
+                                    platformState.series.isNotEmpty()
+                                )
+
+                            items(
+                                count = platformRows.size,
+                                key = { rowIdx -> "platform_${activePlatform.providerId}_${platformState.mediaTypeFilter.name}_row_$rowIdx" },
+                                contentType = { "platform_grid_row" }
+                            ) { rowIdx ->
+                                val rowItems = platformRows[rowIdx]
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 24.dp, vertical = 8.dp)
+                                        .focusGroup()
+                                ) {
+                                    for (colIdx in 0 until gridColumns) {
+                                        if (colIdx < rowItems.size) {
+                                            val item = rowItems[colIdx]
+                                            val itemFocusRequester = if (gridHasFirstRowRequester && rowIdx == 0 && colIdx == 0) {
+                                                firstRowFocusRequester
+                                            } else {
+                                                remember(activePlatform.providerId, platformState.mediaTypeFilter, item.uniqueKey) {
+                                                    FocusRequester()
+                                                }
+                                            }
+                                            MediaPosterCard(
+                                                item = item,
+                                                itemIndex = rowIdx * gridColumns + colIdx,
+                                                onClick = { onOpenDetails(item) },
+                                                onQuickPlay = { onPlayItem(item) },
+                                                onLongClick = { onTvLongPressPoster(item) },
+                                                onFocused = { onRememberContentFocus(itemFocusRequester) },
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .safeFocusRequester(itemFocusRequester)
+                                                    .focusProperties {
+                                                        if (colIdx == 0) {
+                                                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                                        }
+                                                        if (gridHasFirstRowRequester && rowIdx == 0) {
+                                                            platformStripFocusRequester.takeIfAttached()?.let { up = it }
+                                                        }
+                                                    }
+                                            )
+                                        } else {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
+                    val trendingMoviesIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
+
+                    item(key = "row_top_10", contentType = "top10_row") {
+                        Top10Section(
+                            title = "Top 10 in Italia Oggi",
+                            items = feed.top10Today,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            firstItemFocusRequester = if (top10IsFirstRow) firstRowFocusRequester else null,
+                            upFocusRequester = if (top10IsFirstRow) platformStripFocusRequester else null,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_trending_movies", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Film di Tendenza su TMDB",
+                            items = feed.trendingMovies,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            firstItemFocusRequester = if (trendingMoviesIsFirstRow) firstRowFocusRequester else null,
+                            upFocusRequester = if (trendingMoviesIsFirstRow) platformStripFocusRequester else null,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_trending_tv", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Serie TV del Momento",
+                            items = feed.trendingTv,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_popular_movies", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Film Popolari su VixFlix",
+                            items = feed.popularMovies,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_popular_tv", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Serie TV Acclamate",
+                            items = feed.popularTv,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_now_playing", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Ora al Cinema",
+                            items = feed.nowPlayingMovies,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_top_rated", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Più Votati dalla Critica",
+                            items = feed.topRatedMovies,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_action", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Azione & Adrenalina",
+                            items = feed.actionMovies,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
+                    item(key = "row_scifi", contentType = "media_row") {
+                        MediaCatalogRow(
+                            title = "Fantascienza & Mondi Futuri",
+                            items = feed.sciFiMovies,
+                            onItemClick = onOpenDetails,
+                            onItemQuickPlay = onPlayItem,
+                            onItemLongClick = onTvLongPressPoster,
+                            onItemFocused = onRememberContentFocus,
+                            navRailFocusRequester = navRailFocusRequester
+                        )
+                    }
                 }
             }
 

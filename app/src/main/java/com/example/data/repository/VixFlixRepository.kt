@@ -27,6 +27,8 @@ import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.TmdbSeasonDetailsDto
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.TmdbVideoDto
+import com.example.data.remote.TmdbWatchProviderDto
+import com.example.data.remote.TmdbWatchProviderMap
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.remote.toDomain
@@ -62,6 +64,14 @@ data class CachedCatalogResult(
 )
 
 @Immutable
+data class PlatformCatalogContent(
+    val provider: TmdbWatchProviderDto,
+    val movies: List<MediaItem>,
+    val series: List<MediaItem>,
+    val allCombined: List<MediaItem>
+)
+
+@Immutable
 data class CatalogFeed(
     val heroBanner: MediaItem,
     val top10Today: List<MediaItem>,
@@ -78,7 +88,7 @@ data class CatalogFeed(
 class VixFlixRepository(
     private val dao: VixFlixDao,
     baseHttpClient: OkHttpClient = defaultRawOkHttpClient(),
-    tmdbBaseUrl: String = BuildConfig.TMDB_BASE_URL,
+    private val tmdbBaseUrl: String = BuildConfig.TMDB_BASE_URL,
     vixBaseUrl: String = BuildConfig.VIXSRC_BASE_URL
 ) {
     companion object {
@@ -100,6 +110,13 @@ class VixFlixRepository(
             .followSslRedirects(true)
             .build()
     }
+
+    private val cacheScopePrefix: String =
+        if (tmdbBaseUrl == BuildConfig.TMDB_BASE_URL) "" else "u${tmdbBaseUrl.hashCode()}_"
+
+    private val activeCatalogSnapshotId: String = "${cacheScopePrefix}$CATALOG_SNAPSHOT_ID"
+    private fun scopedDetailsKey(uniqueKey: String): String = "${cacheScopePrefix}$uniqueKey"
+    private fun scopedSeasonKey(tvId: Int, seasonNumber: Int): String = "${cacheScopePrefix}tv_${tvId}_s${seasonNumber}"
 
     private val rawOkHttpClient: OkHttpClient = baseHttpClient
 
@@ -158,9 +175,12 @@ class VixFlixRepository(
 
     private val detailsMemoryCache = LruCache<String, TimedMemoryEntry<MediaDetails>>(30)
     private val episodesMemoryCache = LruCache<String, TimedMemoryEntry<List<TmdbEpisodeDto>>>(24)
+    private val platformCatalogMemoryCache = LruCache<Int, TimedMemoryEntry<PlatformCatalogContent>>(16)
     private val streamMemoryCache = ConcurrentHashMap<String, ResolvedStream>()
     @Volatile
     private var cachedGenresInMemory: TimedMemoryEntry<List<TmdbGenreDto>>? = null
+    @Volatile
+    private var cachedProvidersInMemory: TimedMemoryEntry<List<TmdbWatchProviderDto>>? = null
 
     private val tmdbApi: TmdbApiService = Retrofit.Builder()
         .baseUrl(tmdbBaseUrl)
@@ -184,7 +204,7 @@ class VixFlixRepository(
      */
     suspend fun getCachedCatalogFeed(): CachedCatalogResult? = withContext(Dispatchers.IO) {
         runCatching {
-            val snapshot = dao.getCatalogSnapshot(CATALOG_SNAPSHOT_ID) ?: return@withContext null
+            val snapshot = dao.getCatalogSnapshot(activeCatalogSnapshotId) ?: return@withContext null
             val now = System.currentTimeMillis()
             if (now - snapshot.updatedAtMs > CATALOG_MAX_RETENTION_MS) {
                 return@withContext null
@@ -258,7 +278,7 @@ class VixFlixRepository(
                         ?: TmdbGenreMap.defaultMovieGenres
                     dao.upsertCatalogSnapshot(
                         CatalogSnapshotEntity(
-                            id = CATALOG_SNAPSHOT_ID,
+                            id = activeCatalogSnapshotId,
                             feedJson = catalogFeedAdapter.toJson(feed),
                             movieGenresJson = genreListAdapter.toJson(genres),
                             updatedAtMs = System.currentTimeMillis()
@@ -272,7 +292,7 @@ class VixFlixRepository(
     }
 
     suspend fun getCachedMediaDetails(mediaItem: MediaItem): CachedValue<MediaDetails>? = withContext(Dispatchers.IO) {
-        val key = mediaItem.uniqueKey
+        val key = scopedDetailsKey(mediaItem.uniqueKey)
         val now = System.currentTimeMillis()
         detailsMemoryCache.get(key)?.let { mem ->
             if (now - mem.updatedAtMs <= DETAIL_MAX_RETENTION_MS) {
@@ -352,7 +372,7 @@ class VixFlixRepository(
         }
 
         val now = System.currentTimeMillis()
-        val key = mediaItem.uniqueKey
+        val key = scopedDetailsKey(mediaItem.uniqueKey)
         detailsMemoryCache.put(key, TimedMemoryEntry(details, now))
         withContext(Dispatchers.IO) {
             runCatching {
@@ -403,23 +423,14 @@ class VixFlixRepository(
     }
 
     suspend fun fetchMovieGenres(): List<TmdbGenreDto> {
-        val mem = cachedGenresInMemory
         val now = System.currentTimeMillis()
-        if (mem != null && now - mem.updatedAtMs < DETAIL_FRESH_MS && mem.value.isNotEmpty()) {
-            return mem.value
-        }
-        val fetched = runCatching {
+        return runCatching {
             tmdbApi.getMovieGenres().genres
                 .filter { it.id > 0 && it.name.isNotBlank() }
                 .distinctBy { it.id }
                 .ifEmpty { TmdbGenreMap.defaultMovieGenres }
-        }.getOrNull()
-
-        if (fetched != null) {
-            cachedGenresInMemory = TimedMemoryEntry(fetched, now)
-            return fetched
-        }
-        return mem?.value?.takeIf { it.isNotEmpty() } ?: TmdbGenreMap.defaultMovieGenres
+                .also { cachedGenresInMemory = TimedMemoryEntry(it, now) }
+        }.getOrDefault(TmdbGenreMap.defaultMovieGenres)
     }
 
     suspend fun fetchMoviesByGenre(genreId: Int, page: Int = 1): Result<List<MediaItem>> = runCatching {
@@ -427,9 +438,104 @@ class VixFlixRepository(
         response.results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
     }
 
+    /**
+     * Recupera da TMDB la lista delle piattaforme streaming con i relativi loghi ufficiali
+     * (`watch/providers/movie` + `watch/providers/tv`), mettendo in primo piano
+     * Disney+, Paramount+, Prime Video e Netflix.
+     */
+    suspend fun fetchWatchProviders(): List<TmdbWatchProviderDto> {
+        val now = System.currentTimeMillis()
+        cachedProvidersInMemory?.let { mem ->
+            if (now - mem.updatedAtMs < DETAIL_FRESH_MS && mem.value.isNotEmpty()) {
+                return mem.value
+            }
+        }
+        return runCatching {
+            coroutineScope {
+                val movieProvidersDef = async {
+                    runCatching { tmdbApi.getMovieWatchProviders().results }.getOrDefault(emptyList())
+                }
+                val tvProvidersDef = async {
+                    runCatching { tmdbApi.getTvWatchProviders().results }.getOrDefault(emptyList())
+                }
+                val combined = movieProvidersDef.await() + tvProvidersDef.await()
+                TmdbWatchProviderMap.mergeAndSortProviders(combined).also { merged ->
+                    cachedProvidersInMemory = TimedMemoryEntry(merged, now)
+                }
+            }
+        }.getOrDefault(TmdbWatchProviderMap.defaultProviders)
+    }
+
+    /**
+     * Carica da TMDB tutti i titoli (Film e Serie TV) disponibili sulla piattaforma selezionata
+     * (es. Disney+, Paramount+, Prime Video, Netflix) tramite `/discover/movie` e `/discover/tv`.
+     */
+    suspend fun fetchTitlesByWatchProvider(
+        provider: TmdbWatchProviderDto,
+        page: Int = 1,
+        forceRefresh: Boolean = false
+    ): Result<PlatformCatalogContent> = runCatching {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && page == 1) {
+            platformCatalogMemoryCache.get(provider.providerId)?.let { mem ->
+                if (now - mem.updatedAtMs <= CATALOG_FRESH_MS) {
+                    return@runCatching mem.value
+                }
+            }
+        }
+
+        val queryIds = TmdbWatchProviderMap.providerQueryExpression(provider.providerId)
+        coroutineScope {
+            val moviesDef = async {
+                runCatching {
+                    tmdbApi.discoverMoviesByProvider(providerIds = queryIds, page = page).results
+                        .mapNotNull { it.toDomain("movie") }
+                        .distinctBy { it.uniqueKey }
+                }
+            }
+            val tvDef = async {
+                runCatching {
+                    tmdbApi.discoverTvByProvider(providerIds = queryIds, page = page).results
+                        .mapNotNull { it.toDomain("tv") }
+                        .distinctBy { it.uniqueKey }
+                }
+            }
+
+            val moviesResult = moviesDef.await()
+            val tvResult = tvDef.await()
+            if (moviesResult.isFailure && tvResult.isFailure) {
+                throw (moviesResult.exceptionOrNull() ?: tvResult.exceptionOrNull()
+                    ?: IllegalStateException("Impossibile caricare i titoli per ${provider.displayName}."))
+            }
+
+            val movies = moviesResult.getOrDefault(emptyList())
+            val series = tvResult.getOrDefault(emptyList())
+
+            // Intercala Film e Serie TV per offrire una vista "Tutti" bilanciata e immediata
+            val combined = buildList {
+                val maxLen = maxOf(movies.size, series.size)
+                for (i in 0 until maxLen) {
+                    if (i < movies.size) add(movies[i])
+                    if (i < series.size) add(series[i])
+                }
+            }.distinctBy { it.uniqueKey }
+
+            PlatformCatalogContent(
+                provider = provider,
+                movies = movies,
+                series = series,
+                allCombined = combined
+            ).also { content ->
+                if (page == 1) {
+                    platformCatalogMemoryCache.put(provider.providerId, TimedMemoryEntry(content, now))
+                }
+            }
+        }
+    }
+
     suspend fun getCachedSeasonEpisodes(tvId: Int, seasonNumber: Int): CachedValue<List<TmdbEpisodeDto>>? =
         withContext(Dispatchers.IO) {
-            val key = "tv_${tvId}_s${seasonNumber}"
+            val key = scopedSeasonKey(tvId, seasonNumber)
             val now = System.currentTimeMillis()
             episodesMemoryCache.get(key)?.let { mem ->
                 if (now - mem.updatedAtMs <= DETAIL_MAX_RETENTION_MS) {
@@ -460,7 +566,7 @@ class VixFlixRepository(
         val season: TmdbSeasonDetailsDto = tmdbApi.getTvSeasonDetails(tvId = tvId, seasonNumber = seasonNumber)
         val episodes = season.episodes.distinctBy { it.seasonNumber to it.episodeNumber }
         val now = System.currentTimeMillis()
-        val key = "tv_${tvId}_s${seasonNumber}"
+        val key = scopedSeasonKey(tvId, seasonNumber)
         episodesMemoryCache.put(key, TimedMemoryEntry(episodes, now))
         withContext(Dispatchers.IO) {
             runCatching {
@@ -763,7 +869,7 @@ class VixFlixRepository(
         val now = System.currentTimeMillis()
         runCatching { dao.deleteExpiredStreamCaches(now) }
         CacheStatsSummary(
-            catalogUpdatedAtMs = runCatching { dao.getCatalogSnapshot(CATALOG_SNAPSHOT_ID)?.updatedAtMs }.getOrNull(),
+            catalogUpdatedAtMs = runCatching { dao.getCatalogSnapshot(activeCatalogSnapshotId)?.updatedAtMs }.getOrNull(),
             cachedDetailsCount = runCatching { dao.countMediaDetailsCache() }.getOrDefault(0),
             cachedSeasonsCount = runCatching { dao.countSeasonEpisodesCache() }.getOrDefault(0),
             validStreamLinksCount = runCatching { dao.countValidStreamCaches(now) }.getOrDefault(0),
@@ -774,8 +880,10 @@ class VixFlixRepository(
     suspend fun clearAllLocalCaches(clearImageCaches: () -> Unit) {
         detailsMemoryCache.evictAll()
         episodesMemoryCache.evictAll()
+        platformCatalogMemoryCache.evictAll()
         streamMemoryCache.clear()
         cachedGenresInMemory = null
+        cachedProvidersInMemory = null
         withContext(Dispatchers.IO) {
             runCatching { dao.clearCatalogSnapshot() }
             runCatching { dao.clearMediaDetailsCache() }
