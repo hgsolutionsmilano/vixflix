@@ -164,10 +164,9 @@ fun MediaDetailScreen(
             .testTag("media_detail_screen")
     ) {
         val viewportHeight = maxHeight.coerceAtLeast(460.dp)
-        // Su TV Mode lasciamo 16.dp di margine inferiore invisibile (coperto dallo spacer della sezione successiva)
-        // così LazyColumn pre-compone il primo nodo sotto-piega mantenendo però il 100% della vista iniziale
-        // dedicato a Locandina, Bottoni Rapidi e Breve Testo.
-        val tvHeroStageHeight = (viewportHeight - 16.dp).coerceAtLeast(420.dp)
+        // Su TV Mode il palco Hero occupa esattamente il 100% dell'altezza dello schermo,
+        // centrando verticalmente e orizzontalmente Locandina, Breve Testo e Bottoni Rapidi.
+        val tvHeroStageHeight = viewportHeight
         val density = LocalDensity.current
         val revealBelowFoldOffsetPx = remember(tvHeroStageHeight, density) {
             with(density) { (tvHeroStageHeight - 136.dp).roundToPx().coerceAtLeast(0) }
@@ -217,6 +216,7 @@ fun MediaDetailScreen(
             var isTopBarButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
             var isOtherActionFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
             var wasTrailerOpen by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            var isBelowFoldActive by remember(currentItem.uniqueKey) { mutableStateOf(false) }
 
             val isHeroActionFocused = isPlayButtonFocused ||
                 isTrailerButtonFocused ||
@@ -227,11 +227,26 @@ fun MediaDetailScreen(
             val isCurrentActive = currentItem.uniqueKey == item.uniqueKey
             val isTrailerOpen = currentState.activeTrailer != null
 
-            // Quando il focus torna sui bottoni rapidi (o all'apertura della scheda) riportiamo la vista in cima
-            // così locandina, bottoni rapidi e breve testo restano sempre perfettamente visibili a schermo intero.
-            LaunchedEffect(isHeroActionFocused, isTvDevice) {
+            // Finché il focus si trova sui bottoni rapidi dell'Hero Stage (o all'apertura della scheda),
+            // manteniamo lo scroll rigorosamente bloccato a (0, 0) così la scheda resta centrata al 100%
+            // e non si muove mai quando ci si sposta a sinistra/destra tra le icone pulsanti.
+            LaunchedEffect(
+                isTvDevice,
+                isBelowFoldActive,
+                isHeroActionFocused,
+                isPlayButtonFocused,
+                isTrailerButtonFocused,
+                isWatchlistButtonFocused,
+                isRestartButtonFocused,
+                isTopBarButtonFocused,
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset
+            ) {
                 if (isTvDevice && isHeroActionFocused) {
-                    if (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0) {
+                    isBelowFoldActive = false
+                }
+                if (isTvDevice && (!isBelowFoldActive || isHeroActionFocused)) {
+                    if (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0) {
                         runCatching { listState.scrollToItem(0, 0) }
                     }
                 }
@@ -241,6 +256,7 @@ fun MediaDetailScreen(
                 if (isCurrentActive && isInteractive && !isTrailerOpen) {
                     val returnToTrailer = wasTrailerOpen
                     val targetRequester = if (returnToTrailer) detailTrailerFocusRequester else detailPlayFocusRequester
+                    isBelowFoldActive = false
                     if (!returnToTrailer && (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0)) {
                         runCatching { listState.scrollToItem(0, 0) }
                     }
@@ -261,6 +277,9 @@ fun MediaDetailScreen(
                             val focusedAfterYield = if (returnToTrailer) isTrailerButtonFocused else isPlayButtonFocused
                             if (focusedAfterYield) break
                         }
+                    }
+                    if (isTvDevice && (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0)) {
+                        runCatching { listState.scrollToItem(0, 0) }
                     }
                 }
                 if (isCurrentActive) {
@@ -287,6 +306,7 @@ fun MediaDetailScreen(
                     keyEvent.key == Key.DirectionDown &&
                     hasBelowFoldContent
                 ) {
+                    isBelowFoldActive = true
                     coroutineScope.launch {
                         runCatching {
                             if (listState.firstVisibleItemIndex == 0 &&
@@ -328,21 +348,23 @@ fun MediaDetailScreen(
                     state = listState,
                     modifier = Modifier
                         .fillMaxSize()
-                        .navigationBarsPadding()
+                        .then(if (isTvDevice) Modifier else Modifier.navigationBarsPadding())
                         .testTag("media_detail_lazy_column"),
-                    contentPadding = PaddingValues(bottom = 40.dp)
+                    contentPadding = if (isTvDevice) PaddingValues(0.dp) else PaddingValues(bottom = 40.dp)
                 ) {
                     if (isTvDevice) {
                         // =========================================================================
                         // TV MODE (Android TV, Google TV, Fire TV Stick):
-                        // Appena apri mostra a tutto schermo Locandina 2:3, Breve Testo (max 3 righe)
-                        // e Bottoni Rapidi. Scorre alle sezioni sottostanti SOLO premendo D-Pad Giù.
+                        // Appena apri mostra perfettamente centrati al centro dello schermo
+                        // Locandina 2:3, Breve Testo (max 3 righe) e Bottoni Rapidi.
+                        // Non si muove spostandosi tra le icone pulsanti; scorre sotto SOLO con D-Pad Giù.
                         // =========================================================================
                         item(
                             key = "detail_tv_hero_stage_${currentItem.uniqueKey}",
                             contentType = "detail_tv_hero_stage"
                         ) {
                             Box(
+                                contentAlignment = Alignment.Center,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(tvHeroStageHeight)
@@ -385,27 +407,23 @@ fun MediaDetailScreen(
                                         )
                                 )
 
-                                // Contenuto centrale: Locandina a sinistra + Info brevi e Bottoni rapidi a destra
+                                // Contenuto perfettamente centrato: Locandina a sinistra + Info brevi e Bottoni rapidi a destra
                                 Row(
                                     modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(
-                                            start = 36.dp,
-                                            end = 36.dp,
-                                            top = 56.dp,
-                                            bottom = 42.dp
-                                        ),
+                                        .align(Alignment.Center)
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 44.dp),
                                     horizontalArrangement = Arrangement.spacedBy(28.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // Locandina verticale 2:3 ben visibile
+                                    // Locandina verticale 2:3 ben visibile e centrata
                                     Card(
                                         shape = RoundedCornerShape(14.dp),
                                         colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
                                         border = BorderStroke(1.5.dp, NetflixWhite.copy(alpha = 0.24f)),
                                         modifier = Modifier
-                                            .width(184.dp)
-                                            .height(276.dp)
+                                            .width(180.dp)
+                                            .height(270.dp)
                                             .shadow(16.dp, RoundedCornerShape(14.dp))
                                             .testTag("detail_tv_poster")
                                     ) {
@@ -413,8 +431,8 @@ fun MediaDetailScreen(
                                             AsyncImage(
                                                 model = rememberSizedDetailImageRequest(
                                                     url = currentItem.posterUrl ?: currentItem.backdropUrl,
-                                                    widthDp = 184.dp,
-                                                    heightDp = 276.dp
+                                                    widthDp = 180.dp,
+                                                    heightDp = 270.dp
                                                 ),
                                                 contentDescription = "Locandina ${currentItem.title}",
                                                 contentScale = ContentScale.Crop,
@@ -438,9 +456,7 @@ fun MediaDetailScreen(
 
                                     // Colonna destra: Metadati compatti, Titolo, Breve Testo (max 3 righe) e Bottoni Rapidi
                                     Column(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight(),
+                                        modifier = Modifier.weight(1f),
                                         verticalArrangement = Arrangement.Center
                                     ) {
                                         Row(
@@ -506,7 +522,7 @@ fun MediaDetailScreen(
                                             }
                                         }
 
-                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Spacer(modifier = Modifier.height(6.dp))
 
                                         Text(
                                             text = currentItem.title,
@@ -528,7 +544,7 @@ fun MediaDetailScreen(
                                             )
                                         }
 
-                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Spacer(modifier = Modifier.height(6.dp))
 
                                         // Breve testo (sinossi sintetica max 3 righe)
                                         if (currentItem.overview.isNotBlank()) {
@@ -544,13 +560,13 @@ fun MediaDetailScreen(
 
                                         // Indicatore compatto di ripresa se salvato in Continua a guardare
                                         if (hasResumeProgress && savedProgress != null) {
-                                            Spacer(modifier = Modifier.height(10.dp))
+                                            Spacer(modifier = Modifier.height(8.dp))
                                             Column(
                                                 modifier = Modifier
                                                     .fillMaxWidth(0.85f)
                                                     .clip(RoundedCornerShape(8.dp))
                                                     .background(NetflixCardSurface.copy(alpha = 0.9f))
-                                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                                    .padding(horizontal = 12.dp, vertical = 6.dp)
                                             ) {
                                                 val epBadge = if (savedProgress.seasonNumber != null && savedProgress.episodeNumber != null) {
                                                     "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} • "
@@ -584,16 +600,16 @@ fun MediaDetailScreen(
                                             }
                                         }
 
-                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Spacer(modifier = Modifier.height(14.dp))
 
-                                        // Bottoni Rapidi (navigazione D-Pad Sinistra/Destra bloccata nella riga;
-                                        // D-Pad Giù scorre alle sezioni sottostanti)
+                                        // Bottoni Rapidi (navigazione D-Pad Sinistra/Destra bloccata nella riga senza
+                                        // alcun movimento verticale; D-Pad Giù scorre alle sezioni sottostanti)
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .focusGroup(),
                                             horizontalArrangement = Arrangement.spacedBy(20.dp),
-                                            verticalAlignment = Alignment.Top
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             DetailRoundActionButton(
                                                 icon = Icons.Default.PlayArrow,
@@ -691,7 +707,7 @@ fun MediaDetailScreen(
                                         border = BorderStroke(1.dp, NetflixElevatedSurface.copy(alpha = 0.7f)),
                                         modifier = Modifier
                                             .align(Alignment.BottomCenter)
-                                            .padding(bottom = 10.dp)
+                                            .padding(bottom = 12.dp)
                                             .testTag("detail_dpad_down_hint")
                                     ) {
                                         Text(
@@ -1232,6 +1248,12 @@ fun MediaDetailScreen(
                             )
                         }
                     }
+
+                    if (isTvDevice) {
+                        item(key = "detail_tv_bottom_spacer", contentType = "detail_spacer") {
+                            Spacer(modifier = Modifier.height(40.dp))
+                        }
+                    }
                 }
 
                 // Barra superiore fissa: Torna al titolo precedente (se stack > 1) e Chiudi scheda
@@ -1360,7 +1382,9 @@ private fun DetailRoundActionButton(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(68.dp)
+        modifier = Modifier
+            .width(72.dp)
+            .height(80.dp)
     ) {
         Surface(
             color = containerColor,
@@ -1369,13 +1393,18 @@ private fun DetailRoundActionButton(
             modifier = Modifier
                 .size(56.dp)
                 .safeFocusRequester(focusRequester)
-                .then(
-                    if (onDownKey != null) {
-                        Modifier.onPreviewKeyEvent { onDownKey(it) }
+                .onPreviewKeyEvent { keyEvent ->
+                    if (keyEvent.type == KeyEventType.KeyDown) {
+                        when (keyEvent.key) {
+                            Key.DirectionDown -> onDownKey?.invoke(keyEvent) == true
+                            Key.DirectionLeft -> leftFocusRequester?.safeRequestFocus() ?: false
+                            Key.DirectionRight -> rightFocusRequester?.safeRequestFocus() ?: false
+                            else -> false
+                        }
                     } else {
-                        Modifier
+                        false
                     }
-                )
+                }
                 .focusProperties {
                     upFocusRequester.takeIfAttached()?.let { up = it }
                     downFocusRequester.takeIfAttached()?.let { down = it }

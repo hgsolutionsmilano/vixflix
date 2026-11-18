@@ -22,6 +22,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +47,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -151,6 +153,7 @@ import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun VixFlixAppScreen(
@@ -1437,6 +1440,40 @@ private fun CatalogFeedContent(
 
     val showHero = selectedTab != NavTab.NEW_POPULAR && activeMovieGenre == null && activePlatform == null
     val hasContinueWatching = filteredContinueWatching.isNotEmpty() && activeMovieGenre == null && activePlatform == null
+    val continueWatchingFocusRequester = remember { FocusRequester() }
+    val catalogListState = rememberLazyListState()
+    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val scrollStepPx = remember(density) { with(density) { 260.dp.roundToPx() } }
+
+    val scrollAndFocusDown: (FocusRequester?) -> Boolean = { targetRequester ->
+        if (targetRequester != null && targetRequester.safeRequestFocus()) {
+            val layoutInfo = catalogListState.layoutInfo
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
+            if (lastVisible != null && (lastVisible.offset + lastVisible.size) > (layoutInfo.viewportEndOffset - 60)) {
+                coroutineScope.launch {
+                    runCatching { catalogListState.scrollBy(scrollStepPx * 0.65f) }
+                }
+            }
+            true
+        } else if (targetRequester != null) {
+            coroutineScope.launch {
+                for (attempt in 1..4) {
+                    runCatching {
+                        catalogListState.scrollBy(scrollStepPx.toFloat())
+                    }
+                    androidx.compose.runtime.withFrameNanos { }
+                    if (targetRequester.safeRequestFocus()) {
+                        break
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     val firstRowUpTarget = when {
         selectedTab == NavTab.MOVIES && !showHero -> movieGenreBarFocusRequester
         selectedTab == NavTab.HOME && activePlatform != null -> platformStripFocusRequester
@@ -1466,6 +1503,7 @@ private fun CatalogFeedContent(
         }
 
         LazyColumn(
+            state = catalogListState,
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("catalog_lazy_column"),
@@ -1473,29 +1511,31 @@ private fun CatalogFeedContent(
         ) {
             if (selectedTab == NavTab.MOVIES) {
                 item(key = "movies_top_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(if (isTvLayout) 74.dp else 118.dp))
+                    Spacer(modifier = Modifier.height(if (isTvLayout) 56.dp else 118.dp))
                 }
                 item(key = "movies_genre_chip_bar", contentType = "genre_bar") {
+                    val genreDownTarget = when {
+                        showHero -> heroPlayFocusRequester
+                        activeMovieGenre != null && (movieGenreState.isLoading || (movieGenreState.errorMessage == null && movieGenreState.movies.isEmpty())) -> null
+                        else -> firstRowFocusRequester
+                    }
                     MovieGenreChipBar(
                         genres = movieGenreState.genres,
                         selectedGenre = activeMovieGenre,
                         onSelectGenre = onSelectMovieGenre,
                         firstChipFocusRequester = movieGenreBarFocusRequester,
                         upFocusRequester = topBarFocusRequester,
-                        downFocusRequester = when {
-                            showHero -> heroPlayFocusRequester
-                            activeMovieGenre != null && (movieGenreState.isLoading || (movieGenreState.errorMessage == null && movieGenreState.movies.isEmpty())) -> null
-                            else -> firstRowFocusRequester
-                        },
+                        downFocusRequester = genreDownTarget,
+                        onDownKey = { scrollAndFocusDown(genreDownTarget) },
                         navRailFocusRequester = navRailFocusRequester,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                        modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
             }
 
             if (selectedTab == NavTab.HOME && activePlatform != null) {
                 item(key = "home_platform_top_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(if (isTvLayout) 74.dp else 118.dp))
+                    Spacer(modifier = Modifier.height(if (isTvLayout) 56.dp else 118.dp))
                 }
             }
 
@@ -1503,6 +1543,11 @@ private fun CatalogFeedContent(
                 item(key = "hero_${heroItem.uniqueKey}", contentType = "hero") {
                     val isInWatchlist = heroItem.uniqueKey in watchlistIds
                     val savedProgress = progressByKey[heroItem.uniqueKey]
+                    val heroDownTarget = when {
+                        hasContinueWatching -> continueWatchingFocusRequester
+                        selectedTab == NavTab.HOME -> platformStripFocusRequester
+                        else -> firstRowFocusRequester
+                    }
                     NetflixHeroBanner(
                         item = heroItem,
                         isInWatchlist = isInWatchlist,
@@ -1513,19 +1558,25 @@ private fun CatalogFeedContent(
                         playButtonFocusRequester = heroPlayFocusRequester,
                         navRailFocusRequester = navRailFocusRequester,
                         topBarFocusRequester = if (selectedTab == NavTab.MOVIES) movieGenreBarFocusRequester else topBarFocusRequester,
-                        firstRowFocusRequester = if (selectedTab == NavTab.HOME && !hasContinueWatching) platformStripFocusRequester else firstRowFocusRequester,
+                        firstRowFocusRequester = heroDownTarget,
+                        onDownKey = { scrollAndFocusDown(heroDownTarget) },
                         isTvLayout = isTvLayout
                     )
                 }
             } else if (selectedTab == NavTab.NEW_POPULAR) {
                 item(key = "new_popular_top_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(if (isTvLayout) 84.dp else 118.dp))
+                    Spacer(modifier = Modifier.height(if (isTvLayout) 72.dp else 118.dp))
                 }
             }
 
             // Sezione "Continua a guardare" (Room DB + startAt VixSrc API)
             if (hasContinueWatching) {
                 item(key = "row_continue_watching", contentType = "continue_watching") {
+                    val continueDownTarget = if (selectedTab == NavTab.HOME) {
+                        platformStripFocusRequester
+                    } else {
+                        firstRowFocusRequester
+                    }
                     ContinueWatchingSection(
                         entries = filteredContinueWatching,
                         onResumeClick = onResumeContinueWatching,
@@ -1534,8 +1585,10 @@ private fun CatalogFeedContent(
                         onTvLongPress = onTvLongPressContinueWatching,
                         onItemFocused = onRememberContentFocus,
                         isTvLayout = isTvLayout,
-                        firstItemFocusRequester = firstRowFocusRequester,
+                        firstItemFocusRequester = continueWatchingFocusRequester,
                         upFocusRequester = firstRowUpTarget,
+                        downFocusRequester = continueDownTarget,
+                        onDownKey = { scrollAndFocusDown(continueDownTarget) },
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -1546,18 +1599,28 @@ private fun CatalogFeedContent(
                 // Striscia orizzontale con tutte le piattaforme streaming e relativo logo ufficiale TMDB
                 // (Disney+, Paramount+, Prime Video, Netflix e le altre principali)
                 item(key = "row_streaming_platforms_strip", contentType = "platform_strip") {
+                    val platformUpTarget = when {
+                        activePlatform != null -> topBarFocusRequester
+                        hasContinueWatching -> continueWatchingFocusRequester
+                        else -> heroPlayFocusRequester
+                    }
+                    val platformDownTarget = if (
+                        activePlatform != null &&
+                        (platformState.isLoading || (platformState.errorMessage == null && platformState.displayedTitles.isEmpty()))
+                    ) {
+                        null
+                    } else {
+                        firstRowFocusRequester
+                    }
                     StreamingPlatformsStrip(
                         providers = platformState.providers,
                         selectedProvider = activePlatform,
                         onSelectProvider = onSelectStreamingPlatform,
                         showHeader = true,
                         firstItemFocusRequester = platformStripFocusRequester,
-                        upFocusRequester = if (activePlatform != null) topBarFocusRequester else heroPlayFocusRequester,
-                        downFocusRequester = if (activePlatform != null && (platformState.isLoading || (platformState.errorMessage == null && platformState.displayedTitles.isEmpty()))) {
-                            null
-                        } else {
-                            firstRowFocusRequester
-                        },
+                        upFocusRequester = platformUpTarget,
+                        downFocusRequester = platformDownTarget,
+                        onDownKey = { scrollAndFocusDown(platformDownTarget) },
                         navRailFocusRequester = navRailFocusRequester,
                         onItemFocused = onRememberContentFocus
                     )
@@ -1759,8 +1822,8 @@ private fun CatalogFeedContent(
                         }
                     }
                 } else {
-                    val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
-                    val trendingMoviesIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
+                    val top10IsFirstRow = feed.top10Today.isNotEmpty()
+                    val trendingMoviesIsFirstRow = feed.top10Today.isEmpty()
 
                     item(key = "row_top_10", contentType = "top10_row") {
                         Top10Section(
@@ -1877,8 +1940,8 @@ private fun CatalogFeedContent(
                         onItemQuickPlay = onPlayItem,
                         onItemLongClick = onTvLongPressPoster,
                         onItemFocused = onRememberContentFocus,
-                        firstItemFocusRequester = if (!hasContinueWatching) firstRowFocusRequester else null,
-                        upFocusRequester = if (!hasContinueWatching) firstRowUpTarget else null,
+                        firstItemFocusRequester = firstRowFocusRequester,
+                        upFocusRequester = if (hasContinueWatching) continueWatchingFocusRequester else firstRowUpTarget,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -1932,9 +1995,19 @@ private fun CatalogFeedContent(
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
                                 modifier = Modifier
                                     .heightIn(min = 48.dp)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown &&
+                                            keyEvent.key == Key.DirectionDown
+                                        ) {
+                                            scrollAndFocusDown(firstRowFocusRequester)
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .focusProperties {
                                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                                         movieGenreBarFocusRequester.takeIfAttached()?.let { up = it }
+                                        firstRowFocusRequester.takeIfAttached()?.let { down = it }
                                     }
                                     .tvFocusableControl(
                                         shape = RoundedCornerShape(50),
@@ -2098,8 +2171,8 @@ private fun CatalogFeedContent(
                             onItemQuickPlay = onPlayItem,
                             onItemLongClick = onTvLongPressPoster,
                             onItemFocused = onRememberContentFocus,
-                            firstItemFocusRequester = if (!hasContinueWatching) firstRowFocusRequester else null,
-                            upFocusRequester = if (!hasContinueWatching) firstRowUpTarget else null,
+                            firstItemFocusRequester = firstRowFocusRequester,
+                            upFocusRequester = if (hasContinueWatching) continueWatchingFocusRequester else firstRowUpTarget,
                             navRailFocusRequester = navRailFocusRequester
                         )
                     }
@@ -2162,8 +2235,9 @@ private fun CatalogFeedContent(
             }
 
             NavTab.NEW_POPULAR -> {
-                val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
-                val cinemaIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
+                val top10IsFirstRow = feed.top10Today.isNotEmpty()
+                val cinemaIsFirstRow = feed.top10Today.isEmpty()
+                val newPopularFirstRowUp = if (hasContinueWatching) continueWatchingFocusRequester else firstRowUpTarget
 
                 item(key = "new_top10", contentType = "top10_row") {
                     Top10Section(
@@ -2174,7 +2248,7 @@ private fun CatalogFeedContent(
                         onItemLongClick = onTvLongPressPoster,
                         onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (top10IsFirstRow) firstRowFocusRequester else null,
-                        upFocusRequester = if (top10IsFirstRow) firstRowUpTarget else null,
+                        upFocusRequester = if (top10IsFirstRow) newPopularFirstRowUp else null,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -2187,7 +2261,7 @@ private fun CatalogFeedContent(
                         onItemLongClick = onTvLongPressPoster,
                         onItemFocused = onRememberContentFocus,
                         firstItemFocusRequester = if (cinemaIsFirstRow) firstRowFocusRequester else null,
-                        upFocusRequester = if (cinemaIsFirstRow) firstRowUpTarget else null,
+                        upFocusRequester = if (cinemaIsFirstRow) newPopularFirstRowUp else null,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }

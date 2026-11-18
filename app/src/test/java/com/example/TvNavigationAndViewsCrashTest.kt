@@ -545,6 +545,112 @@ class TvNavigationAndViewsCrashTest {
         )
     }
 
+    @Test
+    fun `tv dpad down never blocks on platform or film banners and detail hero stays centered across button icons`() {
+        launchTvApp()
+
+        // 1. In Home (con Continua a guardare attivo), premi D-Pad Giù dall'Hero -> Continua a guardare -> Banner Piattaforma -> Riga sotto
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        // Ora siamo sui banner piattaforma: premendo Giù il focus deve proseguire sotto su Top 10 senza bloccarsi
+        composeRule.onNodeWithTag("platform_card_337", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue(
+            composeRule.onAllNodesWithTag("top10_card_1", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        // 2. Nella sezione Film (NavTab.MOVIES), entra nei contenuti dalla rail, sali ai banner generi e scendi fino a Film di Tendenza
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_navigation_rail", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("genre_chip_all", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue(
+            composeRule.onAllNodesWithTag("poster_card_movie_101", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        // 3. Apri la scheda di dettaglio del film e verifica che sia centrata e NON si muova spostandosi tra le icone pulsanti
+        composeRule.onNodeWithTag("poster_card_movie_101", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("detail_tv_poster", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        val initialHeroBounds = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val initialPosterBounds = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+
+        // Verifica che lo stage non sia traslato verso l'alto (top == 0f) e che la locandina sia centrata verticalmente
+        assertTrue("Hero stage top should be 0f, was ${initialHeroBounds.top}", kotlin.math.abs(initialHeroBounds.top) < 1f)
+        val stageCenterY = (initialHeroBounds.top + initialHeroBounds.bottom) / 2f
+        val posterCenterY = (initialPosterBounds.top + initialPosterBounds.bottom) / 2f
+        assertTrue(
+            "Poster should be vertically centered (stageCenterY=$stageCenterY, posterCenterY=$posterCenterY)",
+            kotlin.math.abs(stageCenterY - posterCenterY) < 25f
+        )
+
+        // Spostati tra tutte le icone pulsanti con D-Pad Destra e Sinistra: la scheda non deve muoversi di 1 pixel
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        val afterRight1PosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(
+            "Detail view must not move when navigating to Trailer button (initial=${initialPosterBounds.top}, after=$afterRight1PosterTop)",
+            kotlin.math.abs(initialPosterBounds.top - afterRight1PosterTop) < 1f
+        )
+
+        composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        val afterRight2PosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(
+            "Detail view must not move when navigating to Watchlist button (initial=${initialPosterBounds.top}, after=$afterRight2PosterTop)",
+            kotlin.math.abs(initialPosterBounds.top - afterRight2PosterTop) < 1f
+        )
+
+        composeRule.onNodeWithTag("detail_watchlist_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+
+        val afterLeftPosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(
+            "Detail view must not move when navigating Left back to Trailer button (initial=${initialPosterBounds.top}, after=$afterLeftPosterTop)",
+            kotlin.math.abs(initialPosterBounds.top - afterLeftPosterTop) < 1f
+        )
+    }
+
     private class FullMockTmdbServer {
         private var socket: ServerSocket? = null
         private val executor = Executors.newCachedThreadPool()

@@ -506,6 +506,7 @@ fun NetflixHeroBanner(
     navRailFocusRequester: FocusRequester? = null,
     topBarFocusRequester: FocusRequester? = null,
     firstRowFocusRequester: FocusRequester? = null,
+    onDownKey: (() -> Boolean)? = null,
     isTvLayout: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -517,11 +518,20 @@ fun NetflixHeroBanner(
     val resolvedPlayFocusRequester = playButtonFocusRequester ?: remember { FocusRequester() }
     val infoFocusRequester = remember { FocusRequester() }
     val heroGenres = remember(item.genreIds) { TmdbGenreMap.namesFor(item.genreIds) }
+    val heroHeight = if (isTvLayout) 340.dp else 500.dp
+
+    val handleHeroDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
+        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
+            (onDownKey?.invoke() == true) || firstRowFocusRequester.safeRequestFocus()
+        } else {
+            false
+        }
+    }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(if (isTvLayout) 410.dp else 500.dp)
+            .height(heroHeight)
             .pointerInput(isTvLayout) {
                 if (!isTvLayout) {
                     detectTapGestures { onInfoClick() }
@@ -533,7 +543,7 @@ fun NetflixHeroBanner(
             model = rememberSizedImageRequest(
                 url = item.backdropUrl ?: item.posterUrl,
                 widthDp = 960.dp,
-                heightDp = if (isTvLayout) 410.dp else 500.dp,
+                heightDp = heroHeight,
                 crossfadeMs = 120
             ),
             contentDescription = item.title,
@@ -559,7 +569,7 @@ fun NetflixHeroBanner(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 18.dp),
+                .padding(horizontal = 24.dp, vertical = if (isTvLayout) 14.dp else 18.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -603,7 +613,7 @@ fun NetflixHeroBanner(
                 )
 
                 if (heroGenres.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = heroGenres.joinToString("  •  "),
                         style = MaterialTheme.typography.bodySmall,
@@ -614,7 +624,7 @@ fun NetflixHeroBanner(
             }
 
             if (savedProgress != null && savedProgress.startSeconds > 0L) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -637,7 +647,7 @@ fun NetflixHeroBanner(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(if (isTvLayout) 10.dp else 14.dp))
 
             Row(
                 modifier = Modifier
@@ -661,6 +671,7 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
                         .safeFocusRequester(watchFocusRequester)
+                        .onPreviewKeyEvent(handleHeroDownKey)
                         .focusProperties {
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                             resolvedPlayFocusRequester.takeIfAttached()?.let { right = it }
@@ -694,6 +705,7 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 24.dp, vertical = 11.dp),
                     modifier = Modifier
                         .safeFocusRequester(resolvedPlayFocusRequester)
+                        .onPreviewKeyEvent(handleHeroDownKey)
                         .focusProperties {
                             watchFocusRequester.takeIfAttached()?.let { left = it }
                             infoFocusRequester.takeIfAttached()?.let { right = it }
@@ -735,6 +747,7 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
                         .safeFocusRequester(infoFocusRequester)
+                        .onPreviewKeyEvent(handleHeroDownKey)
                         .focusProperties {
                             resolvedPlayFocusRequester.takeIfAttached()?.let { left = it }
                             topBarFocusRequester.takeIfAttached()?.let { up = it }
@@ -774,6 +787,8 @@ fun ContinueWatchingSection(
     isTvLayout: Boolean = false,
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
+    onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
@@ -781,6 +796,7 @@ fun ContinueWatchingSection(
     if (safeEntries.isEmpty()) return
 
     val listState = rememberLazyListState()
+    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeEntries.lastIndex)
 
     Column(
         modifier = modifier
@@ -827,7 +843,7 @@ fun ContinueWatchingSection(
                 key = { _, it -> it.id },
                 contentType = { _, _ -> "continue_watching_card" }
             ) { index, entry ->
-                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == firstVisibleIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember(entry.id) { FocusRequester() }
@@ -844,11 +860,21 @@ fun ContinueWatchingSection(
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown &&
+                                keyEvent.key == Key.DirectionDown
+                            ) {
+                                (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             if (index == 0) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
                             upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
                         }
                 )
             }
@@ -1046,6 +1072,7 @@ fun Top10Section(
     if (safeItems.isEmpty()) return
 
     val listState = rememberLazyListState()
+    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeItems.lastIndex)
 
     Column(
         modifier = modifier
@@ -1069,7 +1096,7 @@ fun Top10Section(
                 key = { _, item -> "top10_${item.uniqueKey}" },
                 contentType = { _, _ -> "top10_card" }
             ) { index, item ->
-                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == firstVisibleIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember(item.uniqueKey) { FocusRequester() }
@@ -1239,6 +1266,7 @@ fun MediaCatalogRow(
     if (safeItems.isEmpty()) return
 
     val listState = rememberLazyListState()
+    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeItems.lastIndex)
 
     Column(
         modifier = modifier
@@ -1262,7 +1290,7 @@ fun MediaCatalogRow(
                 key = { _, item -> "${title}_${item.uniqueKey}" },
                 contentType = { _, _ -> "poster_card" }
             ) { index, item ->
-                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == firstVisibleIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember("${title}_${item.uniqueKey}") { FocusRequester() }
@@ -1423,6 +1451,7 @@ fun MovieGenreChipBar(
     firstChipFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester? = null,
+    onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
@@ -1443,9 +1472,17 @@ fun MovieGenreChipBar(
         }
     }
 
+    val handleGenreDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
+        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
+            (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+        } else {
+            false
+        }
+    }
+
     LazyRow(
         state = listState,
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 6.dp),
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
@@ -1461,6 +1498,7 @@ fun MovieGenreChipBar(
                 isSelected = isSelected,
                 onClick = { onSelectGenre(null) },
                 modifier = Modifier
+                    .onPreviewKeyEvent(handleGenreDownKey)
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                         upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1481,6 +1519,7 @@ fun MovieGenreChipBar(
                 isSelected = isSelected,
                 onClick = { onSelectGenre(genre) },
                 modifier = Modifier
+                    .onPreviewKeyEvent(handleGenreDownKey)
                     .focusProperties {
                         upFocusRequester.takeIfAttached()?.let { up = it }
                         downFocusRequester.takeIfAttached()?.let { down = it }
@@ -1573,6 +1612,7 @@ fun StreamingPlatformsStrip(
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester? = null,
+    onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     onItemFocused: ((FocusRequester) -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -1596,10 +1636,20 @@ fun StreamingPlatformsStrip(
         }
     }
 
+    val handlePlatformDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
+        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
+            (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+        } else {
+            false
+        }
+    }
+
+    val firstVisibleProviderIdx = listState.firstVisibleItemIndex.coerceIn(0, safeProviders.lastIndex)
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
+            .padding(vertical = 4.dp)
     ) {
         if (showHeader) {
             Row(
@@ -1607,7 +1657,7 @@ fun StreamingPlatformsStrip(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 4.dp)
+                    .padding(horizontal = 24.dp, vertical = 2.dp)
             ) {
                 Column {
                     Text(
@@ -1628,6 +1678,11 @@ fun StreamingPlatformsStrip(
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(1.dp, NetflixRed),
                         modifier = Modifier
+                            .onPreviewKeyEvent(handlePlatformDownKey)
+                            .focusProperties {
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
+                            }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(50),
                                 focusedBorderColor = NetflixWhite,
@@ -1660,7 +1715,7 @@ fun StreamingPlatformsStrip(
 
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -1675,6 +1730,7 @@ fun StreamingPlatformsStrip(
                         isSelected = false,
                         onClick = { onSelectProvider(null) },
                         modifier = Modifier
+                            .onPreviewKeyEvent(handlePlatformDownKey)
                             .focusProperties {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                                 upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1691,7 +1747,7 @@ fun StreamingPlatformsStrip(
                 contentType = { _, _ -> "platform_card" }
             ) { index, provider ->
                 val isSelected = selectedProvider?.providerId == provider.providerId
-                val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == firstVisibleProviderIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember(provider.providerId) { FocusRequester() }
@@ -1709,6 +1765,7 @@ fun StreamingPlatformsStrip(
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
+                        .onPreviewKeyEvent(handlePlatformDownKey)
                         .focusProperties {
                             if (index == 0 && selectedProvider == null) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
