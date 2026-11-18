@@ -101,6 +101,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Scale
@@ -719,7 +720,10 @@ fun YouTubeTrailerDialog(
                                                 .size(wPx, hPx)
                                                 .precision(Precision.INEXACT)
                                                 .scale(Scale.FILL)
+                                                .allowHardware(true)
                                                 .allowRgb565(true)
+                                                .memoryCachePolicy(CachePolicy.ENABLED)
+                                                .diskCachePolicy(CachePolicy.ENABLED)
                                                 .crossfade(false)
                                                 .build()
                                         }
@@ -858,7 +862,10 @@ private fun YouTubeModalTrailerCard(
             .size(thumbWidthPx, thumbHeightPx)
             .precision(Precision.INEXACT)
             .scale(Scale.FILL)
+            .allowHardware(true)
             .allowRgb565(true)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
             .crossfade(false)
             .build()
     }
@@ -1034,7 +1041,10 @@ private fun YouTubeEmulatorSafePreviewCard(
                 .size(wPx, hPx)
                 .precision(Precision.INEXACT)
                 .scale(Scale.FILL)
+                .allowHardware(true)
                 .allowRgb565(true)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(false)
                 .build()
         }

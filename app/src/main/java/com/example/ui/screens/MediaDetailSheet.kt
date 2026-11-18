@@ -80,6 +80,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Scale
@@ -945,7 +946,10 @@ private fun rememberSizedDetailImageRequest(
                 .size(widthPx, heightPx)
                 .precision(Precision.INEXACT)
                 .scale(Scale.FILL)
+                .allowHardware(true)
                 .allowRgb565(true)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(false)
                 .build()
         }

@@ -75,6 +75,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -98,6 +99,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Scale
@@ -481,7 +483,10 @@ private fun rememberSizedImageRequest(
                 .size(widthPx, heightPx)
                 .precision(Precision.INEXACT)
                 .scale(Scale.FILL)
+                .allowHardware(true)
                 .allowRgb565(true)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(crossfadeMs)
                 .build()
         }
@@ -1125,36 +1130,38 @@ private fun Top10PosterCard(
             )
             .testTag("top10_card_$rank")
     ) {
-        // Numero gigante stilizzato Netflix in basso a sinistra
-        Text(
-            text = rank.toString(),
-            style = TextStyle(
-                fontFamily = BebasNeueFontFamily,
-                fontSize = 132.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (isFocused) NetflixRed else NetflixElevatedSurface,
-                drawStyle = Stroke(
-                    width = 6f,
-                    join = StrokeJoin.Round
+        // Numero gigante stilizzato Netflix in basso a sinistra su layer hardware dedicato
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .offset(x = (-2).dp, y = 14.dp)
+                .graphicsLayer {
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
+                }
+        ) {
+            Text(
+                text = rank.toString(),
+                style = TextStyle(
+                    fontFamily = BebasNeueFontFamily,
+                    fontSize = 132.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isFocused) NetflixRed else NetflixElevatedSurface,
+                    drawStyle = Stroke(
+                        width = 6f,
+                        join = StrokeJoin.Round
+                    )
                 )
-            ),
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .offset(x = (-2).dp, y = 14.dp)
-        )
-
-        Text(
-            text = rank.toString(),
-            style = TextStyle(
-                fontFamily = BebasNeueFontFamily,
-                fontSize = 132.sp,
-                fontWeight = FontWeight.Bold,
-                color = NetflixBlack.copy(alpha = 0.85f)
-            ),
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .offset(x = (-2).dp, y = 14.dp)
-        )
+            )
+            Text(
+                text = rank.toString(),
+                style = TextStyle(
+                    fontFamily = BebasNeueFontFamily,
+                    fontSize = 132.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = NetflixBlack.copy(alpha = 0.85f)
+                )
+            )
+        }
 
         Card(
             shape = RoundedCornerShape(10.dp),

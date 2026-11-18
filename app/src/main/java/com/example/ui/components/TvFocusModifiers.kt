@@ -50,6 +50,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
@@ -221,6 +222,7 @@ fun Modifier.tvFocusableControl(
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
+            compositingStrategy = CompositingStrategy.ModulateAlpha
         }
         .then(
             if (activeBorderColor != Color.Transparent) {
@@ -347,6 +349,7 @@ fun Modifier.animatedPosterShowcase(
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
+            compositingStrategy = CompositingStrategy.ModulateAlpha
         }
         .then(
             if (isFocused) {
