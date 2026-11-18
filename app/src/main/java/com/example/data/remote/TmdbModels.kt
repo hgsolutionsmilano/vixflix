@@ -83,6 +83,10 @@ data class TmdbGenreDto(
     @Json(name = "name") val name: String
 )
 
+data class TmdbGenresResponse(
+    @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList()
+)
+
 data class TmdbCastMemberDto(
     @Json(name = "id") val id: Int,
     @Json(name = "name") val name: String,
@@ -206,25 +210,28 @@ data class MediaDetails(
 )
 
 object TmdbGenreMap {
-    private val genres = mapOf(
-        28 to "Azione",
-        12 to "Avventura",
-        16 to "Animazione",
-        35 to "Commedia",
-        80 to "Crime",
-        99 to "Documentario",
-        18 to "Dramma",
-        10751 to "Famiglia",
-        14 to "Fantasy",
-        36 to "Storia",
-        27 to "Horror",
-        10402 to "Musica",
-        9648 to "Mistero",
-        10749 to "Romantico",
-        878 to "Fantascienza",
-        53 to "Thriller",
-        10752 to "Guerra",
-        37 to "Western",
+    val defaultMovieGenres: List<TmdbGenreDto> = listOf(
+        TmdbGenreDto(28, "Azione"),
+        TmdbGenreDto(12, "Avventura"),
+        TmdbGenreDto(16, "Animazione"),
+        TmdbGenreDto(35, "Commedia"),
+        TmdbGenreDto(80, "Crime"),
+        TmdbGenreDto(99, "Documentario"),
+        TmdbGenreDto(18, "Dramma"),
+        TmdbGenreDto(10751, "Famiglia"),
+        TmdbGenreDto(14, "Fantasy"),
+        TmdbGenreDto(36, "Storia"),
+        TmdbGenreDto(27, "Horror"),
+        TmdbGenreDto(10402, "Musica"),
+        TmdbGenreDto(9648, "Mistero"),
+        TmdbGenreDto(10749, "Romantico"),
+        TmdbGenreDto(878, "Fantascienza"),
+        TmdbGenreDto(53, "Thriller"),
+        TmdbGenreDto(10752, "Guerra"),
+        TmdbGenreDto(37, "Western")
+    )
+
+    private val genres = defaultMovieGenres.associate { it.id to it.name } + mapOf(
         10759 to "Action & Adventure",
         10765 to "Sci-Fi & Fantasy",
         10768 to "War & Politics"

@@ -14,6 +14,8 @@ import com.example.data.remote.ResolvedTrailerStream
 import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbApiService
 import com.example.data.remote.TmdbEpisodeDto
+import com.example.data.remote.TmdbGenreDto
+import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.TmdbSeasonDetailsDto
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.TmdbVideoDto
@@ -46,14 +48,20 @@ data class CatalogFeed(
 )
 
 class VixFlixRepository(
-    private val dao: VixFlixDao
+    private val dao: VixFlixDao,
+    baseHttpClient: OkHttpClient = defaultRawOkHttpClient(),
+    tmdbBaseUrl: String = BuildConfig.TMDB_BASE_URL
 ) {
-    private val rawOkHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .build()
+    companion object {
+        private fun defaultRawOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
+    private val rawOkHttpClient: OkHttpClient = baseHttpClient
 
     private val tmdbDispatcher = Dispatcher().apply {
         maxRequests = 32
@@ -92,7 +100,7 @@ class VixFlixRepository(
         .build()
 
     private val tmdbApi: TmdbApiService = Retrofit.Builder()
-        .baseUrl(BuildConfig.TMDB_BASE_URL)
+        .baseUrl(tmdbBaseUrl)
         .client(tmdbOkHttpClient)
         .addConverterFactory(MoshiConverterFactory.create(moshi))
         .build()
@@ -236,6 +244,17 @@ class VixFlixRepository(
         lang: String
     ): Result<ResolvedTrailerStream> {
         return trailerResolver.resolveTrailerForExoPlayer(item = item, video = video, lang = lang)
+    }
+
+    suspend fun fetchMovieGenres(): List<TmdbGenreDto> = runCatching {
+        tmdbApi.getMovieGenres().genres
+            .filter { it.id > 0 && it.name.isNotBlank() }
+            .ifEmpty { TmdbGenreMap.defaultMovieGenres }
+    }.getOrDefault(TmdbGenreMap.defaultMovieGenres)
+
+    suspend fun fetchMoviesByGenre(genreId: Int, page: Int = 1): Result<List<MediaItem>> = runCatching {
+        val response = tmdbApi.discoverMoviesByGenre(genreId = genreId.toString(), page = page)
+        response.results.mapNotNull { it.toDomain("movie") }
     }
 
     suspend fun fetchSeasonEpisodes(tvId: Int, seasonNumber: Int): Result<List<TmdbEpisodeDto>> = runCatching {

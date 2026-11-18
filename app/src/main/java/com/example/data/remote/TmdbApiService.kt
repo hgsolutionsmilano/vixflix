@@ -53,6 +53,11 @@ interface TmdbApiService {
         @Query("page") page: Int = 1
     ): TmdbPagedResponse<TmdbMediaItemDto>
 
+    @GET("genre/movie/list")
+    suspend fun getMovieGenres(
+        @Query("language") language: String = "it-IT"
+    ): TmdbGenresResponse
+
     @GET("discover/movie")
     suspend fun discoverMoviesByGenre(
         @Query("with_genres") genreId: String,

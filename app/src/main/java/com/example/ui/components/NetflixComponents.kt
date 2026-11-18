@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -69,10 +70,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -107,6 +110,7 @@ import coil.request.ImageRequest
 import com.example.BuildConfig
 import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
+import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
 import com.example.ui.NavTab
 import com.example.ui.theme.BebasNeueFontFamily
@@ -1495,6 +1499,156 @@ fun MediaPosterCard(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun MovieGenreChipBar(
+    genres: List<TmdbGenreDto>,
+    selectedGenre: TmdbGenreDto?,
+    onSelectGenre: (TmdbGenreDto?) -> Unit,
+    firstChipFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
+    navRailFocusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    val targetIndex = remember(genres, selectedGenre) {
+        if (selectedGenre == null) {
+            0
+        } else {
+            val found = genres.indexOfFirst { it.id == selectedGenre.id }
+            if (found >= 0) found + 1 else 0
+        }
+    }
+
+    LaunchedEffect(targetIndex) {
+        if (targetIndex >= 0) {
+            runCatching { listState.animateScrollToItem(targetIndex) }
+        }
+    }
+
+    LazyRow(
+        state = listState,
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .focusGroup()
+            .testTag("movie_genre_chip_bar")
+    ) {
+        item(key = "genre_all") {
+            val isSelected = selectedGenre == null
+            GenreFilterChipItem(
+                label = "Tutti",
+                isSelected = isSelected,
+                onClick = { onSelectGenre(null) },
+                modifier = Modifier
+                    .then(
+                        if (firstChipFocusRequester != null && selectedGenre == null) {
+                            Modifier.focusRequester(firstChipFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .focusProperties {
+                        if (navRailFocusRequester != null) left = navRailFocusRequester
+                        if (upFocusRequester != null) up = upFocusRequester
+                        if (downFocusRequester != null) down = downFocusRequester
+                    }
+                    .testTag("genre_chip_all")
+            )
+        }
+
+        itemsIndexed(genres, key = { _, genre -> "genre_${genre.id}" }) { _, genre ->
+            val isSelected = selectedGenre?.id == genre.id
+            GenreFilterChipItem(
+                label = genre.name,
+                isSelected = isSelected,
+                onClick = { onSelectGenre(genre) },
+                modifier = Modifier
+                    .then(
+                        if (firstChipFocusRequester != null && isSelected) {
+                            Modifier.focusRequester(firstChipFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .focusProperties {
+                        if (upFocusRequester != null) up = upFocusRequester
+                        if (downFocusRequester != null) down = downFocusRequester
+                    }
+                    .testTag("genre_chip_${genre.id}")
+            )
+        }
+    }
+}
+
+@Composable
+private fun GenreFilterChipItem(
+    label: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isFocused by remember { mutableStateOf(false) }
+
+    val containerColor by animateColorAsState(
+        targetValue = when {
+            isSelected -> NetflixRed
+            isFocused -> NetflixElevatedSurface
+            else -> NetflixCardSurface
+        },
+        animationSpec = tween(durationMillis = 200),
+        label = "genreChipBg"
+    )
+
+    Surface(
+        color = containerColor,
+        shape = RoundedCornerShape(50),
+        shadowElevation = if (isSelected || isFocused) 8.dp else 0.dp,
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .tvFocusableControl(
+                shape = RoundedCornerShape(50),
+                focusedScale = 1.07f,
+                focusedBorderColor = NetflixWhite,
+                unfocusedBorderColor = if (isSelected) NetflixRed else NetflixElevatedSurface,
+                borderWidth = if (isFocused) 2.dp else 1.dp,
+                onFocusChange = { isFocused = it },
+                onClick = onClick
+            )
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isSelected || isFocused) NetflixWhite else NetflixLightGray,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }

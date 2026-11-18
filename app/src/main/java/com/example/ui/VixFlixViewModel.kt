@@ -17,6 +17,8 @@ import com.example.data.remote.ResolvedStream
 import com.example.data.remote.ResolvedTrailerStream
 import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbEpisodeDto
+import com.example.data.remote.TmdbGenreDto
+import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
@@ -46,6 +48,14 @@ sealed interface CatalogUiState {
     data class Success(val feed: CatalogFeed) : CatalogUiState
     data class Error(val message: String) : CatalogUiState
 }
+
+data class MovieGenreFilterUiState(
+    val genres: List<TmdbGenreDto> = TmdbGenreMap.defaultMovieGenres,
+    val selectedGenre: TmdbGenreDto? = null,
+    val movies: List<MediaItem> = emptyList(),
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null
+)
 
 data class TrailerPlaybackState(
     val trailers: List<YouTubeTrailerCandidate> = emptyList(),
@@ -102,9 +112,11 @@ data class GitHubUpdateUiState(
     val bundledConfigJson: String = ""
 )
 
-class VixFlixViewModel(application: Application) : AndroidViewModel(application) {
+class VixFlixViewModel @JvmOverloads constructor(
+    application: Application,
+    val repository: VixFlixRepository = VixFlixRepository(VixFlixDatabase.getInstance(application).vixFlixDao())
+) : AndroidViewModel(application) {
     private val database = VixFlixDatabase.getInstance(application)
-    val repository = VixFlixRepository(database.vixFlixDao())
     private val preferences = AppPreferences(application)
 
     private val _selectedTab = MutableStateFlow(NavTab.HOME)
@@ -157,7 +169,13 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     private val _gitHubState = MutableStateFlow(GitHubUpdateUiState())
     val gitHubState: StateFlow<GitHubUpdateUiState> = _gitHubState.asStateFlow()
 
+    private val _movieGenreState = MutableStateFlow(MovieGenreFilterUiState())
+    val movieGenreState: StateFlow<MovieGenreFilterUiState> = _movieGenreState.asStateFlow()
+
+    private val movieGenreCache = mutableMapOf<Int, List<MediaItem>>()
+
     private var searchJob: Job? = null
+    private var movieGenreJob: Job? = null
     private var seasonProgressJob: Job? = null
     private var trailerJob: Job? = null
     private var detailLoadJob: Job? = null
@@ -189,6 +207,10 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     fun loadCatalog() {
         viewModelScope.launch {
             _catalogState.value = CatalogUiState.Loading
+            launch {
+                val genres = repository.fetchMovieGenres()
+                _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
+            }
             val result = repository.fetchLiveCatalogFeed()
             result.fold(
                 onSuccess = { feed ->
@@ -205,6 +227,66 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                 }
             )
         }
+    }
+
+    fun selectMovieGenre(genre: TmdbGenreDto?) {
+        movieGenreJob?.cancel()
+        if (genre == null) {
+            _movieGenreState.value = _movieGenreState.value.copy(
+                selectedGenre = null,
+                movies = emptyList(),
+                isLoading = false,
+                errorMessage = null
+            )
+            return
+        }
+
+        val cached = movieGenreCache[genre.id]
+        if (!cached.isNullOrEmpty()) {
+            _movieGenreState.value = _movieGenreState.value.copy(
+                selectedGenre = genre,
+                movies = cached,
+                isLoading = false,
+                errorMessage = null
+            )
+            return
+        }
+
+        _movieGenreState.value = _movieGenreState.value.copy(
+            selectedGenre = genre,
+            movies = emptyList(),
+            isLoading = true,
+            errorMessage = null
+        )
+
+        movieGenreJob = viewModelScope.launch {
+            repository.fetchMoviesByGenre(genre.id).fold(
+                onSuccess = { items ->
+                    movieGenreCache[genre.id] = items
+                    if (_movieGenreState.value.selectedGenre?.id == genre.id) {
+                        _movieGenreState.value = _movieGenreState.value.copy(
+                            movies = items,
+                            isLoading = false,
+                            errorMessage = null
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    if (_movieGenreState.value.selectedGenre?.id == genre.id) {
+                        _movieGenreState.value = _movieGenreState.value.copy(
+                            isLoading = false,
+                            errorMessage = err.localizedMessage ?: "Impossibile caricare i film per ${genre.name}."
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun retrySelectedMovieGenre() {
+        val current = _movieGenreState.value.selectedGenre ?: return
+        movieGenreCache.remove(current.id)
+        selectMovieGenre(current)
     }
 
     fun onSearchQueryChange(newQuery: String) {
