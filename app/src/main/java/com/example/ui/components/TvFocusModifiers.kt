@@ -66,6 +66,8 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -77,10 +79,95 @@ import com.example.ui.theme.NetflixGold
 import com.example.ui.theme.NetflixLightGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
+import java.util.WeakHashMap
 import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/**
+ * Registro sincrono dei [FocusRequester] attualmente montati nella gerarchia Compose.
+ * Previene crash `IllegalStateException: FocusRequester is not initialized` su Android TV
+ * quando un target di `focusProperties` o `requestFocus()` scorre fuori schermo in LazyRow/LazyColumn
+ * o viene smontato durante un cambio categoria/scheda.
+ */
+private object FocusAttachmentTracker {
+    private val attachedCounts = WeakHashMap<FocusRequester, Int>()
+
+    @Synchronized
+    fun onAttach(requester: FocusRequester) {
+        attachedCounts[requester] = (attachedCounts[requester] ?: 0) + 1
+    }
+
+    @Synchronized
+    fun onDetach(requester: FocusRequester) {
+        val current = attachedCounts[requester] ?: return
+        if (current <= 1) {
+            attachedCounts.remove(requester)
+        } else {
+            attachedCounts[requester] = current - 1
+        }
+    }
+
+    @Synchronized
+    fun isAttached(requester: FocusRequester?): Boolean {
+        return requester != null && (attachedCounts[requester] ?: 0) > 0
+    }
+}
+
+private class FocusAttachmentTrackNode(
+    var requester: FocusRequester
+) : Modifier.Node() {
+    override fun onAttach() {
+        FocusAttachmentTracker.onAttach(requester)
+    }
+
+    override fun onDetach() {
+        FocusAttachmentTracker.onDetach(requester)
+    }
+}
+
+private data class FocusAttachmentTrackElement(
+    val requester: FocusRequester
+) : ModifierNodeElement<FocusAttachmentTrackNode>() {
+    override fun create(): FocusAttachmentTrackNode = FocusAttachmentTrackNode(requester)
+
+    override fun update(node: FocusAttachmentTrackNode) {
+        if (node.requester !== requester) {
+            if (node.isAttached) {
+                FocusAttachmentTracker.onDetach(node.requester)
+                node.requester = requester
+                FocusAttachmentTracker.onAttach(requester)
+            } else {
+                node.requester = requester
+            }
+        }
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "safeFocusRequester"
+    }
+}
+
+fun Modifier.safeFocusRequester(focusRequester: FocusRequester?): Modifier {
+    if (focusRequester == null) return this
+    return this
+        .then(FocusAttachmentTrackElement(focusRequester))
+        .focusRequester(focusRequester)
+}
+
+fun FocusRequester?.takeIfAttached(): FocusRequester? {
+    val candidate = this ?: return null
+    return if (FocusAttachmentTracker.isAttached(candidate)) candidate else null
+}
+
+fun FocusRequester?.safeRequestFocus(): Boolean {
+    val candidate = takeIfAttached() ?: return false
+    return runCatching {
+        candidate.requestFocus()
+        true
+    }.getOrDefault(false)
+}
 
 /**
  * Rileva se l'app è eseguita su Android TV / Google TV (o dispositivo con interfaccia Leanback).
@@ -540,10 +627,10 @@ fun TvSeekTimeBar(
                 horizontal = if (isFocused || isRemoteScrubbing) 10.dp else 0.dp,
                 vertical = if (isFocused || isRemoteScrubbing) 6.dp else 0.dp
             )
-            .focusRequester(focusRequester)
+            .safeFocusRequester(focusRequester)
             .focusProperties {
-                if (upFocusRequester != null) up = upFocusRequester
-                if (downFocusRequester != null) down = downFocusRequester
+                upFocusRequester.takeIfAttached()?.let { up = it }
+                downFocusRequester.takeIfAttached()?.let { down = it }
             }
             .onFocusChanged { state ->
                 val focusedNow = state.isFocused || state.hasFocus

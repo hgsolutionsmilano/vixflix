@@ -101,6 +101,9 @@ import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.animatedPosterShowcase
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
+import com.example.ui.components.safeFocusRequester
+import com.example.ui.components.safeRequestFocus
+import com.example.ui.components.takeIfAttached
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -170,7 +173,18 @@ fun MediaDetailScreen(
         ) { currentState ->
             val currentItem = currentState.mediaItem
             val details = currentState.details
-            val trailers = details?.trailers.orEmpty()
+            val trailers = remember(details?.trailers) {
+                details?.trailers.orEmpty().distinctBy { it.id.ifBlank { it.key } }
+            }
+            val castList = remember(details?.cast) {
+                details?.cast.orEmpty().distinctBy { it.id }
+            }
+            val episodesList = remember(currentState.episodes) {
+                currentState.episodes.distinctBy { it.seasonNumber to it.episodeNumber }
+            }
+            val similarList = remember(details?.similar) {
+                details?.similar.orEmpty().distinctBy { it.uniqueKey }
+            }
             val listState = rememberLazyListState()
             val detailPlayFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailTrailerFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
@@ -205,7 +219,7 @@ fun MediaDetailScreen(
                         val targetAlreadyFocused = if (returnToTrailer) isTrailerButtonFocused else isPlayButtonFocused
                         if (targetAlreadyFocused) break
                         if (didAutoFocusOnce && isOtherActionFocused) break
-                        val requested = runCatching { targetRequester.requestFocus() }.isSuccess
+                        val requested = targetRequester.safeRequestFocus()
                         if (requested) {
                             kotlinx.coroutines.yield()
                             didAutoFocusOnce = true
@@ -222,8 +236,8 @@ fun MediaDetailScreen(
             val downTargetFromActions: FocusRequester? = when {
                 trailers.isNotEmpty() -> firstTrailerFocus
                 currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
-                currentItem.isSeries && currentState.episodes.isNotEmpty() -> firstEpisodeFocus
-                !details?.similar.isNullOrEmpty() -> firstSimilarFocus
+                currentItem.isSeries && episodesList.isNotEmpty() -> firstEpisodeFocus
+                similarList.isNotEmpty() -> firstSimilarFocus
                 else -> null
             }
 
@@ -241,7 +255,8 @@ fun MediaDetailScreen(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .navigationBarsPadding(),
+                    .navigationBarsPadding()
+                    .testTag("media_detail_lazy_column"),
                 contentPadding = PaddingValues(bottom = 40.dp)
             ) {
                 // Header con Backdrop
@@ -318,10 +333,10 @@ fun MediaDetailScreen(
                                     shape = RoundedCornerShape(50),
                                     border = BorderStroke(1.dp, NetflixElevatedSurface),
                                     modifier = Modifier
-                                        .focusRequester(detailBackFocusRequester)
+                                        .safeFocusRequester(detailBackFocusRequester)
                                         .focusProperties {
-                                            down = detailPlayFocusRequester
-                                            right = detailCloseFocusRequester
+                                            detailPlayFocusRequester.takeIfAttached()?.let { down = it }
+                                            detailCloseFocusRequester.takeIfAttached()?.let { right = it }
                                         }
                                         .tvFocusableControl(
                                             shape = RoundedCornerShape(50),
@@ -358,11 +373,11 @@ fun MediaDetailScreen(
                                 onClick = onClose,
                                 modifier = Modifier
                                     .size(44.dp)
-                                    .focusRequester(detailCloseFocusRequester)
+                                    .safeFocusRequester(detailCloseFocusRequester)
                                     .focusProperties {
-                                        down = detailPlayFocusRequester
+                                        detailPlayFocusRequester.takeIfAttached()?.let { down = it }
                                         if (detailStackDepth > 1) {
-                                            left = detailBackFocusRequester
+                                            detailBackFocusRequester.takeIfAttached()?.let { left = it }
                                         }
                                     }
                                     .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
@@ -691,7 +706,7 @@ fun MediaDetailScreen(
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            itemsIndexed(trailers, key = { _, it -> it.id }) { index, video ->
+                            itemsIndexed(trailers, key = { _, it -> it.id.ifBlank { it.key } }) { index, video ->
                                 TmdbTrailerCard(
                                     video = video,
                                     fallbackBackdropUrl = currentItem.backdropUrl,
@@ -700,11 +715,11 @@ fun MediaDetailScreen(
                                     onClick = onOpenYouTubeTrailerPopup,
                                     modifier = Modifier
                                         .then(
-                                            if (index == 0) Modifier.focusRequester(firstTrailerFocus) else Modifier
+                                            if (index == 0) Modifier.safeFocusRequester(firstTrailerFocus) else Modifier
                                         )
                                         .focusProperties {
                                             if (index == 0) {
-                                                up = detailPlayFocusRequester
+                                                detailPlayFocusRequester.takeIfAttached()?.let { up = it }
                                             }
                                         }
                                         .animateItem(
@@ -719,7 +734,7 @@ fun MediaDetailScreen(
             }
 
             // Cast TMDB
-            if (!details?.cast.isNullOrEmpty()) {
+            if (castList.isNotEmpty()) {
                 item {
                     Spacer(modifier = Modifier.height(18.dp))
                     Text(
@@ -732,7 +747,7 @@ fun MediaDetailScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(details?.cast.orEmpty(), key = { it.id }) { actor ->
+                        items(castList, key = { it.id }) { actor ->
                             CastCard(
                                 actor = actor,
                                 modifier = Modifier.animateItem(
@@ -784,11 +799,11 @@ fun MediaDetailScreen(
                                         border = BorderStroke(1.dp, seasonBorder),
                                         modifier = Modifier
                                             .then(
-                                                if (sIndex == 0) Modifier.focusRequester(firstSeasonFocus) else Modifier
+                                                if (sIndex == 0) Modifier.safeFocusRequester(firstSeasonFocus) else Modifier
                                             )
                                             .focusProperties {
                                                 if (sIndex == 0 && trailers.isEmpty()) {
-                                                    up = detailPlayFocusRequester
+                                                    detailPlayFocusRequester.takeIfAttached()?.let { up = it }
                                                 }
                                             }
                                             .tvFocusableControl(
@@ -824,7 +839,7 @@ fun MediaDetailScreen(
                     }
                 } else {
                     itemsIndexed(
-                        currentState.episodes,
+                        episodesList,
                         key = { _, ep -> "ep_${ep.seasonNumber}_${ep.episodeNumber}" }
                     ) { epIndex, ep ->
                         EpisodeRowItem(
@@ -836,11 +851,11 @@ fun MediaDetailScreen(
                             },
                             modifier = Modifier
                                 .then(
-                                    if (epIndex == 0) Modifier.focusRequester(firstEpisodeFocus) else Modifier
+                                    if (epIndex == 0) Modifier.safeFocusRequester(firstEpisodeFocus) else Modifier
                                 )
                                 .focusProperties {
                                     if (epIndex == 0 && !details?.seasons.isNullOrEmpty()) {
-                                        up = firstSeasonFocus
+                                        firstSeasonFocus.takeIfAttached()?.let { up = it }
                                     }
                                 }
                                 .animateItem(
@@ -854,7 +869,7 @@ fun MediaDetailScreen(
             }
 
             // Contenuti simili da TMDB
-            if (!details?.similar.isNullOrEmpty()) {
+            if (similarList.isNotEmpty()) {
                 val upToBeforeSimilar = when {
                     currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
                     trailers.isNotEmpty() -> firstTrailerFocus
@@ -864,11 +879,11 @@ fun MediaDetailScreen(
                     Spacer(modifier = Modifier.height(20.dp))
                     MediaCatalogRow(
                         title = "Titoli Simili su TMDB",
-                        items = details?.similar.orEmpty(),
+                        items = similarList,
                         onItemClick = onSelectSimilar,
                         onItemQuickPlay = { sim -> onSelectSimilar(sim) },
                         firstItemFocusRequester = firstSimilarFocus,
-                        upFocusRequester = if (currentItem.isSeries && currentState.episodes.isNotEmpty()) null else upToBeforeSimilar
+                        upFocusRequester = if (currentItem.isSeries && episodesList.isNotEmpty()) null else upToBeforeSimilar
                     )
                 }
             }
@@ -919,18 +934,12 @@ private fun DetailRoundActionButton(
             shadowElevation = 6.dp,
             modifier = Modifier
                 .size(56.dp)
-                .then(
-                    if (focusRequester != null) {
-                        Modifier.focusRequester(focusRequester)
-                    } else {
-                        Modifier
-                    }
-                )
+                .safeFocusRequester(focusRequester)
                 .focusProperties {
-                    if (upFocusRequester != null) up = upFocusRequester
-                    if (downFocusRequester != null) down = downFocusRequester
-                    if (leftFocusRequester != null) left = leftFocusRequester
-                    if (rightFocusRequester != null) right = rightFocusRequester
+                    upFocusRequester.takeIfAttached()?.let { up = it }
+                    downFocusRequester.takeIfAttached()?.let { down = it }
+                    leftFocusRequester.takeIfAttached()?.let { left = it }
+                    rightFocusRequester.takeIfAttached()?.let { right = it }
                 }
                 .tvFocusableControl(
                     shape = CircleShape,

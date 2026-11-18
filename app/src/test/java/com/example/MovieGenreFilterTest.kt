@@ -103,13 +103,17 @@ class MovieGenreFilterTest {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val viewModel = VixFlixViewModel(app, repository)
         awaitCondition {
-            viewModel.movieGenreState.value.genres.size == 3
+            viewModel.movieGenreState.value.genres.size == 3 &&
+                viewModel.catalogState.value !is com.example.ui.CatalogUiState.Loading
         }
 
         val action = TmdbGenreDto(28, "Azione")
         val sciFi = TmdbGenreDto(878, "Fantascienza")
+        val baselineActionCalls = server.recordedRequests.count {
+            it.contains("/3/discover/movie") && it.contains("with_genres=28")
+        }
 
-        // First selection hits TMDB /discover/movie?with_genres=28
+        // First selection hits TMDB /discover/movie?with_genres=28 once more
         viewModel.selectMovieGenre(action)
         awaitCondition {
             val state = viewModel.movieGenreState.value
@@ -119,7 +123,7 @@ class MovieGenreFilterTest {
         val actionCallsAfterFirst = server.recordedRequests.count {
             it.contains("/3/discover/movie") && it.contains("with_genres=28")
         }
-        assertEquals(1, actionCallsAfterFirst)
+        assertEquals(baselineActionCalls + 1, actionCallsAfterFirst)
 
         // Error + retry on Sci-Fi
         server.failDiscover.set(true)
@@ -137,7 +141,7 @@ class MovieGenreFilterTest {
         }
         assertEquals("Dune: Parte Due", viewModel.movieGenreState.value.movies.first().title)
 
-        // Re-selecting Azione must serve directly from ViewModel cache (still 1 HTTP call total)
+        // Re-selecting Azione must serve directly from ViewModel cache (no additional HTTP call)
         viewModel.selectMovieGenre(action)
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(action, viewModel.movieGenreState.value.selectedGenre)
@@ -145,7 +149,7 @@ class MovieGenreFilterTest {
         val actionCallsAfterCacheHit = server.recordedRequests.count {
             it.contains("/3/discover/movie") && it.contains("with_genres=28")
         }
-        assertEquals(1, actionCallsAfterCacheHit)
+        assertEquals(actionCallsAfterFirst, actionCallsAfterCacheHit)
 
         // Reset back to Tutti
         viewModel.selectMovieGenre(null)

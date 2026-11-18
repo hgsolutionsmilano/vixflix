@@ -180,28 +180,16 @@ fun NetflixTopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .then(
-                        if (brandLogoFocusRequester != null) {
-                            Modifier.focusRequester(brandLogoFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
+                    .safeFocusRequester(brandLogoFocusRequester)
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
-                        if (resolvedDownTarget != null) {
-                            down = resolvedDownTarget
-                        }
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        resolvedDownTarget.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown &&
-                            keyEvent.key == Key.DirectionDown &&
-                            resolvedDownTarget != null
+                            keyEvent.key == Key.DirectionDown
                         ) {
-                            runCatching { resolvedDownTarget.requestFocus() }
-                            true
+                            resolvedDownTarget.safeRequestFocus()
                         } else {
                             false
                         }
@@ -262,17 +250,13 @@ fun NetflixTopBar(
                     border = BorderStroke(1.dp, NetflixElevatedSurface),
                     modifier = Modifier
                         .focusProperties {
-                            if (resolvedDownTarget != null) {
-                                down = resolvedDownTarget
-                            }
+                            resolvedDownTarget.takeIfAttached()?.let { down = it }
                         }
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown &&
-                                keyEvent.key == Key.DirectionDown &&
-                                resolvedDownTarget != null
+                                keyEvent.key == Key.DirectionDown
                             ) {
-                                runCatching { resolvedDownTarget.requestFocus() }
-                                true
+                                resolvedDownTarget.safeRequestFocus()
                             } else {
                                 false
                             }
@@ -298,17 +282,13 @@ fun NetflixTopBar(
                         onClick = onClickUpdateIcon,
                         modifier = Modifier
                             .focusProperties {
-                                if (resolvedDownTarget != null) {
-                                    down = resolvedDownTarget
-                                }
+                                resolvedDownTarget.takeIfAttached()?.let { down = it }
                             }
                             .onPreviewKeyEvent { keyEvent ->
                                 if (keyEvent.type == KeyEventType.KeyDown &&
-                                    keyEvent.key == Key.DirectionDown &&
-                                    resolvedDownTarget != null
+                                    keyEvent.key == Key.DirectionDown
                                 ) {
-                                    runCatching { resolvedDownTarget.requestFocus() }
-                                    true
+                                    resolvedDownTarget.safeRequestFocus()
                                 } else {
                                     false
                                 }
@@ -342,17 +322,13 @@ fun NetflixTopBar(
                     onClick = onToggleSearch,
                     modifier = Modifier
                         .focusProperties {
-                            if (resolvedDownTarget != null) {
-                                down = resolvedDownTarget
-                            }
+                            resolvedDownTarget.takeIfAttached()?.let { down = it }
                         }
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown &&
-                                keyEvent.key == Key.DirectionDown &&
-                                resolvedDownTarget != null
+                                keyEvent.key == Key.DirectionDown
                             ) {
-                                runCatching { resolvedDownTarget.requestFocus() }
-                                true
+                                resolvedDownTarget.safeRequestFocus()
                             } else {
                                 false
                             }
@@ -413,9 +389,7 @@ fun NetflixTopBar(
                 keyboardActions = KeyboardActions(
                     onSearch = {
                         keyboardController?.hide()
-                        downToContentFocusRequester?.let {
-                            runCatching { it.requestFocus() }
-                        }
+                        downToContentFocusRequester.safeRequestFocus()
                     }
                 ),
                 shape = RoundedCornerShape(10.dp),
@@ -431,29 +405,17 @@ fun NetflixTopBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp)
-                    .then(
-                        if (searchFocusRequester != null) {
-                            Modifier.focusRequester(searchFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
+                    .safeFocusRequester(searchFocusRequester)
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
-                        if (downToContentFocusRequester != null) {
-                            down = downToContentFocusRequester
-                        }
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        downToContentFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown &&
-                            keyEvent.key == Key.DirectionDown &&
-                            downToContentFocusRequester != null
+                            keyEvent.key == Key.DirectionDown
                         ) {
                             keyboardController?.hide()
-                            runCatching { downToContentFocusRequester.requestFocus() }
-                            true
+                            downToContentFocusRequester.safeRequestFocus()
                         } else {
                             false
                         }
@@ -725,12 +687,12 @@ fun NetflixHeroBanner(
                             scaleX = watchScale
                             scaleY = watchScale
                         }
-                        .focusRequester(watchFocusRequester)
+                        .safeFocusRequester(watchFocusRequester)
                         .focusProperties {
-                            if (navRailFocusRequester != null) left = navRailFocusRequester
-                            right = resolvedPlayFocusRequester
-                            if (topBarFocusRequester != null) up = topBarFocusRequester
-                            if (firstRowFocusRequester != null) down = firstRowFocusRequester
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            resolvedPlayFocusRequester.takeIfAttached()?.let { right = it }
+                            topBarFocusRequester.takeIfAttached()?.let { up = it }
+                            firstRowFocusRequester.takeIfAttached()?.let { down = it }
                         }
                         .onFocusChanged { watchFocused = it.isFocused }
                         .testTag("hero_watchlist_button")
@@ -762,12 +724,12 @@ fun NetflixHeroBanner(
                             scaleX = playScale
                             scaleY = playScale
                         }
-                        .focusRequester(resolvedPlayFocusRequester)
+                        .safeFocusRequester(resolvedPlayFocusRequester)
                         .focusProperties {
-                            left = watchFocusRequester
-                            right = infoFocusRequester
-                            if (topBarFocusRequester != null) up = topBarFocusRequester
-                            if (firstRowFocusRequester != null) down = firstRowFocusRequester
+                            watchFocusRequester.takeIfAttached()?.let { left = it }
+                            infoFocusRequester.takeIfAttached()?.let { right = it }
+                            topBarFocusRequester.takeIfAttached()?.let { up = it }
+                            firstRowFocusRequester.takeIfAttached()?.let { down = it }
                         }
                         .onFocusChanged { playFocused = it.isFocused }
                         .testTag("hero_play_button")
@@ -807,11 +769,11 @@ fun NetflixHeroBanner(
                             scaleX = infoScale
                             scaleY = infoScale
                         }
-                        .focusRequester(infoFocusRequester)
+                        .safeFocusRequester(infoFocusRequester)
                         .focusProperties {
-                            left = resolvedPlayFocusRequester
-                            if (topBarFocusRequester != null) up = topBarFocusRequester
-                            if (firstRowFocusRequester != null) down = firstRowFocusRequester
+                            resolvedPlayFocusRequester.takeIfAttached()?.let { left = it }
+                            topBarFocusRequester.takeIfAttached()?.let { up = it }
+                            firstRowFocusRequester.takeIfAttached()?.let { down = it }
                         }
                         .onFocusChanged { infoFocused = it.isFocused }
                         .testTag("hero_info_button")
@@ -850,7 +812,8 @@ fun ContinueWatchingSection(
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
-    if (entries.isEmpty()) return
+    val safeEntries = remember(entries) { entries.distinctBy { it.id } }
+    if (safeEntries.isEmpty()) return
 
     val listState = rememberLazyListState()
 
@@ -883,7 +846,7 @@ fun ContinueWatchingSection(
                 )
             }
             Text(
-                text = if (isTvLayout) "${entries.size} in corso • Tieni premuto OK per opzioni" else "Room DB • ${entries.size} in corso",
+                text = if (isTvLayout) "${safeEntries.size} in corso • Tieni premuto OK per opzioni" else "Room DB • ${safeEntries.size} in corso",
                 style = MaterialTheme.typography.labelSmall,
                 color = NetflixLightGray
             )
@@ -894,7 +857,7 @@ fun ContinueWatchingSection(
             contentPadding = PaddingValues(horizontal = if (isTvLayout) 24.dp else 20.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            itemsIndexed(entries, key = { _, it -> it.id }) { index, entry ->
+            itemsIndexed(safeEntries, key = { _, it -> it.id }) { index, entry ->
                 val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
@@ -911,14 +874,12 @@ fun ContinueWatchingSection(
                     onLongPress = onTvLongPress?.let { handler -> { handler(entry) } },
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
-                        .focusRequester(itemFocusRequester)
+                        .safeFocusRequester(itemFocusRequester)
                         .focusProperties {
-                            if (index == 0 && navRailFocusRequester != null) {
-                                left = navRailFocusRequester
+                            if (index == 0) {
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
-                            if (upFocusRequester != null) {
-                                up = upFocusRequester
-                            }
+                            upFocusRequester.takeIfAttached()?.let { up = it }
                         }
                         .animateItem(
                             fadeInSpec = tween(250),
@@ -1121,7 +1082,8 @@ fun Top10Section(
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
-    if (items.isEmpty()) return
+    val safeItems = remember(items) { items.distinctBy { it.uniqueKey } }
+    if (safeItems.isEmpty()) return
 
     val listState = rememberLazyListState()
 
@@ -1142,7 +1104,7 @@ fun Top10Section(
             contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            itemsIndexed(items, key = { _, item -> "top10_${item.uniqueKey}" }) { index, item ->
+            itemsIndexed(safeItems, key = { _, item -> "top10_${item.uniqueKey}" }) { index, item ->
                 val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
@@ -1158,14 +1120,12 @@ fun Top10Section(
                     onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
-                        .focusRequester(itemFocusRequester)
+                        .safeFocusRequester(itemFocusRequester)
                         .focusProperties {
-                            if (index == 0 && navRailFocusRequester != null) {
-                                left = navRailFocusRequester
+                            if (index == 0) {
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
-                            if (upFocusRequester != null) {
-                                up = upFocusRequester
-                            }
+                            upFocusRequester.takeIfAttached()?.let { up = it }
                         }
                         .animateItem(
                             fadeInSpec = tween(250),
@@ -1318,7 +1278,8 @@ fun MediaCatalogRow(
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
-    if (items.isEmpty()) return
+    val safeItems = remember(items) { items.distinctBy { it.uniqueKey } }
+    if (safeItems.isEmpty()) return
 
     val listState = rememberLazyListState()
 
@@ -1339,7 +1300,7 @@ fun MediaCatalogRow(
             contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            itemsIndexed(items, key = { _, item -> "${title}_${item.uniqueKey}" }) { index, item ->
+            itemsIndexed(safeItems, key = { _, item -> "${title}_${item.uniqueKey}" }) { index, item ->
                 val itemFocusRequester = if (index == 0 && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
@@ -1354,14 +1315,12 @@ fun MediaCatalogRow(
                     onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
-                        .focusRequester(itemFocusRequester)
+                        .safeFocusRequester(itemFocusRequester)
                         .focusProperties {
-                            if (index == 0 && navRailFocusRequester != null) {
-                                left = navRailFocusRequester
+                            if (index == 0) {
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
-                            if (upFocusRequester != null) {
-                                up = upFocusRequester
-                            }
+                            upFocusRequester.takeIfAttached()?.let { up = it }
                         }
                         .animateItem(
                             fadeInSpec = tween(250),
@@ -1515,12 +1474,13 @@ fun MovieGenreChipBar(
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
+    val safeGenres = remember(genres) { genres.distinctBy { it.id } }
     val listState = rememberLazyListState()
-    val targetIndex = remember(genres, selectedGenre) {
+    val targetIndex = remember(safeGenres, selectedGenre) {
         if (selectedGenre == null) {
             0
         } else {
-            val found = genres.indexOfFirst { it.id == selectedGenre.id }
+            val found = safeGenres.indexOfFirst { it.id == selectedGenre.id }
             if (found >= 0) found + 1 else 0
         }
     }
@@ -1538,6 +1498,7 @@ fun MovieGenreChipBar(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
+            .safeFocusRequester(firstChipFocusRequester)
             .focusGroup()
             .testTag("movie_genre_chip_bar")
     ) {
@@ -1548,39 +1509,25 @@ fun MovieGenreChipBar(
                 isSelected = isSelected,
                 onClick = { onSelectGenre(null) },
                 modifier = Modifier
-                    .then(
-                        if (firstChipFocusRequester != null && selectedGenre == null) {
-                            Modifier.focusRequester(firstChipFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
                     .focusProperties {
-                        if (navRailFocusRequester != null) left = navRailFocusRequester
-                        if (upFocusRequester != null) up = upFocusRequester
-                        if (downFocusRequester != null) down = downFocusRequester
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        upFocusRequester.takeIfAttached()?.let { up = it }
+                        downFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .testTag("genre_chip_all")
             )
         }
 
-        itemsIndexed(genres, key = { _, genre -> "genre_${genre.id}" }) { _, genre ->
+        itemsIndexed(safeGenres, key = { _, genre -> "genre_${genre.id}" }) { _, genre ->
             val isSelected = selectedGenre?.id == genre.id
             GenreFilterChipItem(
                 label = genre.name,
                 isSelected = isSelected,
                 onClick = { onSelectGenre(genre) },
                 modifier = Modifier
-                    .then(
-                        if (firstChipFocusRequester != null && isSelected) {
-                            Modifier.focusRequester(firstChipFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
                     .focusProperties {
-                        if (upFocusRequester != null) up = upFocusRequester
-                        if (downFocusRequester != null) down = downFocusRequester
+                        upFocusRequester.takeIfAttached()?.let { up = it }
+                        downFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .testTag("genre_chip_${genre.id}")
             )

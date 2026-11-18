@@ -1,0 +1,737 @@
+package com.example
+
+import android.app.Application
+import android.content.Context
+import android.content.res.Configuration
+import android.os.Looper
+import android.view.KeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.pressKey
+import androidx.test.core.app.ApplicationProvider
+import com.example.data.local.VixFlixDatabase
+import com.example.data.local.WatchProgressEntity
+import com.example.data.local.WatchlistEntity
+import com.example.data.remote.MediaItem
+import com.example.data.remote.TmdbGenreDto
+import com.example.data.remote.TmdbGenreMap
+import com.example.data.remote.TmdbTrailerResolver
+import com.example.data.repository.VixFlixRepository
+import com.example.ui.VixFlixViewModel
+import com.example.ui.screens.VixFlixAppScreen
+import com.example.ui.theme.MyApplicationTheme
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketException
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+
+@OptIn(ExperimentalTestApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36], qualifiers = "w1280dp-h720dp-television-notouch-dpad")
+class TvNavigationAndViewsCrashTest {
+
+    @get:Rule
+    val composeRule = createComposeRule()
+
+    private lateinit var server: FullMockTmdbServer
+    private lateinit var app: Application
+    private lateinit var dao: com.example.data.local.VixFlixDao
+    private lateinit var repository: VixFlixRepository
+    private lateinit var viewModel: VixFlixViewModel
+
+    @Before
+    fun setUp() {
+        TmdbTrailerResolver.forceSoftwareEmulatorMode = true
+        server = FullMockTmdbServer()
+        server.start()
+        app = ApplicationProvider.getApplicationContext()
+        val uiModeManager = app.getSystemService(Context.UI_MODE_SERVICE) as android.app.UiModeManager
+        shadowOf(uiModeManager).currentModeType = Configuration.UI_MODE_TYPE_TELEVISION
+
+        val db = VixFlixDatabase.getInstance(app)
+        dao = db.vixFlixDao()
+        runBlocking {
+            dao.clearAllWatchProgress()
+            dao.upsertWatchProgress(
+                WatchProgressEntity(
+                    id = "movie_101",
+                    tmdbId = 101,
+                    mediaType = "movie",
+                    title = "Film In Corso TV",
+                    overview = "Continua a guardare test",
+                    posterPath = "/p101.jpg",
+                    backdropPath = "/b101.jpg",
+                    voteAverage = 8.1,
+                    releaseYear = "2024",
+                    positionMs = 900_000L,
+                    durationMs = 5_400_000L
+                )
+            )
+            dao.addToWatchlist(
+                WatchlistEntity(
+                    id = "movie_102",
+                    tmdbId = 102,
+                    mediaType = "movie",
+                    title = "Film In Lista TV",
+                    overview = "Watchlist test",
+                    posterPath = "/p102.jpg",
+                    backdropPath = "/b102.jpg",
+                    voteAverage = 7.9,
+                    releaseYear = "2023"
+                )
+            )
+        }
+        repository = VixFlixRepository(
+            dao = dao,
+            tmdbBaseUrl = "http://127.0.0.1:${server.port}/3/"
+        )
+        viewModel = VixFlixViewModel(app, repository)
+    }
+
+    @After
+    fun tearDown() {
+        TmdbTrailerResolver.forceSoftwareEmulatorMode = null
+        server.stop()
+    }
+
+    private fun launchTvApp() {
+        composeRule.setContent {
+            MyApplicationTheme {
+                VixFlixAppScreen(viewModel = viewModel)
+            }
+        }
+        composeRule.waitUntil(timeoutMillis = 6_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("hero_banner_card", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun `tv movies tab navigating down between movies and back up to categories never crashes`() {
+        launchTvApp()
+
+        // Vai su Film tramite la navigation rail TV
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("movie_genre_chip_bar", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Scorri in basso tra le righe film finché la barra categorie e l'hero escono dallo schermo
+        composeRule.onNodeWithTag("catalog_lazy_column").performScrollToIndex(5)
+        composeRule.waitForIdle()
+
+        // Ora naviga verso i film popolari e premi Su / Sinistra / Giù dalla TopBar verso le categorie
+        composeRule.onNodeWithTag("poster_card_movie_301", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionUp)
+            }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("brand_logo", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionDown)
+            }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun `tv movies genre bar horizontal scroll and category switching never crashes`() {
+        launchTvApp()
+
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("movie_genre_chip_bar", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Scorri orizzontalmente la barra categorie fino in fondo (Western = 37) così "Tutti" esce dallo schermo
+        composeRule.onNodeWithTag("movie_genre_chip_bar")
+            .performScrollToNode(hasTestTag("genre_chip_37"))
+        composeRule.waitForIdle()
+
+        // Premi Giù da Hero / Brand verso la barra categorie mentre "Tutti" è fuori schermo
+        composeRule.onNodeWithTag("brand_logo", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionDown)
+            }
+        composeRule.waitForIdle()
+
+        // Seleziona Fantascienza (878), premi Giù durante eventuale caricamento / risultati
+        composeRule.onNodeWithTag("movie_genre_chip_bar")
+            .performScrollToNode(hasTestTag("genre_chip_878"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("genre_chip_878").performClick()
+        composeRule.waitForIdle()
+
+        // Premi Giù subito dalla chip selezionata
+        composeRule.onNodeWithTag("genre_chip_878", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionDown)
+            }
+        composeRule.waitForIdle()
+
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("filtered_genre_movies_section", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Naviga sulla prima locandina filtrata e premi Su per tornare alle categorie e Sinistra alla rail
+        composeRule.onNodeWithTag("poster_card_movie_8780", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+            }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("poster_card_movie_8780", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionLeft)
+            }
+        composeRule.waitForIdle()
+
+        // Seleziona categoria vuota (Documentario = 99) e premi Giù dalla chip
+        composeRule.onNodeWithTag("movie_genre_chip_bar")
+            .performScrollToNode(hasTestTag("genre_chip_99"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("genre_chip_99").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("genre_chip_99", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionDown)
+            }
+        composeRule.waitForIdle()
+
+        // Naviga sulla rail TV e premi Destra con lastFocusedContentRequester ormai rimosso
+        composeRule.onNodeWithTag("tv_navigation_rail", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionRight)
+            }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun `tv navigating across all tabs, search, details, trailer, and settings never crashes`() {
+        launchTvApp()
+
+        val allTabs = listOf(
+            "tv_rail_home",
+            "tv_rail_series",
+            "tv_rail_movies",
+            "tv_rail_new_popular",
+            "tv_rail_my_list",
+            "tv_rail_settings",
+            "tv_rail_home"
+        )
+        allTabs.forEach { tag ->
+            composeRule.onNodeWithTag(tag).performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("tv_navigation_rail", useUnmergedTree = true)
+                .performKeyInput { pressKey(Key.DirectionRight) }
+            composeRule.waitForIdle()
+        }
+
+        // Test Settings scrolling + navigation back to rail/topbar
+        composeRule.onNodeWithTag("tv_rail_settings").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_updates").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_api_sources").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_system").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_screen").performScrollToIndex(2)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_navigation_rail", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        // Test Movie Detail (con overview lungo, trailer, cast con attori duplicati, serie TV + episodi)
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hero_info_button", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("detail_play_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        // Premi Giù dal pulsante Play nei dettagli anche quando le sezioni sotto sono fuori schermo
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        // Apri il popup Trailer YouTube e chiudilo
+        composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("youtube_trailer_modal_card", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("close_trailer_overlay_button", useUnmergedTree = true).performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("detail_close_button", useUnmergedTree = true).performClick()
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun `tv movies rapid genre switching across loading, empty, error retry and clear never crashes`() {
+        launchTvApp()
+
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("movie_genre_chip_bar", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 1. Click Azione (28) while slowing discover slightly, press Down while loading and Left to rail
+        server.discoverDelayMs.set(250L)
+        composeRule.onNodeWithTag("genre_chip_28").performClick()
+        composeRule.onNodeWithTag("genre_chip_28", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionDown)
+                pressKey(Key.DirectionLeft)
+                pressKey(Key.DirectionRight)
+            }
+        composeRule.waitForIdle()
+
+        // 2. Immediately switch to Fantascienza (878) while Azione may still be settling
+        server.discoverDelayMs.set(0L)
+        composeRule.onNodeWithTag("movie_genre_chip_bar")
+            .performScrollToNode(hasTestTag("genre_chip_878"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("genre_chip_878").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("poster_card_movie_8780", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Test clear_genre_filter_button D-pad Up/Left
+        composeRule.onNodeWithTag("clear_genre_filter_button", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionDown)
+                pressKey(Key.DirectionLeft)
+            }
+        composeRule.waitForIdle()
+
+        // 3. Switch to Horror (27) with simulated error -> D-pad around Retry -> Retry -> Verify loaded -> Clear
+        server.failDiscover.set(true)
+        composeRule.onNodeWithTag("movie_genre_chip_bar")
+            .performScrollToNode(hasTestTag("genre_chip_27"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("genre_chip_27").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("retry_genre_movies_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("retry_genre_movies_button", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionLeft)
+            }
+        composeRule.waitForIdle()
+
+        server.failDiscover.set(false)
+        composeRule.onNodeWithTag("retry_genre_movies_button").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("poster_card_movie_2800", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Premi Rimuovi filtro
+        composeRule.onNodeWithTag("clear_genre_filter_button").performClick()
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun `tv movies topbar search grid and my list views handle focus transitions safely`() {
+        launchTvApp()
+
+        // Vai su Film, attiva ricerca, digita query, premi Giù su search_results_grid e Sinistra alla rail
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("search_toggle_button").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("search_input_field", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("search_input_field").performTextInput("Matrix")
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(450))
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("search_results_grid", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("search_input_field", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("poster_card_movie_700", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionDown)
+                pressKey(Key.DirectionLeft)
+            }
+        composeRule.waitForIdle()
+
+        // Chiudi ricerca e vai su La mia lista
+        composeRule.onNodeWithTag("search_toggle_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_my_list").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("my_list_screen", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Naviga tra Continua a guardare e La mia lista con il telecomando, poi svuota lista
+        composeRule.onNodeWithTag("tv_navigation_rail", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_102", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionLeft)
+            }
+        composeRule.waitForIdle()
+
+        runBlocking {
+            dao.clearAllWatchProgress()
+            dao.removeFromWatchlist("movie_102")
+        }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("browse_catalog_from_empty_list_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("browse_catalog_from_empty_list_button", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionLeft)
+            }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun `tv series detail seasons episodes similar stack and player loading never crash`() {
+        launchTvApp()
+
+        // Apri Serie TV e apri i dettagli della prima serie (id 500)
+        composeRule.onNodeWithTag("tv_rail_series").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hero_info_button", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            val ds = viewModel.detailState.value
+            ds != null && !ds.isLoading && !ds.isLoadingEpisodes && ds.episodes.isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        // Naviga tra tasti dettagli, poi scorri sugli episodi e sui titoli simili
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionRight)
+                pressKey(Key.DirectionDown)
+                pressKey(Key.DirectionUp)
+            }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("media_detail_lazy_column")
+            .performScrollToNode(hasTestTag("episode_card_1_1"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("episode_card_1_1", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionDown)
+            }
+        composeRule.waitForIdle()
+
+        // Apri un titolo simile (900) per testare detail_back_button nello stack di navigazione
+        composeRule.onNodeWithTag("media_detail_lazy_column")
+            .performScrollToNode(hasTestTag("poster_card_tv_900"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_900").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("detail_back_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("detail_back_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_close_button").performClick()
+        composeRule.waitForIdle()
+
+        // Avvia player dalla Hero e testa tasti telecomando in schermata di caricamento + Annulla
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("vix_player_screen", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("vix_player_screen", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionUp)
+                pressKey(Key.DirectionDown)
+                pressKey(Key.DirectionLeft)
+                pressKey(Key.DirectionRight)
+            }
+        composeRule.waitForIdle()
+
+        if (
+            composeRule.onAllNodesWithTag("loading_cancel_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        ) {
+            composeRule.onNodeWithTag("loading_cancel_button").performClick()
+        } else if (
+            composeRule.onAllNodesWithTag("player_back_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        ) {
+            composeRule.onNodeWithTag("player_back_button").performClick()
+        }
+        composeRule.waitForIdle()
+        assertTrue(
+            composeRule.onAllNodesWithTag("hero_banner_card", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+    }
+
+    private class FullMockTmdbServer {
+        private var socket: ServerSocket? = null
+        private val executor = Executors.newCachedThreadPool()
+        val failDiscover = AtomicBoolean(false)
+        val discoverDelayMs = java.util.concurrent.atomic.AtomicLong(0L)
+
+        val port: Int
+            get() = socket?.localPort ?: error("Server not started")
+
+        fun start() {
+            socket = ServerSocket(0, 32, InetAddress.getLoopbackAddress())
+            val serverSocket = socket!!
+            executor.submit {
+                while (!serverSocket.isClosed) {
+                    try {
+                        val client = serverSocket.accept()
+                        executor.submit { handleClient(client) }
+                    } catch (_: SocketException) {
+                        break
+                    }
+                }
+            }
+        }
+
+        fun stop() {
+            runCatching { socket?.close() }
+            executor.shutdownNow()
+        }
+
+        private fun movieListJson(startId: Int, count: Int, withDuplicateAtIndex1: Boolean = false): String {
+            val items = (0 until count).map { i ->
+                val id = startId + i
+                """{"id":$id,"media_type":"movie","title":"Film $id","overview":"Trama molto lunga del film $id per testare lo scrolling verticale nella scheda dettagli Android TV e verificare i target di focus offscreen.","poster_path":"/p$id.jpg","backdrop_path":"/b$id.jpg","vote_average":8.2,"release_date":"2024-05-01","genre_ids":[28,878]}"""
+            }.toMutableList()
+            if (withDuplicateAtIndex1 && items.isNotEmpty()) {
+                // Posiziona il duplicato a indice 1 così entra immediatamente nel viewport 1280dp
+                items.add(1.coerceAtMost(items.size), items.first())
+            }
+            return """{"page":1,"total_pages":1,"results":[${items.joinToString(",")}]}"""
+        }
+
+        private fun tvListJson(startId: Int, count: Int, withDuplicateAtIndex1: Boolean = false): String {
+            val items = (0 until count).map { i ->
+                val id = startId + i
+                """{"id":$id,"media_type":"tv","name":"Serie $id","overview":"Trama serie $id","poster_path":"/p$id.jpg","backdrop_path":"/b$id.jpg","vote_average":8.5,"first_air_date":"2024-01-10","genre_ids":[10765]}"""
+            }.toMutableList()
+            if (withDuplicateAtIndex1 && items.isNotEmpty()) {
+                items.add(1.coerceAtMost(items.size), items.first())
+            }
+            return """{"page":1,"total_pages":1,"results":[${items.joinToString(",")}]}"""
+        }
+
+        private fun handleClient(client: Socket) {
+            client.use { s ->
+                val input = BufferedInputStream(s.getInputStream())
+                val requestLine = readLine(input) ?: return
+                while (true) {
+                    val h = readLine(input) ?: break
+                    if (h.isEmpty()) break
+                }
+                val parts = requestLine.split(" ")
+                if (parts.size < 2) return
+                val path = parts[1]
+
+                val genresJson = TmdbGenreMap.defaultMovieGenres.joinToString(",") {
+                    """{"id":${it.id},"name":"${it.name}"}"""
+                }
+
+                when {
+                    path.startsWith("/3/genre/movie/list") -> {
+                        writeJson(s, 200, """{"genres":[$genresJson]}""")
+                    }
+                    path.startsWith("/3/trending/all/day") -> {
+                        writeJson(s, 200, movieListJson(100, 10, withDuplicateAtIndex1 = true))
+                    }
+                    path.startsWith("/3/trending/movie/week") -> {
+                        writeJson(s, 200, movieListJson(200, 8, withDuplicateAtIndex1 = true))
+                    }
+                    path.startsWith("/3/trending/tv/week") -> {
+                        writeJson(s, 200, tvListJson(500, 8, withDuplicateAtIndex1 = true))
+                    }
+                    path.startsWith("/3/movie/popular") -> {
+                        writeJson(s, 200, movieListJson(300, 8))
+                    }
+                    path.startsWith("/3/tv/popular") -> {
+                        writeJson(s, 200, tvListJson(600, 8))
+                    }
+                    path.startsWith("/3/movie/now_playing") -> {
+                        writeJson(s, 200, movieListJson(400, 8))
+                    }
+                    path.startsWith("/3/movie/top_rated") -> {
+                        writeJson(s, 200, movieListJson(450, 8))
+                    }
+                    path.startsWith("/3/search/multi") -> {
+                        writeJson(s, 200, movieListJson(700, 6, withDuplicateAtIndex1 = true))
+                    }
+                    path.startsWith("/3/discover/movie") -> {
+                        val delayMs = discoverDelayMs.get()
+                        if (delayMs > 0L) Thread.sleep(delayMs)
+                        when {
+                            failDiscover.get() -> writeJson(s, 503, """{"status_message":"Errore"}""")
+                            path.contains("with_genres=99") -> writeJson(s, 200, """{"page":1,"total_pages":1,"results":[]}""")
+                            path.contains("with_genres=878") -> writeJson(s, 200, movieListJson(8780, 10, withDuplicateAtIndex1 = true))
+                            else -> writeJson(s, 200, movieListJson(2800, 10))
+                        }
+                    }
+                    path.contains("/season/") -> {
+                        writeJson(
+                            s,
+                            200,
+                            """
+                            {
+                              "id":5001,
+                              "season_number":1,
+                              "episodes":[
+                                {"id":1001,"name":"Episodio Pilota","overview":"Primo episodio","episode_number":1,"season_number":1,"runtime":48,"still_path":"/ep1.jpg"},
+                                {"id":1001,"name":"Episodio Pilota Dup","overview":"Duplicato","episode_number":1,"season_number":1,"runtime":48,"still_path":"/ep1.jpg"},
+                                {"id":1002,"name":"Secondo Episodio","overview":"Secondo episodio","episode_number":2,"season_number":1,"runtime":50,"still_path":"/ep2.jpg"}
+                              ]
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    path.startsWith("/3/tv/") -> {
+                        val longOverview = "Questa è una serie TV con trama dettagliata e tante stagioni disponibili in catalogo. ".repeat(8)
+                        writeJson(
+                            s,
+                            200,
+                            """
+                            {
+                              "id":500,
+                              "name":"Serie Dettaglio Test",
+                              "overview":"$longOverview",
+                              "poster_path":"/p500.jpg",
+                              "backdrop_path":"/b500.jpg",
+                              "vote_average":8.8,
+                              "first_air_date":"2024-02-01",
+                              "genres":[{"id":10765,"name":"Sci-Fi & Fantasy"}],
+                              "seasons":[{"id":1,"season_number":1,"episode_count":2,"name":"Stagione 1"}],
+                              "credits":{"cast":[
+                                {"id":11,"name":"Attore Serie 1","character":"Protagonista"},
+                                {"id":11,"name":"Attore Serie 1","character":"Duplicato"}
+                              ]},
+                              "similar":${tvListJson(900, 4, withDuplicateAtIndex1 = true)},
+                              "videos":{"results":[
+                                {"id":"v1","key":"TcMBFSGVi1c","name":"Trailer Serie","site":"YouTube","type":"Trailer","official":true,"iso_639_1":"it"}
+                              ]}
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    path.startsWith("/3/movie/") -> {
+                        val longOverview = "Questa è una trama cinematografica estremamente lunga e dettagliata. ".repeat(14)
+                        writeJson(
+                            s,
+                            200,
+                            """
+                            {
+                              "id":200,
+                              "title":"Film Dettaglio Test",
+                              "overview":"$longOverview",
+                              "poster_path":"/p200.jpg",
+                              "backdrop_path":"/b200.jpg",
+                              "vote_average":8.6,
+                              "release_date":"2024-06-01",
+                              "runtime":142,
+                              "genres":[{"id":28,"name":"Azione"},{"id":878,"name":"Fantascienza"}],
+                              "credits":{"cast":[
+                                {"id":1,"name":"Attore Uno","character":"Ruolo A"},
+                                {"id":1,"name":"Attore Uno","character":"Ruolo B"},
+                                {"id":2,"name":"Attore Due","character":"Ruolo C"}
+                              ]},
+                              "similar":${movieListJson(900, 5, withDuplicateAtIndex1 = true)},
+                              "videos":{"results":[
+                                {"id":"v1","key":"TcMBFSGVi1c","name":"Trailer Ufficiale","site":"YouTube","type":"Trailer","official":true,"iso_639_1":"it"}
+                              ]}
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    else -> writeJson(s, 200, """{"page":1,"total_pages":1,"results":[]}""")
+                }
+            }
+        }
+
+        private fun readLine(input: BufferedInputStream): String? {
+            val buffer = ByteArrayOutputStream()
+            while (true) {
+                val b = input.read()
+                if (b == -1) return if (buffer.size() == 0) null else buffer.toString("UTF-8")
+                if (b == '\n'.code) return buffer.toString("UTF-8").trimEnd('\r')
+                buffer.write(b)
+            }
+        }
+
+        private fun writeJson(socket: Socket, code: Int, json: String) {
+            val bytes = json.toByteArray(Charsets.UTF_8)
+            val header = "HTTP/1.1 $code OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+            val out = socket.getOutputStream()
+            out.write(header.toByteArray(Charsets.UTF_8))
+            out.write(bytes)
+            out.flush()
+        }
+    }
+}

@@ -137,15 +137,15 @@ class VixFlixRepository(
             val actionDef = async { tmdbApi.discoverMoviesByGenre("28") }
             val sciFiDef = async { tmdbApi.discoverMoviesByGenre("878") }
 
-            val trendingAll = trendingAllDef.await().results.mapNotNull { it.toDomain("movie") }
-            val trendingMovies = trendingMoviesDef.await().results.mapNotNull { it.toDomain("movie") }
-            val trendingTv = trendingTvDef.await().results.mapNotNull { it.toDomain("tv") }
-            val popularMovies = popularMoviesDef.await().results.mapNotNull { it.toDomain("movie") }
-            val popularTv = popularTvDef.await().results.mapNotNull { it.toDomain("tv") }
-            val nowPlaying = nowPlayingDef.await().results.mapNotNull { it.toDomain("movie") }
-            val topRated = topRatedDef.await().results.mapNotNull { it.toDomain("movie") }
-            val action = actionDef.await().results.mapNotNull { it.toDomain("movie") }
-            val sciFi = sciFiDef.await().results.mapNotNull { it.toDomain("movie") }
+            val trendingAll = trendingAllDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+            val trendingMovies = trendingMoviesDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+            val trendingTv = trendingTvDef.await().results.mapNotNull { it.toDomain("tv") }.distinctBy { it.uniqueKey }
+            val popularMovies = popularMoviesDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+            val popularTv = popularTvDef.await().results.mapNotNull { it.toDomain("tv") }.distinctBy { it.uniqueKey }
+            val nowPlaying = nowPlayingDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+            val topRated = topRatedDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+            val action = actionDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+            val sciFi = sciFiDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
 
             val hero = trendingAll.firstOrNull { it.backdropPath != null }
                 ?: popularMovies.firstOrNull()
@@ -180,14 +180,16 @@ class VixFlixRepository(
             val rawVideos = dto.videos?.results.orEmpty().ifEmpty {
                 runCatching { tmdbApi.getTvVideos(mediaItem.id).results }.getOrDefault(emptyList())
             }
-            val validSeasons = dto.seasons.filter { it.seasonNumber > 0 && it.episodeCount > 0 }
+            val validSeasons = dto.seasons
+                .filter { it.seasonNumber > 0 && it.episodeCount > 0 }
+                .distinctBy { it.seasonNumber }
             MediaDetails(
                 item = updatedItem,
                 tagline = dto.tagline.orEmpty(),
                 runtimeMinutes = null,
-                genres = dto.genres.map { it.name },
-                cast = dto.credits?.cast?.take(12).orEmpty(),
-                similar = dto.similar?.results?.mapNotNull { it.toDomain("tv") }?.take(12).orEmpty(),
+                genres = dto.genres.map { it.name }.distinct(),
+                cast = dto.credits?.cast?.distinctBy { it.id }?.take(12).orEmpty(),
+                similar = dto.similar?.results?.mapNotNull { it.toDomain("tv") }?.distinctBy { it.uniqueKey }?.take(12).orEmpty(),
                 seasons = validSeasons,
                 numberOfSeasons = dto.numberOfSeasons ?: validSeasons.size,
                 trailers = prioritizeTrailers(rawVideos)
@@ -209,9 +211,9 @@ class VixFlixRepository(
                 item = updatedItem,
                 tagline = dto.tagline.orEmpty(),
                 runtimeMinutes = dto.runtime,
-                genres = dto.genres.map { it.name },
-                cast = dto.credits?.cast?.take(12).orEmpty(),
-                similar = dto.similar?.results?.mapNotNull { it.toDomain("movie") }?.take(12).orEmpty(),
+                genres = dto.genres.map { it.name }.distinct(),
+                cast = dto.credits?.cast?.distinctBy { it.id }?.take(12).orEmpty(),
+                similar = dto.similar?.results?.mapNotNull { it.toDomain("movie") }?.distinctBy { it.uniqueKey }?.take(12).orEmpty(),
                 trailers = prioritizeTrailers(rawVideos)
             )
         }
@@ -220,6 +222,7 @@ class VixFlixRepository(
     private fun prioritizeTrailers(videos: List<TmdbVideoDto>): List<TmdbVideoDto> {
         return videos
             .filter { it.key.isNotBlank() }
+            .distinctBy { it.id.ifBlank { it.key } }
             .sortedWith(
                 compareByDescending<TmdbVideoDto> { it.type.equals("Trailer", ignoreCase = true) }
                     .thenByDescending { it.languageCode.equals("it", ignoreCase = true) }
@@ -249,24 +252,25 @@ class VixFlixRepository(
     suspend fun fetchMovieGenres(): List<TmdbGenreDto> = runCatching {
         tmdbApi.getMovieGenres().genres
             .filter { it.id > 0 && it.name.isNotBlank() }
+            .distinctBy { it.id }
             .ifEmpty { TmdbGenreMap.defaultMovieGenres }
     }.getOrDefault(TmdbGenreMap.defaultMovieGenres)
 
     suspend fun fetchMoviesByGenre(genreId: Int, page: Int = 1): Result<List<MediaItem>> = runCatching {
         val response = tmdbApi.discoverMoviesByGenre(genreId = genreId.toString(), page = page)
-        response.results.mapNotNull { it.toDomain("movie") }
+        response.results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
     }
 
     suspend fun fetchSeasonEpisodes(tvId: Int, seasonNumber: Int): Result<List<TmdbEpisodeDto>> = runCatching {
         val season: TmdbSeasonDetailsDto = tmdbApi.getTvSeasonDetails(tvId = tvId, seasonNumber = seasonNumber)
-        season.episodes
+        season.episodes.distinctBy { it.seasonNumber to it.episodeNumber }
     }
 
     suspend fun searchTmdb(query: String): Result<List<MediaItem>> = runCatching {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@runCatching emptyList()
         val response = tmdbApi.searchMulti(query = trimmed)
-        response.results.mapNotNull { it.toDomain("movie") }
+        response.results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
     }
 
     /**

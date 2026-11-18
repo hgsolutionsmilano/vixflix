@@ -109,6 +109,9 @@ import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.ui.TrailerPlaybackState
 import com.example.ui.components.animatedPosterShowcase
 import com.example.ui.components.rememberIsTvDevice
+import com.example.ui.components.safeFocusRequester
+import com.example.ui.components.safeRequestFocus
+import com.example.ui.components.takeIfAttached
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -168,21 +171,25 @@ fun YouTubeTrailerDialog(
     val closeFocusRequester = remember { FocusRequester() }
     val playlistState = rememberLazyListState()
 
+    val uniqueTrailers = remember(trailerState.trailers) {
+        trailerState.trailers.distinctBy { it.videoId }
+    }
+
     val togglePlayPause: () -> Unit = {
         val js = if (isPlaying) {
             "window.vixPause && window.vixPause();"
         } else {
             "window.vixPlay && window.vixPlay();"
         }
-        webViewRef?.evaluateJavascript(js, null)
+        runCatching { webViewRef?.evaluateJavascript(js, null) }
     }
 
     val playAction: () -> Unit = {
-        webViewRef?.evaluateJavascript("window.vixPlay && window.vixPlay();", null)
+        runCatching { webViewRef?.evaluateJavascript("window.vixPlay && window.vixPlay();", null) }
     }
 
     val pauseAction: () -> Unit = {
-        webViewRef?.evaluateJavascript("window.vixPause && window.vixPause();", null)
+        runCatching { webViewRef?.evaluateJavascript("window.vixPause && window.vixPause();", null) }
     }
 
     val seekToAction: (Long) -> Unit = { targetMs ->
@@ -191,7 +198,7 @@ fun YouTubeTrailerDialog(
         }
         currentPosMs = clamped
         val sec = clamped / 1000.0
-        webViewRef?.evaluateJavascript("window.vixSeekTo && window.vixSeekTo($sec);", null)
+        runCatching { webViewRef?.evaluateJavascript("window.vixSeekTo && window.vixSeekTo($sec);", null) }
     }
 
     // Sincronizza stato caricamento ed errori con lo stato corrente del trailer selezionato
@@ -261,9 +268,9 @@ fun YouTubeTrailerDialog(
     LaunchedEffect(activeKey, playbackError, trailerState.isSearching, trailerState.isLoadingStream) {
         if (!isTvDevice) return@LaunchedEffect
         if (!playbackError.isNullOrBlank()) {
-            runCatching { retryFocusRequester.requestFocus() }
+            retryFocusRequester.safeRequestFocus()
         } else {
-            runCatching { closeFocusRequester.requestFocus() }
+            closeFocusRequester.safeRequestFocus()
         }
     }
 
@@ -286,7 +293,7 @@ fun YouTubeTrailerDialog(
                     indication = null,
                     onClick = onClose
                 )
-                .focusRequester(modalPlayerFocusRequester)
+                .safeFocusRequester(modalPlayerFocusRequester)
                 .focusable()
                 .onPreviewKeyEvent { keyEvent ->
                     if (keyEvent.type == KeyEventType.KeyDown) {
@@ -458,12 +465,12 @@ fun YouTubeTrailerDialog(
                                 onClick = onClose,
                                 modifier = Modifier
                                     .size(44.dp)
-                                    .focusRequester(closeFocusRequester)
+                                    .safeFocusRequester(closeFocusRequester)
                                     .focusProperties {
                                         if (!playbackError.isNullOrBlank()) {
-                                            down = retryFocusRequester
-                                        } else if (trailerState.trailers.isNotEmpty()) {
-                                            down = firstPlaylistFocusRequester
+                                            retryFocusRequester.takeIfAttached()?.let { down = it }
+                                        } else if (uniqueTrailers.isNotEmpty()) {
+                                            firstPlaylistFocusRequester.takeIfAttached()?.let { down = it }
                                         }
                                     }
                                     .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
@@ -609,11 +616,11 @@ fun YouTubeTrailerDialog(
                                                 ),
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
-                                                    .focusRequester(retryFocusRequester)
+                                                    .safeFocusRequester(retryFocusRequester)
                                                     .focusProperties {
-                                                        up = closeFocusRequester
-                                                        if (trailerState.trailers.isNotEmpty()) {
-                                                            down = firstPlaylistFocusRequester
+                                                        closeFocusRequester.takeIfAttached()?.let { up = it }
+                                                        if (uniqueTrailers.isNotEmpty()) {
+                                                            firstPlaylistFocusRequester.takeIfAttached()?.let { down = it }
                                                         }
                                                     }
                                                     .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
@@ -647,9 +654,9 @@ fun YouTubeTrailerDialog(
                                                     shape = RoundedCornerShape(8.dp),
                                                     modifier = Modifier
                                                         .focusProperties {
-                                                            up = closeFocusRequester
-                                                            if (trailerState.trailers.isNotEmpty()) {
-                                                                down = firstPlaylistFocusRequester
+                                                            closeFocusRequester.takeIfAttached()?.let { up = it }
+                                                            if (uniqueTrailers.isNotEmpty()) {
+                                                                firstPlaylistFocusRequester.takeIfAttached()?.let { down = it }
                                                             }
                                                         }
                                                         .tvFocusableControl(
@@ -672,9 +679,9 @@ fun YouTubeTrailerDialog(
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
                                                     .focusProperties {
-                                                        up = closeFocusRequester
-                                                        if (trailerState.trailers.isNotEmpty()) {
-                                                            down = firstPlaylistFocusRequester
+                                                        closeFocusRequester.takeIfAttached()?.let { up = it }
+                                                        if (uniqueTrailers.isNotEmpty()) {
+                                                            firstPlaylistFocusRequester.takeIfAttached()?.let { down = it }
                                                         }
                                                     }
                                                     .tvFocusableControl(
@@ -751,7 +758,7 @@ fun YouTubeTrailerDialog(
                                     text = if (trailerState.isSearching) {
                                         "Ricerca risultati su YouTube…"
                                     } else {
-                                        "Trailer trovati su YouTube (${trailerState.trailers.size})"
+                                        "Trailer trovati su YouTube (${uniqueTrailers.size})"
                                     },
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
@@ -764,16 +771,19 @@ fun YouTubeTrailerDialog(
                                 )
                             }
 
-                            if (trailerState.trailers.isNotEmpty()) {
+                            if (uniqueTrailers.isNotEmpty()) {
                                 Spacer(modifier = Modifier.height(4.dp))
                                 LazyRow(
                                     state = playlistState,
                                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    modifier = Modifier.testTag("youtube_trailer_playlist_row")
+                                    modifier = Modifier
+                                        .safeFocusRequester(firstPlaylistFocusRequester)
+                                        .focusGroup()
+                                        .testTag("youtube_trailer_playlist_row")
                                 ) {
                                     itemsIndexed(
-                                        items = trailerState.trailers,
+                                        items = uniqueTrailers,
                                         key = { _, it -> "yt_card_${it.videoId}" }
                                     ) { index, candidate ->
                                         YouTubeModalTrailerCard(
@@ -783,17 +793,13 @@ fun YouTubeTrailerDialog(
                                             listState = playlistState,
                                             onClick = { onSelectTrailer(candidate) },
                                             modifier = Modifier
-                                                .then(
-                                                    if (index == 0) Modifier.focusRequester(firstPlaylistFocusRequester) else Modifier
-                                                )
                                                 .focusProperties {
-                                                    if (index == 0) {
-                                                        up = if (!playbackError.isNullOrBlank()) {
-                                                            retryFocusRequester
-                                                        } else {
-                                                            closeFocusRequester
-                                                        }
+                                                    val upTarget = if (!playbackError.isNullOrBlank()) {
+                                                        retryFocusRequester
+                                                    } else {
+                                                        closeFocusRequester
                                                     }
+                                                    upTarget.takeIfAttached()?.let { up = it }
                                                 }
                                                 .animateItem(
                                                     fadeInSpec = tween(220),

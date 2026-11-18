@@ -103,6 +103,9 @@ import com.example.BuildConfig
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.TmdbApiConfig
 import com.example.ui.GitHubUpdateUiState
+import com.example.ui.components.safeFocusRequester
+import com.example.ui.components.safeRequestFocus
+import com.example.ui.components.takeIfAttached
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -406,19 +409,17 @@ private fun SettingsCategoryTabRow(
                 modifier = Modifier
                     .heightIn(min = 48.dp)
                     .then(
-                        if (index == 0 && firstControlFocusRequester != null) {
-                            Modifier.focusRequester(firstControlFocusRequester)
+                        if (index == 0) {
+                            Modifier.safeFocusRequester(firstControlFocusRequester)
                         } else {
                             Modifier
                         }
                     )
                     .focusProperties {
-                        if (index == 0 && navRailFocusRequester != null) {
-                            left = navRailFocusRequester
+                        if (index == 0) {
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
                         }
-                        if (upFocusRequester != null) {
-                            up = upFocusRequester
-                        }
+                        upFocusRequester.takeIfAttached()?.let { up = it }
                     }
                     .tvFocusableControl(
                         shape = RoundedCornerShape(12.dp),
@@ -544,9 +545,7 @@ private fun PlaybackSettingsPanel(
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
                     .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
                     .testTag("settings_refresh_catalog_button")
@@ -614,7 +613,7 @@ private fun UpdatesSettingsPanel(
                 keyboardActions = KeyboardActions(
                     onDone = {
                         keyboardController?.hide()
-                        runCatching { checkUpdatesFocusRequester.requestFocus() }
+                        checkUpdatesFocusRequester.safeRequestFocus()
                     }
                 ),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -628,16 +627,13 @@ private fun UpdatesSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
-                        down = checkUpdatesFocusRequester
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        checkUpdatesFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { event ->
                         if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
                             keyboardController?.hide()
-                            runCatching { checkUpdatesFocusRequester.requestFocus() }
-                            true
+                            checkUpdatesFocusRequester.safeRequestFocus()
                         } else {
                             false
                         }
@@ -658,11 +654,9 @@ private fun UpdatesSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
-                    .focusRequester(checkUpdatesFocusRequester)
+                    .safeFocusRequester(checkUpdatesFocusRequester)
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
                     .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
                     .testTag("check_github_updates_button")
@@ -804,9 +798,7 @@ private fun UpdatesSettingsPanel(
                             .fillMaxWidth()
                             .heightIn(min = 48.dp)
                             .focusProperties {
-                                if (navRailFocusRequester != null) {
-                                    left = navRailFocusRequester
-                                }
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
                             .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
                             .testTag("download_update_apk_button")
@@ -890,7 +882,7 @@ private fun ApiSourcesSettingsPanel(
                 keyboardActions = KeyboardActions(
                     onDone = {
                         keyboardController?.hide()
-                        runCatching { saveKeyFocusRequester.requestFocus() }
+                        saveKeyFocusRequester.safeRequestFocus()
                     }
                 ),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -904,16 +896,13 @@ private fun ApiSourcesSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
-                        down = saveKeyFocusRequester
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        saveKeyFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { event ->
                         if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
                             keyboardController?.hide()
-                            runCatching { saveKeyFocusRequester.requestFocus() }
-                            true
+                            saveKeyFocusRequester.safeRequestFocus()
                         } else {
                             false
                         }
@@ -939,11 +928,9 @@ private fun ApiSourcesSettingsPanel(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
-                        .focusRequester(saveKeyFocusRequester)
+                        .safeFocusRequester(saveKeyFocusRequester)
                         .focusProperties {
-                            if (navRailFocusRequester != null) {
-                                left = navRailFocusRequester
-                            }
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
                         }
                         .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
                         .testTag("save_tmdb_key_button")
@@ -1006,9 +993,7 @@ private fun ApiSourcesSettingsPanel(
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
                     .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.01f)
             ) {
@@ -1108,9 +1093,7 @@ private fun SystemSettingsPanel(
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
                     .focusProperties {
-                        if (navRailFocusRequester != null) {
-                            left = navRailFocusRequester
-                        }
+                        navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
                     .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
                     .testTag("settings_clear_history_button")
@@ -1244,8 +1227,8 @@ private fun SettingsChoiceRow(
                     .weight(1f)
                     .heightIn(min = 48.dp)
                     .focusProperties {
-                        if (index == 0 && navRailFocusRequester != null) {
-                            left = navRailFocusRequester
+                        if (index == 0) {
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
                         }
                     }
                     .tvFocusableControl(
@@ -1293,9 +1276,7 @@ private fun SettingsSwitchRow(
             .fillMaxWidth()
             .heightIn(min = 56.dp)
             .focusProperties {
-                if (navRailFocusRequester != null) {
-                    left = navRailFocusRequester
-                }
+                navRailFocusRequester.takeIfAttached()?.let { left = it }
             }
             .tvFocusableControl(
                 shape = RoundedCornerShape(10.dp),
@@ -1438,8 +1419,8 @@ private fun BufferPresetGrid(
                             .weight(1f)
                             .heightIn(min = 66.dp)
                             .focusProperties {
-                                if (colIndex == 0 && navRailFocusRequester != null) {
-                                    left = navRailFocusRequester
+                                if (colIndex == 0) {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
                                 }
                             }
                             .tvFocusableControl(
