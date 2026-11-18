@@ -1,8 +1,10 @@
 package com.example.data.local
 
+import androidx.compose.runtime.Immutable
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+@Immutable
 @Entity(tableName = "watch_progress")
 data class WatchProgressEntity(
     @PrimaryKey val id: String, // "movie_{tmdbId}" or "tv_{tmdbId}"
@@ -42,6 +44,7 @@ data class WatchProgressEntity(
         }
 }
 
+@Immutable
 @Entity(tableName = "episode_progress")
 data class EpisodeProgressEntity(
     @PrimaryKey val episodeKey: String, // "tv_{tmdbId}_s{season}_e{episode}"
@@ -61,6 +64,7 @@ data class EpisodeProgressEntity(
         get() = (positionMs / 1000L).coerceAtLeast(0L)
 }
 
+@Immutable
 @Entity(tableName = "my_list")
 data class WatchlistEntity(
     @PrimaryKey val id: String, // "{mediaType}_{tmdbId}"

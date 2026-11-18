@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import android.os.Build
+import androidx.compose.runtime.Immutable
 import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -13,6 +14,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
+@Immutable
 data class YouTubeTrailerCandidate(
     val videoId: String,
     val title: String,
@@ -25,6 +27,7 @@ data class YouTubeTrailerCandidate(
     val watchUrl: String get() = "https://www.youtube.com/watch?v=$videoId"
 }
 
+@Immutable
 data class ResolvedTrailerStream(
     val video: TmdbVideoDto,
     val streamUrl: String,

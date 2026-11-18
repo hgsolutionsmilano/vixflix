@@ -1,5 +1,6 @@
 package com.example.data.repository
 
+import androidx.compose.runtime.Immutable
 import com.example.BuildConfig
 import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.VixFlixDao
@@ -34,6 +35,7 @@ import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 
+@Immutable
 data class CatalogFeed(
     val heroBanner: MediaItem,
     val top10Today: List<MediaItem>,

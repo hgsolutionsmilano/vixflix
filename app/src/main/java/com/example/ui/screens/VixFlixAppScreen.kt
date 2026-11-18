@@ -5,22 +5,15 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkHorizontally
-import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
@@ -95,14 +88,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -323,16 +314,12 @@ fun VixFlixAppScreen(
         )
     }
 
-    val catalogDepthScale by animateFloatAsState(
-        targetValue = if (isDetailVisible) 0.94f else 1f,
-        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
-        label = "catalogDepthScale"
-    )
-    val catalogDepthAlpha by animateFloatAsState(
-        targetValue = if (isDetailVisible) 0.42f else 1f,
-        animationSpec = tween(durationMillis = 280),
-        label = "catalogDepthAlpha"
-    )
+    val watchlistIds = remember(watchlist) {
+        watchlist.asSequence().map { it.id }.toHashSet()
+    }
+    val progressByKey = remember(continueWatching) {
+        continueWatching.associateBy { it.id }
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -378,7 +365,7 @@ fun VixFlixAppScreen(
         // 1. LIVELLO BASE: Catalogo Principale (entra con dissolvenza dopo lo splash iniziale)
         AnimatedVisibility(
             visible = !isSplashVisible,
-            enter = fadeIn(tween(340)),
+            enter = fadeIn(tween(180)),
             exit = ExitTransition.None,
             modifier = Modifier.fillMaxSize()
         ) {
@@ -387,12 +374,7 @@ fun VixFlixAppScreen(
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             modifier = Modifier
                 .fillMaxSize()
-                .focusProperties { canFocus = isCatalogInteractive }
-                .graphicsLayer {
-                    scaleX = catalogDepthScale
-                    scaleY = catalogDepthScale
-                    alpha = catalogDepthAlpha
-                },
+                .focusProperties { canFocus = isCatalogInteractive },
             bottomBar = {
                 if (!useTvNavigationRail) {
                     NavigationBar(
@@ -456,28 +438,7 @@ fun VixFlixAppScreen(
                     AnimatedContent(
                         targetState = sectionKey,
                         transitionSpec = {
-                            when {
-                                targetState.isSearch != initialState.isSearch -> {
-                                    (fadeIn(tween(240)) + slideInVertically(tween(260, easing = FastOutSlowInEasing)) { it / 18 })
-                                        .togetherWith(fadeOut(tween(170)))
-                                }
-                                targetState.tab != initialState.tab -> {
-                                    val forward = targetState.tab.ordinal >= initialState.tab.ordinal
-                                    (fadeIn(tween(260)) + slideInHorizontally(
-                                        animationSpec = tween(280, easing = FastOutSlowInEasing),
-                                        initialOffsetX = { width -> if (forward) width / 10 else -width / 10 }
-                                    )).togetherWith(
-                                        fadeOut(tween(180)) + slideOutHorizontally(
-                                            animationSpec = tween(220, easing = FastOutSlowInEasing),
-                                            targetOffsetX = { width -> if (forward) -width / 14 else width / 14 }
-                                        )
-                                    )
-                                }
-                                else -> {
-                                    (fadeIn(tween(280)) + scaleIn(initialScale = 0.98f, animationSpec = tween(280)))
-                                        .togetherWith(fadeOut(tween(180)))
-                                }
-                            }
+                            fadeIn(tween(120)).togetherWith(fadeOut(tween(90)))
                         },
                         label = "mainContentTransition",
                         modifier = Modifier.fillMaxSize()
@@ -735,8 +696,8 @@ fun VixFlixAppScreen(
                 if (useTvNavigationRail) {
                     AnimatedVisibility(
                         visible = isRailFocused,
-                        enter = fadeIn(tween(180)),
-                        exit = fadeOut(tween(180)),
+                        enter = fadeIn(tween(110)),
+                        exit = fadeOut(tween(90)),
                         modifier = Modifier
                             .fillMaxSize()
                             .zIndex(8f)
@@ -852,7 +813,7 @@ fun VixFlixAppScreen(
 
         // Menu Rapido TV (Long-Press OK su qualsiasi locandina del catalogo)
         tvQuickActionItem?.let { item ->
-            val inWatchlist = watchlist.any { it.id == item.uniqueKey }
+            val inWatchlist = item.uniqueKey in watchlistIds
             TvPosterQuickActionDialog(
                 item = item,
                 isInWatchlist = inWatchlist,
@@ -876,20 +837,16 @@ fun VixFlixAppScreen(
         // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (con stack cronologico tra Titoli Simili)
         androidx.compose.animation.AnimatedVisibility(
             visible = isDetailVisible && !isPlayerVisible,
-            enter = fadeIn(tween(260)) +
-                slideInVertically(tween(320, easing = FastOutSlowInEasing)) { it / 8 } +
-                scaleIn(initialScale = 0.94f, animationSpec = tween(300, easing = FastOutSlowInEasing)),
-            exit = fadeOut(tween(200)) +
-                slideOutVertically(tween(220, easing = FastOutSlowInEasing)) { it / 10 } +
-                scaleOut(targetScale = 0.95f, animationSpec = tween(220)),
+            enter = fadeIn(tween(130)),
+            exit = fadeOut(tween(100)),
             modifier = Modifier
                 .fillMaxSize()
                 .focusProperties { canFocus = !isPlayerVisible }
         ) {
             val currentDetail = lastDetailSnapshot
             if (currentDetail != null) {
-                val savedEntry = continueWatching.firstOrNull { it.id == currentDetail.mediaItem.uniqueKey }
-                val inList = watchlist.any { it.id == currentDetail.mediaItem.uniqueKey }
+                val savedEntry = progressByKey[currentDetail.mediaItem.uniqueKey]
+                val inList = currentDetail.mediaItem.uniqueKey in watchlistIds
                 MediaDetailScreen(
                     state = currentDetail,
                     savedProgress = savedEntry,
@@ -991,7 +948,7 @@ private fun TvExpandableNavigationRail(
 ) {
     val railWidth by animateDpAsState(
         targetValue = if (isExpanded) 216.dp else 72.dp,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
         label = "tvExpandableRailWidth"
     )
 
@@ -999,16 +956,7 @@ private fun TvExpandableNavigationRail(
         modifier = modifier
             .width(railWidth)
             .fillMaxHeight()
-            .shadow(elevation = if (isExpanded) 20.dp else 0.dp)
-            .background(
-                Brush.horizontalGradient(
-                    colors = if (isExpanded) {
-                        listOf(NetflixDarkSurface, NetflixCardSurface.copy(alpha = 0.98f))
-                    } else {
-                        listOf(NetflixDarkSurface, NetflixDarkSurface)
-                    }
-                )
-            )
+            .background(if (isExpanded) NetflixCardSurface else NetflixDarkSurface)
             .statusBarsPadding()
             .padding(top = 14.dp, bottom = 16.dp, start = 10.dp, end = 10.dp)
             .onFocusChanged { onFocusChanged(it.hasFocus) }
@@ -1045,8 +993,8 @@ private fun TvExpandableNavigationRail(
             }
             AnimatedVisibility(
                 visible = isExpanded,
-                enter = fadeIn(tween(180)) + expandHorizontally(tween(180)),
-                exit = fadeOut(tween(120)) + shrinkHorizontally(tween(140))
+                enter = fadeIn(tween(110)) + expandHorizontally(tween(110)),
+                exit = fadeOut(tween(80)) + shrinkHorizontally(tween(90))
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Spacer(modifier = Modifier.width(10.dp))
@@ -1072,24 +1020,16 @@ private fun TvExpandableNavigationRail(
                 val isSelected = selectedTab == tab
                 var itemFocused by remember { mutableStateOf(false) }
 
-                val bgColor by animateColorAsState(
-                    targetValue = when {
-                        itemFocused -> NetflixRed
-                        isSelected -> NetflixElevatedSurface
-                        else -> Color.Transparent
-                    },
-                    animationSpec = tween(160),
-                    label = "railItemBg"
-                )
-                val contentTint by animateColorAsState(
-                    targetValue = when {
-                        itemFocused -> Color.White
-                        isSelected -> NetflixRed
-                        else -> NetflixMutedGray
-                    },
-                    animationSpec = tween(160),
-                    label = "railItemTint"
-                )
+                val bgColor = when {
+                    itemFocused -> NetflixRed
+                    isSelected -> NetflixElevatedSurface
+                    else -> Color.Transparent
+                }
+                val contentTint = when {
+                    itemFocused -> Color.White
+                    isSelected -> NetflixRed
+                    else -> NetflixMutedGray
+                }
 
                 val activateAndMoveRight = {
                     onSelectTab(tab)
@@ -1161,8 +1101,8 @@ private fun TvExpandableNavigationRail(
                         }
                         AnimatedVisibility(
                             visible = isExpanded,
-                            enter = fadeIn(tween(180)) + expandHorizontally(tween(180)),
-                            exit = fadeOut(tween(110)) + shrinkHorizontally(tween(120))
+                            enter = fadeIn(tween(100)) + expandHorizontally(tween(110)),
+                            exit = fadeOut(tween(80)) + shrinkHorizontally(tween(90))
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Spacer(modifier = Modifier.width(12.dp))
@@ -1431,16 +1371,26 @@ private fun CatalogFeedContent(
     bottomPadding: androidx.compose.ui.unit.Dp
 ) {
     val activeMovieGenre = if (selectedTab == NavTab.MOVIES) movieGenreState.selectedGenre else null
-    val heroItem = when (selectedTab) {
-        NavTab.SERIES -> feed.trendingTv.firstOrNull() ?: feed.popularTv.firstOrNull() ?: feed.heroBanner
-        NavTab.MOVIES -> feed.trendingMovies.firstOrNull() ?: feed.popularMovies.firstOrNull() ?: feed.heroBanner
-        else -> feed.heroBanner
+    val heroItem = remember(selectedTab, feed) {
+        when (selectedTab) {
+            NavTab.SERIES -> feed.trendingTv.firstOrNull() ?: feed.popularTv.firstOrNull() ?: feed.heroBanner
+            NavTab.MOVIES -> feed.trendingMovies.firstOrNull() ?: feed.popularMovies.firstOrNull() ?: feed.heroBanner
+            else -> feed.heroBanner
+        }
     }
 
-    val filteredContinueWatching = when (selectedTab) {
-        NavTab.SERIES -> continueWatching.filter { it.mediaType == "tv" }
-        NavTab.MOVIES -> continueWatching.filter { it.mediaType == "movie" }
-        else -> continueWatching
+    val filteredContinueWatching = remember(selectedTab, continueWatching) {
+        when (selectedTab) {
+            NavTab.SERIES -> continueWatching.filter { it.mediaType == "tv" }
+            NavTab.MOVIES -> continueWatching.filter { it.mediaType == "movie" }
+            else -> continueWatching
+        }
+    }
+    val watchlistIds = remember(watchlist) {
+        watchlist.asSequence().map { it.id }.toHashSet()
+    }
+    val progressByKey = remember(continueWatching) {
+        continueWatching.associateBy { it.id }
     }
 
     val showHero = selectedTab != NavTab.NEW_POPULAR && activeMovieGenre == null
@@ -1460,6 +1410,12 @@ private fun CatalogFeedContent(
             else -> 2
         }
 
+        val genreRows = remember(movieGenreState.movies, gridColumns) {
+            movieGenreState.movies
+                .distinctBy { it.uniqueKey }
+                .chunked(gridColumns)
+        }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -1467,10 +1423,10 @@ private fun CatalogFeedContent(
             contentPadding = PaddingValues(bottom = bottomPadding + 32.dp)
         ) {
             if (selectedTab == NavTab.MOVIES) {
-                item(key = "movies_top_spacer") {
+                item(key = "movies_top_spacer", contentType = "spacer") {
                     Spacer(modifier = Modifier.height(if (isTvLayout) 74.dp else 118.dp))
                 }
-                item(key = "movies_genre_chip_bar") {
+                item(key = "movies_genre_chip_bar", contentType = "genre_bar") {
                     MovieGenreChipBar(
                         genres = movieGenreState.genres,
                         selectedGenre = activeMovieGenre,
@@ -1489,9 +1445,9 @@ private fun CatalogFeedContent(
             }
 
             if (showHero) {
-                item(key = "hero_${heroItem.uniqueKey}") {
-                    val isInWatchlist = watchlist.any { it.id == heroItem.uniqueKey }
-                    val savedProgress = continueWatching.firstOrNull { it.id == heroItem.uniqueKey }
+                item(key = "hero_${heroItem.uniqueKey}", contentType = "hero") {
+                    val isInWatchlist = heroItem.uniqueKey in watchlistIds
+                    val savedProgress = progressByKey[heroItem.uniqueKey]
                     NetflixHeroBanner(
                         item = heroItem,
                         isInWatchlist = isInWatchlist,
@@ -1507,14 +1463,14 @@ private fun CatalogFeedContent(
                     )
                 }
             } else if (selectedTab == NavTab.NEW_POPULAR) {
-                item(key = "new_popular_top_spacer") {
+                item(key = "new_popular_top_spacer", contentType = "spacer") {
                     Spacer(modifier = Modifier.height(if (isTvLayout) 84.dp else 118.dp))
                 }
             }
 
             // Sezione "Continua a guardare" (Room DB + startAt VixSrc API)
             if (hasContinueWatching) {
-                item(key = "row_continue_watching") {
+                item(key = "row_continue_watching", contentType = "continue_watching") {
                     ContinueWatchingSection(
                         entries = filteredContinueWatching,
                         onResumeClick = onResumeContinueWatching,
@@ -1535,7 +1491,7 @@ private fun CatalogFeedContent(
                 val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
                 val trendingMoviesIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
 
-                item(key = "row_top_10") {
+                item(key = "row_top_10", contentType = "top10_row") {
                     Top10Section(
                         title = "Top 10 in Italia Oggi",
                         items = feed.top10Today,
@@ -1548,7 +1504,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_trending_movies") {
+                item(key = "row_trending_movies", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Film di Tendenza su TMDB",
                         items = feed.trendingMovies,
@@ -1561,7 +1517,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_trending_tv") {
+                item(key = "row_trending_tv", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Serie TV del Momento",
                         items = feed.trendingTv,
@@ -1572,7 +1528,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_popular_movies") {
+                item(key = "row_popular_movies", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Film Popolari su VixFlix",
                         items = feed.popularMovies,
@@ -1583,7 +1539,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_popular_tv") {
+                item(key = "row_popular_tv", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Serie TV Acclamate",
                         items = feed.popularTv,
@@ -1594,7 +1550,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_now_playing") {
+                item(key = "row_now_playing", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Ora al Cinema",
                         items = feed.nowPlayingMovies,
@@ -1605,7 +1561,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_top_rated") {
+                item(key = "row_top_rated", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Più Votati dalla Critica",
                         items = feed.topRatedMovies,
@@ -1616,7 +1572,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_action") {
+                item(key = "row_action", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Azione & Adrenalina",
                         items = feed.actionMovies,
@@ -1627,7 +1583,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "row_scifi") {
+                item(key = "row_scifi", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Fantascienza & Mondi Futuri",
                         items = feed.sciFiMovies,
@@ -1641,7 +1597,7 @@ private fun CatalogFeedContent(
             }
 
             NavTab.SERIES -> {
-                item(key = "tv_trending") {
+                item(key = "tv_trending", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Serie TV in Tendenza",
                         items = feed.trendingTv,
@@ -1654,7 +1610,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "tv_popular") {
+                item(key = "tv_popular", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Serie TV Popolari",
                         items = feed.popularTv,
@@ -1669,7 +1625,7 @@ private fun CatalogFeedContent(
 
             NavTab.MOVIES -> {
                 if (activeMovieGenre != null) {
-                    item(key = "movies_genre_header_${activeMovieGenre.id}") {
+                    item(key = "movies_genre_header_${activeMovieGenre.id}", contentType = "genre_header") {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1722,7 +1678,7 @@ private fun CatalogFeedContent(
 
                     when {
                         movieGenreState.isLoading -> {
-                            item(key = "movies_genre_loading") {
+                            item(key = "movies_genre_loading", contentType = "status") {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1743,7 +1699,7 @@ private fun CatalogFeedContent(
                         }
 
                         movieGenreState.errorMessage != null -> {
-                            item(key = "movies_genre_error") {
+                            item(key = "movies_genre_error", contentType = "status") {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1795,7 +1751,7 @@ private fun CatalogFeedContent(
                         }
 
                         movieGenreState.movies.isEmpty() -> {
-                            item(key = "movies_genre_empty") {
+                            item(key = "movies_genre_empty", contentType = "status") {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1813,12 +1769,10 @@ private fun CatalogFeedContent(
                         }
 
                         else -> {
-                            val genreRows = movieGenreState.movies
-                                .distinctBy { it.uniqueKey }
-                                .chunked(gridColumns)
                             items(
                                 count = genreRows.size,
-                                key = { rowIdx -> "genre_${activeMovieGenre.id}_row_$rowIdx" }
+                                key = { rowIdx -> "genre_${activeMovieGenre.id}_row_$rowIdx" },
+                                contentType = { "genre_grid_row" }
                             ) { rowIdx ->
                                 val rowItems = genreRows[rowIdx]
                                 Row(
@@ -1864,7 +1818,7 @@ private fun CatalogFeedContent(
                         }
                     }
                 } else {
-                    item(key = "movies_trending") {
+                    item(key = "movies_trending", contentType = "media_row") {
                         MediaCatalogRow(
                             title = "Film di Tendenza",
                             items = feed.trendingMovies,
@@ -1877,7 +1831,7 @@ private fun CatalogFeedContent(
                             navRailFocusRequester = navRailFocusRequester
                         )
                     }
-                    item(key = "movies_now_playing") {
+                    item(key = "movies_now_playing", contentType = "media_row") {
                         MediaCatalogRow(
                             title = "Ora al Cinema",
                             items = feed.nowPlayingMovies,
@@ -1888,7 +1842,7 @@ private fun CatalogFeedContent(
                             navRailFocusRequester = navRailFocusRequester
                         )
                     }
-                    item(key = "movies_popular") {
+                    item(key = "movies_popular", contentType = "media_row") {
                         MediaCatalogRow(
                             title = "Film Popolari",
                             items = feed.popularMovies,
@@ -1899,7 +1853,7 @@ private fun CatalogFeedContent(
                             navRailFocusRequester = navRailFocusRequester
                         )
                     }
-                    item(key = "movies_top_rated") {
+                    item(key = "movies_top_rated", contentType = "media_row") {
                         MediaCatalogRow(
                             title = "Film Più Votati",
                             items = feed.topRatedMovies,
@@ -1910,7 +1864,7 @@ private fun CatalogFeedContent(
                             navRailFocusRequester = navRailFocusRequester
                         )
                     }
-                    item(key = "movies_action") {
+                    item(key = "movies_action", contentType = "media_row") {
                         MediaCatalogRow(
                             title = "Azione & Avventura",
                             items = feed.actionMovies,
@@ -1921,7 +1875,7 @@ private fun CatalogFeedContent(
                             navRailFocusRequester = navRailFocusRequester
                         )
                     }
-                    item(key = "movies_scifi") {
+                    item(key = "movies_scifi", contentType = "media_row") {
                         MediaCatalogRow(
                             title = "Fantascienza",
                             items = feed.sciFiMovies,
@@ -1939,7 +1893,7 @@ private fun CatalogFeedContent(
                 val top10IsFirstRow = !hasContinueWatching && feed.top10Today.isNotEmpty()
                 val cinemaIsFirstRow = !hasContinueWatching && feed.top10Today.isEmpty()
 
-                item(key = "new_top10") {
+                item(key = "new_top10", contentType = "top10_row") {
                     Top10Section(
                         title = "Top 10 in Italia Oggi",
                         items = feed.top10Today,
@@ -1952,7 +1906,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "new_cinema") {
+                item(key = "new_cinema", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Nuove Uscite al Cinema",
                         items = feed.nowPlayingMovies,
@@ -1965,7 +1919,7 @@ private fun CatalogFeedContent(
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
-                item(key = "new_tv") {
+                item(key = "new_tv", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Serie TV Nuove e Popolari",
                         items = feed.trendingTv,
@@ -2036,7 +1990,11 @@ private fun SearchResultsGrid(
             .fillMaxSize()
             .testTag("search_results_grid")
     ) {
-        itemsIndexed(safeResults, key = { _, it -> "search_${it.uniqueKey}" }) { index, item ->
+        itemsIndexed(
+            items = safeResults,
+            key = { _, it -> "search_${it.uniqueKey}" },
+            contentType = { _, _ -> "search_poster" }
+        ) { index, item ->
             val itemFocusRequester = if (index == 0) {
                 firstItemFocusRequester
             } else {
@@ -2058,11 +2016,6 @@ private fun SearchResultsGrid(
                             upFocusRequester.takeIfAttached()?.let { up = it }
                         }
                     }
-                    .animateItem(
-                        fadeInSpec = tween(250),
-                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                        fadeOutSpec = tween(180)
-                    )
             )
         }
     }
@@ -2087,6 +2040,20 @@ private fun MyListScreen(
     contentPadding: PaddingValues
 ) {
     val safeWatchlist = remember(watchlist) { watchlist.distinctBy { it.id } }
+    val mappedItems = remember(safeWatchlist) {
+        safeWatchlist.map {
+            MediaItem(
+                id = it.tmdbId,
+                mediaType = it.mediaType,
+                title = it.title,
+                overview = it.overview,
+                posterPath = it.posterPath,
+                backdropPath = it.backdropPath,
+                voteAverage = it.voteAverage,
+                releaseYear = it.releaseYear
+            )
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -2095,7 +2062,7 @@ private fun MyListScreen(
         contentPadding = contentPadding
     ) {
         if (continueWatching.isNotEmpty()) {
-            item(key = "my_list_continue_watching") {
+            item(key = "my_list_continue_watching", contentType = "continue_watching") {
                 ContinueWatchingSection(
                     entries = continueWatching,
                     onResumeClick = onResumeContinueWatching,
@@ -2126,7 +2093,7 @@ private fun MyListScreen(
         }
 
         if (safeWatchlist.isEmpty() && continueWatching.isEmpty()) {
-            item(key = "my_list_empty") {
+            item(key = "my_list_empty", contentType = "empty_state") {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2181,21 +2148,9 @@ private fun MyListScreen(
                     }
                 }
             }
-        } else if (safeWatchlist.isNotEmpty()) {
-            val mappedItems = safeWatchlist.map {
-                MediaItem(
-                    id = it.tmdbId,
-                    mediaType = it.mediaType,
-                    title = it.title,
-                    overview = it.overview,
-                    posterPath = it.posterPath,
-                    backdropPath = it.backdropPath,
-                    voteAverage = it.voteAverage,
-                    releaseYear = it.releaseYear
-                )
-            }
+        } else if (mappedItems.isNotEmpty()) {
             val watchlistIsFirstRow = continueWatching.isEmpty()
-            item(key = "my_list_watchlist") {
+            item(key = "my_list_watchlist", contentType = "media_row") {
                 MediaCatalogRow(
                     title = "Salvati nella Mia Lista (${mappedItems.size})",
                     items = mappedItems,

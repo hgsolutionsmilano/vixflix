@@ -1,5 +1,6 @@
 package com.example.data.remote
 
+import androidx.compose.runtime.Immutable
 import com.squareup.moshi.Json
 
 data class TmdbPagedResponse<T>(
@@ -27,6 +28,7 @@ data class TmdbMediaItemDto(
     @Json(name = "popularity") val popularity: Double? = null
 )
 
+@Immutable
 data class MediaItem(
     val id: Int,
     val mediaType: String, // "movie" or "tv"
@@ -78,6 +80,7 @@ fun TmdbMediaItemDto.toDomain(defaultMediaType: String = "movie"): MediaItem? {
     )
 }
 
+@Immutable
 data class TmdbGenreDto(
     @Json(name = "id") val id: Int,
     @Json(name = "name") val name: String
@@ -87,6 +90,7 @@ data class TmdbGenresResponse(
     @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList()
 )
 
+@Immutable
 data class TmdbCastMemberDto(
     @Json(name = "id") val id: Int,
     @Json(name = "name") val name: String,
@@ -101,6 +105,7 @@ data class TmdbCreditsDto(
     @Json(name = "cast") val cast: List<TmdbCastMemberDto> = emptyList()
 )
 
+@Immutable
 data class TmdbSeasonSummaryDto(
     @Json(name = "id") val id: Int,
     @Json(name = "season_number") val seasonNumber: Int,
@@ -110,6 +115,7 @@ data class TmdbSeasonSummaryDto(
     @Json(name = "air_date") val airDate: String? = null
 )
 
+@Immutable
 data class TmdbVideoDto(
     @Json(name = "id") val id: String,
     @Json(name = "key") val key: String,
@@ -175,6 +181,7 @@ data class TmdbTvDetailsDto(
     @Json(name = "videos") val videos: TmdbVideosResponse? = null
 )
 
+@Immutable
 data class TmdbEpisodeDto(
     @Json(name = "id") val id: Int,
     @Json(name = "episode_number") val episodeNumber: Int,
@@ -197,6 +204,7 @@ data class TmdbSeasonDetailsDto(
     @Json(name = "episodes") val episodes: List<TmdbEpisodeDto> = emptyList()
 )
 
+@Immutable
 data class MediaDetails(
     val item: MediaItem,
     val tagline: String,

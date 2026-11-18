@@ -18,38 +18,40 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
+import androidx.activity.compose.BackHandler
 import java.util.concurrent.atomic.AtomicBoolean
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -58,8 +60,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -92,16 +92,18 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Scale
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbTrailerResolver
@@ -274,84 +276,86 @@ fun YouTubeTrailerDialog(
         }
     }
 
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = true
-        )
+    BackHandler(enabled = true) {
+        onClose()
+    }
+
+    // Scrim scuro cinematografico in-window (evita una seconda Window Dialog sopra la WebView)
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(50f)
+            .background(NetflixBlack.copy(alpha = 0.90f))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClose
+            )
+            .safeFocusRequester(modalPlayerFocusRequester)
+            .focusable()
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.key) {
+                        Key.Escape, Key.Back -> {
+                            onClose()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.MediaPlayPause -> {
+                            togglePlayPause()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.MediaPlay -> {
+                            playAction()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.MediaPause -> {
+                            pauseAction()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.MediaFastForward -> {
+                            seekToAction(currentPosMs + 10_000L)
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.MediaRewind -> {
+                            seekToAction(currentPosMs - 10_000L)
+                            return@onPreviewKeyEvent true
+                        }
+                        else -> Unit
+                    }
+                }
+                false
+            }
+            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .testTag("in_app_trailer_overlay"),
+        contentAlignment = Alignment.Center
     ) {
-        // Scrim scuro cinematografico centrato
+        val modalMaxWidth = (maxWidth * 0.96f).coerceAtMost(880.dp)
+        val maxStageHeight = (maxHeight - 230.dp).coerceAtLeast(150.dp)
+        val stageWidth = modalMaxWidth.coerceAtMost(maxStageHeight * (16f / 9f))
+        val hasActiveEmbedStage = shouldMountWebView &&
+            playbackError.isNullOrBlank() &&
+            !trailerState.isSearching &&
+            !trailerState.isLoadingStream &&
+            !activeVideoId.isNullOrBlank()
+
+        // Contenitore modale piatto (senza Card shadowElevation o verticalScroll attorno alla WebView)
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .background(NetflixBlack.copy(alpha = 0.88f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClose
-                )
-                .safeFocusRequester(modalPlayerFocusRequester)
-                .focusable()
-                .onPreviewKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyDown) {
-                        when (keyEvent.key) {
-                            Key.MediaPlayPause -> {
-                                togglePlayPause()
-                                return@onPreviewKeyEvent true
-                            }
-                            Key.MediaPlay -> {
-                                playAction()
-                                return@onPreviewKeyEvent true
-                            }
-                            Key.MediaPause -> {
-                                pauseAction()
-                                return@onPreviewKeyEvent true
-                            }
-                            Key.MediaFastForward -> {
-                                seekToAction(currentPosMs + 10_000L)
-                                return@onPreviewKeyEvent true
-                            }
-                            Key.MediaRewind -> {
-                                seekToAction(currentPosMs - 10_000L)
-                                return@onPreviewKeyEvent true
-                            }
-                            else -> Unit
-                        }
-                    }
-                    false
-                }
-                .padding(horizontal = 12.dp, vertical = 16.dp)
-                .testTag("in_app_trailer_overlay"),
-            contentAlignment = Alignment.Center
+                .width(modalMaxWidth)
         ) {
-            // Card Modale Cinematografica Centrata (senza layer scale su AndroidView/WebView)
-            Box(
+            Column(
                 modifier = Modifier
-                    .widthIn(max = 880.dp)
-                    .fillMaxWidth(0.96f)
+                    .fillMaxWidth()
+                    .background(NetflixCardSurface, RoundedCornerShape(14.dp))
+                    .border(1.dp, NetflixElevatedSurface, RoundedCornerShape(14.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {} // Blocca la propagazione click verso lo scrim esterno
+                    )
+                    .testTag("youtube_trailer_modal_card")
             ) {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 24.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {} // Blocca la propagazione click verso lo scrim esterno
-                        )
-                        .testTag("youtube_trailer_modal_card")
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
-                    ) {
                         // Linea accento superiore rossa cinematografica
                         Box(
                             modifier = Modifier
@@ -489,10 +493,12 @@ fun YouTubeTrailerDialog(
                         // 2. PALCOSCENICO VIDEO CENTRATO 16:9 CON PLAYER UFFICIALE YOUTUBE EMBED
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .align(Alignment.CenterHorizontally)
+                                .width(stageWidth)
                                 .aspectRatio(16f / 9f)
-                                .background(Color.Black)
-                                .testTag("fullscreen_trailer_player_view")
+                                .then(if (!hasActiveEmbedStage) Modifier.background(Color.Black) else Modifier)
+                                .testTag("fullscreen_trailer_player_view"),
+                            contentAlignment = Alignment.Center
                         ) {
                             if (playbackError.isNullOrBlank() &&
                                 !trailerState.isSearching &&
@@ -704,8 +710,21 @@ fun YouTubeTrailerDialog(
                                 ) {
                                     val bgThumb = selectedVideo?.thumbnailUrl ?: mediaItem.backdropUrl ?: mediaItem.posterUrl
                                     if (!bgThumb.isNullOrBlank()) {
+                                        val density = LocalDensity.current
+                                        val wPx = with(density) { 480.dp.roundToPx() }
+                                        val hPx = with(density) { 270.dp.roundToPx() }
+                                        val thumbModel = remember(context, bgThumb, wPx, hPx) {
+                                            ImageRequest.Builder(context)
+                                                .data(bgThumb)
+                                                .size(wPx, hPx)
+                                                .precision(Precision.INEXACT)
+                                                .scale(Scale.FILL)
+                                                .allowRgb565(true)
+                                                .crossfade(false)
+                                                .build()
+                                        }
                                         AsyncImage(
-                                            model = bgThumb,
+                                            model = thumbModel,
                                             contentDescription = null,
                                             contentScale = ContentScale.Crop,
                                             alpha = 0.30f,
@@ -784,7 +803,8 @@ fun YouTubeTrailerDialog(
                                 ) {
                                     itemsIndexed(
                                         items = uniqueTrailers,
-                                        key = { _, it -> "yt_card_${it.videoId}" }
+                                        key = { _, it -> "yt_card_${it.videoId}" },
+                                        contentType = { _, _ -> "youtube_trailer_card" }
                                     ) { index, candidate ->
                                         YouTubeModalTrailerCard(
                                             candidate = candidate,
@@ -801,10 +821,6 @@ fun YouTubeTrailerDialog(
                                                     }
                                                     upTarget.takeIfAttached()?.let { up = it }
                                                 }
-                                                .animateItem(
-                                                    fadeInSpec = tween(220),
-                                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                                )
                                         )
                                     }
                                 }
@@ -817,8 +833,6 @@ fun YouTubeTrailerDialog(
                                 )
                             }
                         }
-                    }
-                }
             }
         }
     }
@@ -835,33 +849,43 @@ private fun YouTubeModalTrailerCard(
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val thumbRequest = remember(context, candidate.thumbnailUrl) {
+    val density = LocalDensity.current
+    val thumbWidthPx = with(density) { 206.dp.roundToPx() }
+    val thumbHeightPx = with(density) { 116.dp.roundToPx() }
+    val thumbRequest = remember(context, candidate.thumbnailUrl, thumbWidthPx, thumbHeightPx) {
         ImageRequest.Builder(context)
             .data(candidate.thumbnailUrl)
-            .crossfade(250)
+            .size(thumbWidthPx, thumbHeightPx)
+            .precision(Precision.INEXACT)
+            .scale(Scale.FILL)
+            .allowRgb565(true)
+            .crossfade(false)
             .build()
     }
 
-    Card(
-        shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) NetflixElevatedSurface else NetflixCardSurface
-        ),
-        border = BorderStroke(
-            width = if (isSelected || isFocused) 2.dp else 1.dp,
-            color = when {
-                isFocused -> NetflixWhite
-                isSelected -> NetflixRed
-                else -> NetflixElevatedSurface
-            }
-        ),
+    val cardShape = RoundedCornerShape(10.dp)
+    Box(
         modifier = modifier
             .width(206.dp)
+            .background(
+                color = if (isSelected) NetflixElevatedSurface else NetflixCardSurface,
+                shape = cardShape
+            )
+            .border(
+                width = if (isSelected || isFocused) 2.dp else 1.dp,
+                color = when {
+                    isFocused -> NetflixWhite
+                    isSelected -> NetflixRed
+                    else -> NetflixElevatedSurface
+                },
+                shape = cardShape
+            )
+            .clip(cardShape)
             .animatedPosterShowcase(
                 itemIndex = itemIndex,
                 listState = listState,
                 isFocused = isFocused,
-                shape = RoundedCornerShape(10.dp),
+                shape = cardShape,
                 focusedScale = 1.07f,
                 onFocusedChanged = { isFocused = it },
                 onClick = onClick
@@ -999,8 +1023,23 @@ private fun YouTubeEmulatorSafePreviewCard(
             .testTag("youtube_safe_preview_card"),
         contentAlignment = Alignment.Center
     ) {
+        val safeThumb = thumbnailUrl.ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" }
+        val context = LocalContext.current
+        val density = LocalDensity.current
+        val wPx = with(density) { 480.dp.roundToPx() }
+        val hPx = with(density) { 270.dp.roundToPx() }
+        val previewModel = remember(context, safeThumb, wPx, hPx) {
+            ImageRequest.Builder(context)
+                .data(safeThumb)
+                .size(wPx, hPx)
+                .precision(Precision.INEXACT)
+                .scale(Scale.FILL)
+                .allowRgb565(true)
+                .crossfade(false)
+                .build()
+        }
         AsyncImage(
-            model = thumbnailUrl.ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" },
+            model = previewModel,
             contentDescription = title,
             contentScale = ContentScale.Crop,
             alpha = 0.42f,
@@ -1138,7 +1177,7 @@ private fun YouTubeWebEmbedPlayer(
 
     val webView = remember(context, rendererRestartNonce) {
         WebView(context).apply {
-            setBackgroundColor(android.graphics.Color.BLACK)
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
             keepScreenOn = true
             setLayerType(View.LAYER_TYPE_NONE, null)
             isFocusable = !isTvDevice
@@ -1308,6 +1347,7 @@ private fun YouTubeWebEmbedPlayer(
             }
         }
 
+        webView.onResume()
         onWebViewReady(webView)
         onDispose {
             onWebViewReady(null)
@@ -1429,12 +1469,11 @@ internal fun buildYouTubeEmbedHtml(
               padding: 0;
               width: 100%;
               height: 100%;
-              background-color: #000000;
+              background-color: transparent;
               overflow: hidden;
             }
             #youtube-player {
-              position: fixed;
-              inset: 0;
+              display: block;
               width: 100%;
               height: 100%;
               border: 0;

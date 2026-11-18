@@ -2,17 +2,9 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -77,17 +69,20 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Scale
 import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.WatchProgressEntity
@@ -160,16 +155,12 @@ fun MediaDetailScreen(
             targetState = state,
             contentKey = { it.mediaItem.uniqueKey },
             transitionSpec = {
-                (fadeIn(tween(280)) +
-                    slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 10 } +
-                    scaleIn(initialScale = 0.97f, animationSpec = tween(280)))
-                    .togetherWith(
-                        fadeOut(tween(180)) +
-                            slideOutHorizontally(tween(220, easing = FastOutSlowInEasing)) { -it / 12 }
-                    )
+                fadeIn(tween(130)).togetherWith(fadeOut(tween(90)))
             },
             label = "detailItemTransition",
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .focusProperties { canFocus = isInteractive && state.activeTrailer == null }
         ) { currentState ->
             val currentItem = currentState.mediaItem
             val details = currentState.details
@@ -241,16 +232,6 @@ fun MediaDetailScreen(
                 else -> null
             }
 
-            var backdropRevealStarted by remember(currentItem.uniqueKey) { mutableStateOf(false) }
-            LaunchedEffect(currentItem.uniqueKey) {
-                backdropRevealStarted = true
-            }
-            val backdropScale by animateFloatAsState(
-                targetValue = if (backdropRevealStarted) 1f else 1.07f,
-                animationSpec = tween(durationMillis = 560, easing = FastOutSlowInEasing),
-                label = "detailBackdropSettle"
-            )
-
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -260,23 +241,21 @@ fun MediaDetailScreen(
                 contentPadding = PaddingValues(bottom = 40.dp)
             ) {
                 // Header con Backdrop
-                item {
+                item(key = "detail_backdrop_${currentItem.uniqueKey}", contentType = "detail_backdrop") {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(280.dp)
-                            .clip(RoundedCornerShape(0.dp))
                     ) {
                         AsyncImage(
-                            model = rememberDetailImageRequest(currentItem.backdropUrl ?: currentItem.posterUrl),
+                            model = rememberSizedDetailImageRequest(
+                                url = currentItem.backdropUrl ?: currentItem.posterUrl,
+                                widthDp = 640.dp,
+                                heightDp = 280.dp
+                            ),
                             contentDescription = currentItem.title,
                             contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer {
-                                    scaleX = backdropScale
-                                    scaleY = backdropScale
-                                }
+                            modifier = Modifier.fillMaxSize()
                         )
 
                         Box(
@@ -396,7 +375,7 @@ fun MediaDetailScreen(
                 }
 
             // Info principali + Pulsanti Riproduci / Riprendi / Guarda Trailer
-            item {
+            item(key = "detail_main_info_${currentItem.uniqueKey}", contentType = "detail_info") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -529,21 +508,9 @@ fun MediaDetailScreen(
                         "Riproduci Ora"
                     }
 
-                    val watchlistBg by animateColorAsState(
-                        targetValue = if (isInWatchlist) NetflixMatchGreen.copy(alpha = 0.22f) else NetflixCardSurface,
-                        animationSpec = tween(220),
-                        label = "detailWatchlistBg"
-                    )
-                    val watchlistBorder by animateColorAsState(
-                        targetValue = if (isInWatchlist) NetflixMatchGreen else NetflixElevatedSurface,
-                        animationSpec = tween(220),
-                        label = "detailWatchlistBorder"
-                    )
-                    val watchlistTint by animateColorAsState(
-                        targetValue = if (isInWatchlist) NetflixMatchGreen else NetflixWhite,
-                        animationSpec = tween(220),
-                        label = "detailWatchlistTint"
-                    )
+                    val watchlistBg = if (isInWatchlist) NetflixMatchGreen.copy(alpha = 0.22f) else NetflixCardSurface
+                    val watchlistBorder = if (isInWatchlist) NetflixMatchGreen else NetflixElevatedSurface
+                    val watchlistTint = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
 
                     // Riga unica con icone rotonde: Riproduci, Trailer YouTube, La Mia Lista (+ Dall'inizio se presente)
                     val topReturnTarget = if (detailStackDepth > 1) detailBackFocusRequester else detailCloseFocusRequester
@@ -656,7 +623,7 @@ fun MediaDetailScreen(
 
             // SEZIONE DEDICATA: Trailer & Video Ufficiali da TMDB (/movie/{id}/videos o /tv/{id}/videos)
             if (trailers.isNotEmpty()) {
-                item {
+                item(key = "detail_trailers_section", contentType = "detail_trailers") {
                     Spacer(modifier = Modifier.height(20.dp))
                     Column(
                         modifier = Modifier
@@ -706,7 +673,11 @@ fun MediaDetailScreen(
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            itemsIndexed(trailers, key = { _, it -> it.id.ifBlank { it.key } }) { index, video ->
+                            itemsIndexed(
+                                items = trailers,
+                                key = { _, it -> it.id.ifBlank { it.key } },
+                                contentType = { _, _ -> "detail_trailer_card" }
+                            ) { index, video ->
                                 TmdbTrailerCard(
                                     video = video,
                                     fallbackBackdropUrl = currentItem.backdropUrl,
@@ -722,10 +693,6 @@ fun MediaDetailScreen(
                                                 detailPlayFocusRequester.takeIfAttached()?.let { up = it }
                                             }
                                         }
-                                        .animateItem(
-                                            fadeInSpec = tween(250),
-                                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                        )
                                 )
                             }
                         }
@@ -735,7 +702,7 @@ fun MediaDetailScreen(
 
             // Cast TMDB
             if (castList.isNotEmpty()) {
-                item {
+                item(key = "detail_cast_section", contentType = "detail_cast") {
                     Spacer(modifier = Modifier.height(18.dp))
                     Text(
                         text = "Cast Principale",
@@ -747,14 +714,12 @@ fun MediaDetailScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(castList, key = { it.id }) { actor ->
-                            CastCard(
-                                actor = actor,
-                                modifier = Modifier.animateItem(
-                                    fadeInSpec = tween(240),
-                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                )
-                            )
+                        items(
+                            items = castList,
+                            key = { it.id },
+                            contentType = { "detail_cast_card" }
+                        ) { actor ->
+                            CastCard(actor = actor)
                         }
                     }
                 }
@@ -762,7 +727,7 @@ fun MediaDetailScreen(
 
             // Selettore Stagioni ed Episodi per Serie TV
             if (currentItem.isSeries) {
-                item {
+                item(key = "detail_seasons_header", contentType = "detail_seasons") {
                     Spacer(modifier = Modifier.height(22.dp))
                     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                         Text(
@@ -783,16 +748,8 @@ fun MediaDetailScreen(
                             ) {
                                 seasons.forEachIndexed { sIndex, season ->
                                     val isSelected = currentState.selectedSeason == season.seasonNumber
-                                    val seasonBg by animateColorAsState(
-                                        targetValue = if (isSelected) NetflixRed else NetflixCardSurface,
-                                        animationSpec = tween(200),
-                                        label = "seasonChipBg"
-                                    )
-                                    val seasonBorder by animateColorAsState(
-                                        targetValue = if (isSelected) NetflixRed else NetflixElevatedSurface,
-                                        animationSpec = tween(200),
-                                        label = "seasonChipBorder"
-                                    )
+                                    val seasonBg = if (isSelected) NetflixRed else NetflixCardSurface
+                                    val seasonBorder = if (isSelected) NetflixRed else NetflixElevatedSurface
                                     Surface(
                                         color = seasonBg,
                                         shape = RoundedCornerShape(8.dp),
@@ -827,7 +784,7 @@ fun MediaDetailScreen(
                 }
 
                 if (currentState.isLoadingEpisodes) {
-                    item {
+                    item(key = "detail_episodes_loading", contentType = "detail_status") {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -840,7 +797,8 @@ fun MediaDetailScreen(
                 } else {
                     itemsIndexed(
                         episodesList,
-                        key = { _, ep -> "ep_${ep.seasonNumber}_${ep.episodeNumber}" }
+                        key = { _, ep -> "ep_${ep.seasonNumber}_${ep.episodeNumber}" },
+                        contentType = { _, _ -> "detail_episode_row" }
                     ) { epIndex, ep ->
                         EpisodeRowItem(
                             episode = ep,
@@ -858,11 +816,6 @@ fun MediaDetailScreen(
                                         firstSeasonFocus.takeIfAttached()?.let { up = it }
                                     }
                                 }
-                                .animateItem(
-                                    fadeInSpec = tween(240),
-                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                    fadeOutSpec = tween(180)
-                                )
                         )
                     }
                 }
@@ -875,7 +828,7 @@ fun MediaDetailScreen(
                     trailers.isNotEmpty() -> firstTrailerFocus
                     else -> detailPlayFocusRequester
                 }
-                item {
+                item(key = "detail_similar_section", contentType = "detail_similar") {
                     Spacer(modifier = Modifier.height(20.dp))
                     MediaCatalogRow(
                         title = "Titoli Simili su TMDB",
@@ -931,7 +884,6 @@ private fun DetailRoundActionButton(
             color = containerColor,
             shape = CircleShape,
             border = if (borderColor != Color.Transparent) BorderStroke(1.dp, borderColor) else null,
-            shadowElevation = 6.dp,
             modifier = Modifier
                 .size(56.dp)
                 .safeFocusRequester(focusRequester)
@@ -975,15 +927,26 @@ private fun DetailRoundActionButton(
 }
 
 @Composable
-private fun rememberDetailImageRequest(url: String?): Any? {
+private fun rememberSizedDetailImageRequest(
+    url: String?,
+    widthDp: Dp,
+    heightDp: Dp
+): Any? {
     val context = LocalContext.current
-    return remember(context, url) {
+    val density = LocalDensity.current
+    val widthPx = with(density) { widthDp.roundToPx().coerceAtLeast(1) }
+    val heightPx = with(density) { heightDp.roundToPx().coerceAtLeast(1) }
+    return remember(context, url, widthPx, heightPx) {
         if (url.isNullOrBlank()) {
             null
         } else {
             ImageRequest.Builder(context)
                 .data(url)
-                .crossfade(280)
+                .size(widthPx, heightPx)
+                .precision(Precision.INEXACT)
+                .scale(Scale.FILL)
+                .allowRgb565(true)
+                .crossfade(false)
                 .build()
         }
     }
@@ -1025,7 +988,11 @@ private fun TmdbTrailerCard(
                     .background(NetflixDarkSurface)
             ) {
                 AsyncImage(
-                    model = rememberDetailImageRequest(if (video.isYouTube) video.thumbnailUrl else fallbackBackdropUrl),
+                    model = rememberSizedDetailImageRequest(
+                        url = if (video.isYouTube) video.thumbnailUrl else fallbackBackdropUrl,
+                        widthDp = 236.dp,
+                        heightDp = 128.dp
+                    ),
                     contentDescription = video.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -1098,7 +1065,11 @@ private fun CastCard(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         AsyncImage(
-            model = rememberDetailImageRequest(actor.profileUrl),
+            model = rememberSizedDetailImageRequest(
+                url = actor.profileUrl,
+                widthDp = 68.dp,
+                heightDp = 68.dp
+            ),
             contentDescription = actor.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier
@@ -1167,7 +1138,11 @@ private fun EpisodeRowItem(
                         .background(NetflixCardSurface)
                 ) {
                     AsyncImage(
-                        model = rememberDetailImageRequest(episode.stillUrl ?: fallbackBackdropUrl),
+                        model = rememberSizedDetailImageRequest(
+                            url = episode.stillUrl ?: fallbackBackdropUrl,
+                            widthDp = 132.dp,
+                            heightDp = 76.dp
+                        ),
                         contentDescription = episode.name,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()

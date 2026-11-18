@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppPreferences
@@ -43,12 +44,14 @@ enum class NavTab(val label: String) {
     SETTINGS("Impostazioni")
 }
 
+@Immutable
 sealed interface CatalogUiState {
     data object Loading : CatalogUiState
     data class Success(val feed: CatalogFeed) : CatalogUiState
     data class Error(val message: String) : CatalogUiState
 }
 
+@Immutable
 data class MovieGenreFilterUiState(
     val genres: List<TmdbGenreDto> = TmdbGenreMap.defaultMovieGenres,
     val selectedGenre: TmdbGenreDto? = null,
@@ -57,6 +60,7 @@ data class MovieGenreFilterUiState(
     val errorMessage: String? = null
 )
 
+@Immutable
 data class TrailerPlaybackState(
     val trailers: List<YouTubeTrailerCandidate> = emptyList(),
     val selectedVideo: YouTubeTrailerCandidate? = null,
@@ -66,6 +70,7 @@ data class TrailerPlaybackState(
     val errorMessage: String? = null
 )
 
+@Immutable
 data class DetailUiState(
     val mediaItem: MediaItem,
     val isLoading: Boolean = true,
@@ -78,6 +83,7 @@ data class DetailUiState(
     val errorMessage: String? = null
 )
 
+@Immutable
 data class PlaybackSession(
     val mediaItem: MediaItem,
     val seasonNumber: Int? = null,
@@ -94,6 +100,7 @@ data class PlaybackSession(
     val startMinutes: Int get() = (startSeconds / 60L).toInt()
 }
 
+@Immutable
 data class GitHubUpdateUiState(
     val repoSlug: String = "",
     val isChecking: Boolean = false,
