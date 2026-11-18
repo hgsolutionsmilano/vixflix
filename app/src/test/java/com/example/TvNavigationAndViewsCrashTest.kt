@@ -464,10 +464,25 @@ class TvNavigationAndViewsCrashTest {
         }
         composeRule.waitForIdle()
 
-        // Naviga tra tasti dettagli, poi scorri sugli episodi e sui titoli simili
+        // Verifica che appena aperta in TV Mode la scheda dia spazio a locandina, breve testo e bottoni rapidi
+        assertTrue(
+            composeRule.onAllNodesWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+        assertTrue(
+            composeRule.onAllNodesWithTag("detail_tv_poster", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+        assertTrue(
+            composeRule.onAllNodesWithTag("detail_short_overview", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        // Naviga tra tasti dettagli (Destra/Sinistra rimane sui bottoni rapidi; solo Giù scende sotto)
         composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
             .performKeyInput {
                 pressKey(Key.DirectionRight)
+                pressKey(Key.DirectionLeft)
                 pressKey(Key.DirectionDown)
                 pressKey(Key.DirectionUp)
             }

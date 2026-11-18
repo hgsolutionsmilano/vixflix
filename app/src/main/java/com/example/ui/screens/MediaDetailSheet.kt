@@ -112,6 +112,17 @@ import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
 
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import kotlinx.coroutines.launch
+
 @Composable
 fun MediaDetailScreen(
     state: DetailUiState,
@@ -146,12 +157,22 @@ fun MediaDetailScreen(
     val item = state.mediaItem
     val isTvDevice = rememberIsTvDevice()
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(NetflixBlack)
             .testTag("media_detail_screen")
     ) {
+        val viewportHeight = maxHeight.coerceAtLeast(460.dp)
+        // Su TV Mode lasciamo 16.dp di margine inferiore invisibile (coperto dallo spacer della sezione successiva)
+        // così LazyColumn pre-compone il primo nodo sotto-piega mantenendo però il 100% della vista iniziale
+        // dedicato a Locandina, Bottoni Rapidi e Breve Testo.
+        val tvHeroStageHeight = (viewportHeight - 16.dp).coerceAtLeast(420.dp)
+        val density = LocalDensity.current
+        val revealBelowFoldOffsetPx = remember(tvHeroStageHeight, density) {
+            with(density) { (tvHeroStageHeight - 136.dp).roundToPx().coerceAtLeast(0) }
+        }
+
         AnimatedContent(
             targetState = state,
             contentKey = { it.mediaItem.uniqueKey },
@@ -178,8 +199,11 @@ fun MediaDetailScreen(
                 details?.similar.orEmpty().distinctBy { it.uniqueKey }
             }
             val listState = rememberLazyListState()
+            val coroutineScope = rememberCoroutineScope()
             val detailPlayFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailTrailerFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
+            val detailWatchlistFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
+            val detailRestartFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailCloseFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailBackFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstTrailerFocus = remember(currentItem.uniqueKey) { FocusRequester() }
@@ -188,18 +212,37 @@ fun MediaDetailScreen(
             val firstSimilarFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             var isPlayButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
             var isTrailerButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            var isWatchlistButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            var isRestartButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            var isTopBarButtonFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
             var isOtherActionFocused by remember(currentItem.uniqueKey) { mutableStateOf(false) }
             var wasTrailerOpen by remember(currentItem.uniqueKey) { mutableStateOf(false) }
 
+            val isHeroActionFocused = isPlayButtonFocused ||
+                isTrailerButtonFocused ||
+                isWatchlistButtonFocused ||
+                isRestartButtonFocused ||
+                isTopBarButtonFocused
+
             val isCurrentActive = currentItem.uniqueKey == item.uniqueKey
             val isTrailerOpen = currentState.activeTrailer != null
+
+            // Quando il focus torna sui bottoni rapidi (o all'apertura della scheda) riportiamo la vista in cima
+            // così locandina, bottoni rapidi e breve testo restano sempre perfettamente visibili a schermo intero.
+            LaunchedEffect(isHeroActionFocused, isTvDevice) {
+                if (isTvDevice && isHeroActionFocused) {
+                    if (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0) {
+                        runCatching { listState.scrollToItem(0, 0) }
+                    }
+                }
+            }
 
             LaunchedEffect(isCurrentActive, isInteractive, isTrailerOpen) {
                 if (isCurrentActive && isInteractive && !isTrailerOpen) {
                     val returnToTrailer = wasTrailerOpen
                     val targetRequester = if (returnToTrailer) detailTrailerFocusRequester else detailPlayFocusRequester
-                    if (!returnToTrailer && listState.firstVisibleItemIndex > 0) {
-                        runCatching { listState.scrollToItem(0) }
+                    if (!returnToTrailer && (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0)) {
+                        runCatching { listState.scrollToItem(0, 0) }
                     }
                     var didAutoFocusOnce = false
                     androidx.compose.runtime.withFrameNanos { }
@@ -233,614 +276,1051 @@ fun MediaDetailScreen(
                 else -> null
             }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .navigationBarsPadding()
-                    .testTag("media_detail_lazy_column"),
-                contentPadding = PaddingValues(bottom = 40.dp)
-            ) {
-                // Header con Backdrop
-                item(key = "detail_backdrop_${currentItem.uniqueKey}", contentType = "detail_backdrop") {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(280.dp)
-                    ) {
-                        AsyncImage(
-                            model = rememberSizedDetailImageRequest(
-                                url = currentItem.backdropUrl ?: currentItem.posterUrl,
-                                widthDp = 640.dp,
-                                heightDp = 280.dp
-                            ),
-                            contentDescription = currentItem.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
+            val hasBelowFoldContent = trailers.isNotEmpty() ||
+                castList.isNotEmpty() ||
+                (currentItem.isSeries && (!details?.seasons.isNullOrEmpty() || episodesList.isNotEmpty())) ||
+                similarList.isNotEmpty()
 
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.verticalGradient(
-                                        0f to NetflixBlack.copy(alpha = 0.5f),
-                                        0.5f to Color.Transparent,
-                                        1f to NetflixBlack
-                                    )
-                                )
-                        )
+            val handleActionDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
+                if (isTvDevice &&
+                    keyEvent.type == KeyEventType.KeyDown &&
+                    keyEvent.key == Key.DirectionDown &&
+                    hasBelowFoldContent
+                ) {
+                    coroutineScope.launch {
+                        runCatching {
+                            if (listState.firstVisibleItemIndex == 0 &&
+                                listState.firstVisibleItemScrollOffset < revealBelowFoldOffsetPx
+                            ) {
+                                listState.scrollToItem(0, revealBelowFoldOffsetPx)
+                            } else if (listState.firstVisibleItemIndex == 0 && downTargetFromActions == null) {
+                                listState.scrollToItem(1, 0)
+                            }
+                        }
+                        androidx.compose.runtime.withFrameNanos { }
+                        downTargetFromActions?.safeRequestFocus()
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
 
-                        // Su Touch mostra Play sul backdrop; su Android TV evita il doppio bottone Play per non creare trappole D-pad
-                        if (!isTvDevice) {
+            val topReturnTarget = if (detailStackDepth > 1) detailBackFocusRequester else detailCloseFocusRequester
+            val hasResumeProgress = savedProgress != null && savedProgress.startSeconds > 0L
+            val playActionDesc = if (hasResumeProgress) {
+                val epPrefix = if (savedProgress?.seasonNumber != null && savedProgress.episodeNumber != null) {
+                    "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} "
+                } else ""
+                "Riprendi ${epPrefix}da ${savedProgress?.startMinutes} min"
+            } else if (currentItem.isSeries) {
+                "Riproduci S1:E1"
+            } else {
+                "Riproduci Ora"
+            }
+
+            val watchlistBg = if (isInWatchlist) NetflixMatchGreen.copy(alpha = 0.22f) else NetflixCardSurface
+            val watchlistBorder = if (isInWatchlist) NetflixMatchGreen else NetflixElevatedSurface
+            val watchlistTint = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .navigationBarsPadding()
+                        .testTag("media_detail_lazy_column"),
+                    contentPadding = PaddingValues(bottom = 40.dp)
+                ) {
+                    if (isTvDevice) {
+                        // =========================================================================
+                        // TV MODE (Android TV, Google TV, Fire TV Stick):
+                        // Appena apri mostra a tutto schermo Locandina 2:3, Breve Testo (max 3 righe)
+                        // e Bottoni Rapidi. Scorre alle sezioni sottostanti SOLO premendo D-Pad Giù.
+                        // =========================================================================
+                        item(
+                            key = "detail_tv_hero_stage_${currentItem.uniqueKey}",
+                            contentType = "detail_tv_hero_stage"
+                        ) {
                             Box(
                                 modifier = Modifier
-                                    .size(64.dp)
-                                    .align(Alignment.Center)
-                                    .focusProperties { canFocus = false }
-                                    .clip(CircleShape)
-                                    .background(NetflixRed.copy(alpha = 0.9f))
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                        onClick = { onPlayMain(false) }
-                                    ),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxWidth()
+                                    .height(tvHeroStageHeight)
+                                    .testTag("detail_tv_hero_stage")
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Avvia Streaming",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(38.dp)
+                                // Sfondo cinematografico ad alto contrasto
+                                AsyncImage(
+                                    model = rememberSizedDetailImageRequest(
+                                        url = currentItem.backdropUrl ?: currentItem.posterUrl,
+                                        widthDp = 960.dp,
+                                        heightDp = tvHeroStageHeight
+                                    ),
+                                    contentDescription = currentItem.title,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
                                 )
-                            }
-                        }
 
-                        // Barra superiore: Torna al titolo precedente (se stack > 1) e Chiudi scheda
-                        Row(
-                            horizontalArrangement = if (detailStackDepth > 1) Arrangement.SpaceBetween else Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.TopCenter)
-                                .statusBarsPadding()
-                                .padding(horizontal = 16.dp, vertical = 12.dp)
-                                .focusGroup()
-                        ) {
-                            if (detailStackDepth > 1) {
-                                Surface(
-                                    color = NetflixBlack.copy(alpha = 0.8f),
-                                    shape = RoundedCornerShape(50),
-                                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                                // Doppia vignettatura (orizzontale + verticale) per leggibilità ottimale a 3 metri
+                                Box(
                                     modifier = Modifier
-                                        .safeFocusRequester(detailBackFocusRequester)
-                                        .focusProperties {
-                                            detailPlayFocusRequester.takeIfAttached()?.let { down = it }
-                                            detailCloseFocusRequester.takeIfAttached()?.let { right = it }
-                                        }
-                                        .tvFocusableControl(
-                                            shape = RoundedCornerShape(50),
-                                            focusedBorderColor = NetflixWhite,
-                                            focusedScale = 1.08f,
-                                            onClick = onBack
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.horizontalGradient(
+                                                0f to NetflixBlack.copy(alpha = 0.94f),
+                                                0.45f to NetflixBlack.copy(alpha = 0.80f),
+                                                1f to NetflixBlack.copy(alpha = 0.45f)
+                                            )
                                         )
-                                        .testTag("detail_back_button")
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.verticalGradient(
+                                                0f to NetflixBlack.copy(alpha = 0.65f),
+                                                0.35f to Color.Transparent,
+                                                0.82f to NetflixBlack.copy(alpha = 0.88f),
+                                                1f to NetflixBlack
+                                            )
+                                        )
+                                )
+
+                                // Contenuto centrale: Locandina a sinistra + Info brevi e Bottoni rapidi a destra
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(
+                                            start = 36.dp,
+                                            end = 36.dp,
+                                            top = 56.dp,
+                                            bottom = 42.dp
+                                        ),
+                                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                    // Locandina verticale 2:3 ben visibile
+                                    Card(
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+                                        border = BorderStroke(1.5.dp, NetflixWhite.copy(alpha = 0.24f)),
+                                        modifier = Modifier
+                                            .width(184.dp)
+                                            .height(276.dp)
+                                            .shadow(16.dp, RoundedCornerShape(14.dp))
+                                            .testTag("detail_tv_poster")
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                            contentDescription = "Torna al titolo precedente",
-                                            tint = NetflixWhite,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(modifier = Modifier.fillMaxSize()) {
+                                            AsyncImage(
+                                                model = rememberSizedDetailImageRequest(
+                                                    url = currentItem.posterUrl ?: currentItem.backdropUrl,
+                                                    widthDp = 184.dp,
+                                                    heightDp = 276.dp
+                                                ),
+                                                contentDescription = "Locandina ${currentItem.title}",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                            Surface(
+                                                color = NetflixBlack.copy(alpha = 0.78f),
+                                                shape = RoundedCornerShape(bottomEnd = 10.dp),
+                                                modifier = Modifier.align(Alignment.TopStart)
+                                            ) {
+                                                Text(
+                                                    text = if (currentItem.isSeries) "SERIE TV" else "FILM",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = NetflixWhite,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Colonna destra: Metadati compatti, Titolo, Breve Testo (max 3 righe) e Bottoni Rapidi
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight(),
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Surface(
+                                                color = NetflixRed,
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = "VIXSRC STREAM",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = "${currentItem.matchPercentage}% Compatibile",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = NetflixMatchGreen
+                                            )
+                                            if (currentItem.releaseYear.isNotBlank()) {
+                                                Text(
+                                                    text = currentItem.releaseYear,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = NetflixLightGray
+                                                )
+                                            }
+                                            Surface(
+                                                color = NetflixElevatedSurface,
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = "FHD • HLS",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = NetflixWhite,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            if (details?.runtimeMinutes != null && details.runtimeMinutes > 0) {
+                                                Text(
+                                                    text = "${details.runtimeMinutes} min",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = NetflixLightGray
+                                                )
+                                            } else if (details != null && details.numberOfSeasons > 0) {
+                                                Text(
+                                                    text = "${details.numberOfSeasons} Stagioni",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = NetflixLightGray
+                                                )
+                                            }
+                                            if (!details?.genres.isNullOrEmpty()) {
+                                                Text(
+                                                    text = "• ${details?.genres?.take(3)?.joinToString(", ")}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = NetflixLightGray,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
                                         Text(
-                                            text = previousDetailTitle?.let { "Torna a $it" } ?: "Indietro",
-                                            style = MaterialTheme.typography.labelLarge,
+                                            text = currentItem.title,
+                                            style = MaterialTheme.typography.headlineLarge,
+                                            fontWeight = FontWeight.ExtraBold,
                                             color = NetflixWhite,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.widthIn(max = 220.dp)
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+
+                                        if (!details?.tagline.isNullOrBlank()) {
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = "\"${details?.tagline}\"",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = NetflixLightGray,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        // Breve testo (sinossi sintetica max 3 righe)
+                                        if (currentItem.overview.isNotBlank()) {
+                                            Text(
+                                                text = currentItem.overview,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = NetflixWhite.copy(alpha = 0.92f),
+                                                maxLines = 3,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.testTag("detail_short_overview")
+                                            )
+                                        }
+
+                                        // Indicatore compatto di ripresa se salvato in Continua a guardare
+                                        if (hasResumeProgress && savedProgress != null) {
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth(0.85f)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(NetflixCardSurface.copy(alpha = 0.9f))
+                                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                            ) {
+                                                val epBadge = if (savedProgress.seasonNumber != null && savedProgress.episodeNumber != null) {
+                                                    "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} • "
+                                                } else ""
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "${epBadge}Riprendi da ${formatSecondsToMmSs(savedProgress.startSeconds)}",
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        color = NetflixWhite
+                                                    )
+                                                    Text(
+                                                        text = "${savedProgress.startMinutes} min",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = NetflixRed
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                LinearProgressIndicator(
+                                                    progress = { savedProgress.progressFraction },
+                                                    color = NetflixRed,
+                                                    trackColor = NetflixElevatedSurface,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(4.dp)
+                                                        .clip(RoundedCornerShape(2.dp))
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(16.dp))
+
+                                        // Bottoni Rapidi (navigazione D-Pad Sinistra/Destra bloccata nella riga;
+                                        // D-Pad Giù scorre alle sezioni sottostanti)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .focusGroup(),
+                                            horizontalArrangement = Arrangement.spacedBy(20.dp),
+                                            verticalAlignment = Alignment.Top
+                                        ) {
+                                            DetailRoundActionButton(
+                                                icon = Icons.Default.PlayArrow,
+                                                label = if (hasResumeProgress) "Riprendi" else "Riproduci",
+                                                contentDescription = playActionDesc,
+                                                containerColor = NetflixWhite,
+                                                contentColor = NetflixBlack,
+                                                focusedBorderColor = NetflixRed,
+                                                focusRequester = detailPlayFocusRequester,
+                                                upFocusRequester = topReturnTarget,
+                                                downFocusRequester = downTargetFromActions,
+                                                leftFocusRequester = detailPlayFocusRequester,
+                                                rightFocusRequester = detailTrailerFocusRequester,
+                                                onDownKey = handleActionDownKey,
+                                                onFocusChange = { focused -> isPlayButtonFocused = focused },
+                                                testTag = "detail_play_button",
+                                                onClick = { onPlayMain(false) }
+                                            )
+
+                                            DetailRoundActionButton(
+                                                icon = Icons.Default.SmartDisplay,
+                                                label = "Trailer",
+                                                contentDescription = "Guarda Trailer su YouTube",
+                                                containerColor = NetflixRed,
+                                                contentColor = Color.White,
+                                                focusedBorderColor = NetflixWhite,
+                                                focusRequester = detailTrailerFocusRequester,
+                                                upFocusRequester = topReturnTarget,
+                                                downFocusRequester = downTargetFromActions,
+                                                leftFocusRequester = detailPlayFocusRequester,
+                                                rightFocusRequester = detailWatchlistFocusRequester,
+                                                onDownKey = handleActionDownKey,
+                                                onFocusChange = { focused ->
+                                                    isTrailerButtonFocused = focused
+                                                    if (focused) isOtherActionFocused = true
+                                                },
+                                                testTag = "detail_watch_trailer_button",
+                                                onClick = onOpenYouTubeTrailerPopup
+                                            )
+
+                                            DetailRoundActionButton(
+                                                icon = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
+                                                label = if (isInWatchlist) "Nella lista" else "La mia lista",
+                                                contentDescription = if (isInWatchlist) "Rimuovi dalla Mia Lista" else "Aggiungi alla Lista",
+                                                containerColor = watchlistBg,
+                                                contentColor = watchlistTint,
+                                                borderColor = watchlistBorder,
+                                                focusedBorderColor = NetflixWhite,
+                                                focusRequester = detailWatchlistFocusRequester,
+                                                upFocusRequester = topReturnTarget,
+                                                downFocusRequester = downTargetFromActions,
+                                                leftFocusRequester = detailTrailerFocusRequester,
+                                                rightFocusRequester = if (hasResumeProgress) detailRestartFocusRequester else detailWatchlistFocusRequester,
+                                                onDownKey = handleActionDownKey,
+                                                onFocusChange = { focused ->
+                                                    isWatchlistButtonFocused = focused
+                                                    if (focused) isOtherActionFocused = true
+                                                },
+                                                testTag = "detail_watchlist_button",
+                                                onClick = onToggleWatchlist
+                                            )
+
+                                            if (hasResumeProgress) {
+                                                DetailRoundActionButton(
+                                                    icon = Icons.Default.Replay,
+                                                    label = "Dall'inizio",
+                                                    contentDescription = "Riproduci dall'inizio",
+                                                    containerColor = NetflixCardSurface,
+                                                    contentColor = NetflixWhite,
+                                                    borderColor = NetflixElevatedSurface,
+                                                    focusedBorderColor = NetflixWhite,
+                                                    focusRequester = detailRestartFocusRequester,
+                                                    upFocusRequester = topReturnTarget,
+                                                    downFocusRequester = downTargetFromActions,
+                                                    leftFocusRequester = detailWatchlistFocusRequester,
+                                                    rightFocusRequester = detailRestartFocusRequester,
+                                                    onDownKey = handleActionDownKey,
+                                                    onFocusChange = { focused ->
+                                                        isRestartButtonFocused = focused
+                                                        if (focused) isOtherActionFocused = true
+                                                    },
+                                                    testTag = "detail_restart_button",
+                                                    onClick = { onPlayMain(true) }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Indicatore inferiore per far capire che premendo GIÙ sul D-Pad si accede al resto
+                                if (hasBelowFoldContent) {
+                                    Surface(
+                                        color = NetflixBlack.copy(alpha = 0.72f),
+                                        shape = RoundedCornerShape(50),
+                                        border = BorderStroke(1.dp, NetflixElevatedSurface.copy(alpha = 0.7f)),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 10.dp)
+                                            .testTag("detail_dpad_down_hint")
+                                    ) {
+                                        Text(
+                                            text = if (currentItem.isSeries) {
+                                                "Premi ▼ GIÙ sul telecomando per Episodi, Trailer, Cast e Titoli Simili"
+                                            } else {
+                                                "Premi ▼ GIÙ sul telecomando per Trailer, Cast e Titoli Simili"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = NetflixLightGray,
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
                                         )
                                     }
                                 }
                             }
-
-                            IconButton(
-                                onClick = onClose,
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .safeFocusRequester(detailCloseFocusRequester)
-                                    .focusProperties {
-                                        detailPlayFocusRequester.takeIfAttached()?.let { down = it }
-                                        if (detailStackDepth > 1) {
-                                            detailBackFocusRequester.takeIfAttached()?.let { left = it }
-                                        }
-                                    }
-                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
-                                    .clip(CircleShape)
-                                    .background(NetflixBlack.copy(alpha = 0.78f))
-                                    .testTag("detail_close_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Chiudi",
-                                    tint = NetflixWhite
-                                )
-                            }
                         }
-                    }
-                }
-
-            // Info principali + Pulsanti Riproduci / Riprendi / Guarda Trailer
-            item(key = "detail_main_info_${currentItem.uniqueKey}", contentType = "detail_info") {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Surface(
-                            color = NetflixRed,
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text(
-                                text = "VIXSRC STREAM",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                        Text(
-                            text = "${currentItem.matchPercentage}% Compatibile",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = NetflixMatchGreen
-                        )
-                        if (currentItem.releaseYear.isNotBlank()) {
-                            Text(
-                                text = currentItem.releaseYear,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = NetflixLightGray
-                            )
-                        }
-                        Surface(
-                            color = NetflixElevatedSurface,
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text(
-                                text = "FHD • HLS",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixWhite,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                        if (details?.runtimeMinutes != null && details.runtimeMinutes > 0) {
-                            Text(
-                                text = "${details.runtimeMinutes} min",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = NetflixLightGray
-                            )
-                        } else if (details != null && details.numberOfSeasons > 0) {
-                            Text(
-                                text = "${details.numberOfSeasons} Stagioni",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = NetflixLightGray
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        text = currentItem.title,
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = NetflixWhite
-                    )
-
-                    if (!details?.tagline.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "\"${details?.tagline}\"",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = NetflixLightGray
-                        )
-                    }
-
-                    // Barra di avanzamento se presente in Continua a guardare (Room DB)
-                    if (savedProgress != null && savedProgress.startSeconds > 0L) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(NetflixCardSurface)
-                                .padding(12.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val epBadge = if (savedProgress.seasonNumber != null && savedProgress.episodeNumber != null) {
-                                    "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} • "
-                                } else ""
-                                Text(
-                                    text = "${epBadge}Salvato su Room al minuto ${savedProgress.startMinutes} (${formatSecondsToMmSs(savedProgress.startSeconds)})",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = NetflixWhite
-                                )
-                                Text(
-                                    text = "startAt=${savedProgress.startSeconds}s",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = NetflixRed
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            LinearProgressIndicator(
-                                progress = { savedProgress.progressFraction },
-                                color = NetflixRed,
-                                trackColor = NetflixElevatedSurface,
+                    } else {
+                        // =========================================================================
+                        // LAYOUT TOUCH / SMARTPHONE
+                        // =========================================================================
+                        item(key = "detail_backdrop_${currentItem.uniqueKey}", contentType = "detail_backdrop") {
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(5.dp)
-                                    .clip(RoundedCornerShape(3.dp))
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    val hasResumeProgress = savedProgress != null && savedProgress.startSeconds > 0L
-                    val playActionDesc = if (hasResumeProgress) {
-                        val epPrefix = if (savedProgress?.seasonNumber != null && savedProgress.episodeNumber != null) {
-                            "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} "
-                        } else ""
-                        "Riprendi ${epPrefix}da ${savedProgress?.startMinutes} min"
-                    } else if (currentItem.isSeries) {
-                        "Riproduci S1:E1"
-                    } else {
-                        "Riproduci Ora"
-                    }
-
-                    val watchlistBg = if (isInWatchlist) NetflixMatchGreen.copy(alpha = 0.22f) else NetflixCardSurface
-                    val watchlistBorder = if (isInWatchlist) NetflixMatchGreen else NetflixElevatedSurface
-                    val watchlistTint = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
-
-                    // Riga unica con icone rotonde: Riproduci, Trailer YouTube, La Mia Lista (+ Dall'inizio se presente)
-                    val topReturnTarget = if (detailStackDepth > 1) detailBackFocusRequester else detailCloseFocusRequester
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusGroup(),
-                        horizontalArrangement = Arrangement.spacedBy(if (hasResumeProgress) 18.dp else 24.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        DetailRoundActionButton(
-                            icon = Icons.Default.PlayArrow,
-                            label = if (hasResumeProgress) "Riprendi" else "Riproduci",
-                            contentDescription = playActionDesc,
-                            containerColor = NetflixWhite,
-                            contentColor = NetflixBlack,
-                            focusedBorderColor = NetflixRed,
-                            focusRequester = detailPlayFocusRequester,
-                            upFocusRequester = topReturnTarget,
-                            downFocusRequester = downTargetFromActions,
-                            rightFocusRequester = detailTrailerFocusRequester,
-                            onFocusChange = { focused -> isPlayButtonFocused = focused },
-                            testTag = "detail_play_button",
-                            onClick = { onPlayMain(false) }
-                        )
-
-                        DetailRoundActionButton(
-                            icon = Icons.Default.SmartDisplay,
-                            label = "Trailer",
-                            contentDescription = "Guarda Trailer su YouTube",
-                            containerColor = NetflixRed,
-                            contentColor = Color.White,
-                            focusedBorderColor = NetflixWhite,
-                            focusRequester = detailTrailerFocusRequester,
-                            upFocusRequester = topReturnTarget,
-                            downFocusRequester = downTargetFromActions,
-                            leftFocusRequester = detailPlayFocusRequester,
-                            onFocusChange = { focused ->
-                                isTrailerButtonFocused = focused
-                                if (focused) isOtherActionFocused = true
-                            },
-                            testTag = "detail_watch_trailer_button",
-                            onClick = onOpenYouTubeTrailerPopup
-                        )
-
-                        DetailRoundActionButton(
-                            icon = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
-                            label = if (isInWatchlist) "Nella lista" else "La mia lista",
-                            contentDescription = if (isInWatchlist) "Rimuovi dalla Mia Lista" else "Aggiungi alla Lista",
-                            containerColor = watchlistBg,
-                            contentColor = watchlistTint,
-                            borderColor = watchlistBorder,
-                            focusedBorderColor = NetflixWhite,
-                            upFocusRequester = topReturnTarget,
-                            downFocusRequester = downTargetFromActions,
-                            onFocusChange = { focused ->
-                                if (focused) isOtherActionFocused = true
-                            },
-                            testTag = "detail_watchlist_button",
-                            onClick = onToggleWatchlist
-                        )
-
-                        if (hasResumeProgress) {
-                            DetailRoundActionButton(
-                                icon = Icons.Default.Replay,
-                                label = "Dall'inizio",
-                                contentDescription = "Riproduci dall'inizio",
-                                containerColor = NetflixCardSurface,
-                                contentColor = NetflixWhite,
-                                borderColor = NetflixElevatedSurface,
-                                focusedBorderColor = NetflixWhite,
-                                upFocusRequester = topReturnTarget,
-                                downFocusRequester = downTargetFromActions,
-                                onFocusChange = { focused ->
-                                    if (focused) isOtherActionFocused = true
-                                },
-                                testTag = "detail_restart_button",
-                                onClick = { onPlayMain(true) }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    if (currentItem.overview.isNotBlank()) {
-                        Text(
-                            text = currentItem.overview,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = NetflixWhite
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                    }
-
-                    if (!details?.genres.isNullOrEmpty()) {
-                        Text(
-                            text = "Generi: ${details?.genres?.joinToString(", ")}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = NetflixLightGray
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "TMDB ID: ${currentItem.id} • Endpoint VixSrc: https://vixsrc.to/${currentItem.mediaType}/${currentItem.id}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NetflixMutedGray
-                    )
-                }
-            }
-
-            // SEZIONE DEDICATA: Trailer & Video Ufficiali da TMDB (/movie/{id}/videos o /tv/{id}/videos)
-            if (trailers.isNotEmpty()) {
-                item(key = "detail_trailers_section", contentType = "detail_trailers") {
-                    Spacer(modifier = Modifier.height(20.dp))
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("tmdb_trailers_section")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Movie,
-                                    contentDescription = null,
-                                    tint = NetflixRed,
-                                    modifier = Modifier.size(20.dp)
+                                    .height(280.dp)
+                            ) {
+                                AsyncImage(
+                                    model = rememberSizedDetailImageRequest(
+                                        url = currentItem.backdropUrl ?: currentItem.posterUrl,
+                                        widthDp = 640.dp,
+                                        heightDp = 280.dp
+                                    ),
+                                    contentDescription = currentItem.title,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.verticalGradient(
+                                                0f to NetflixBlack.copy(alpha = 0.5f),
+                                                0.5f to Color.Transparent,
+                                                1f to NetflixBlack
+                                            )
+                                        )
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .align(Alignment.Center)
+                                        .focusProperties { canFocus = false }
+                                        .clip(CircleShape)
+                                        .background(NetflixRed.copy(alpha = 0.9f))
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            onClick = { onPlayMain(false) }
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Avvia Streaming",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(38.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        item(key = "detail_main_info_${currentItem.uniqueKey}", contentType = "detail_info") {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Surface(
+                                        color = NetflixRed,
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "VIXSRC STREAM",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = "${currentItem.matchPercentage}% Compatibile",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = NetflixMatchGreen
+                                    )
+                                    if (currentItem.releaseYear.isNotBlank()) {
+                                        Text(
+                                            text = currentItem.releaseYear,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = NetflixLightGray
+                                        )
+                                    }
+                                    Surface(
+                                        color = NetflixElevatedSurface,
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "FHD • HLS",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = NetflixWhite,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                    if (details?.runtimeMinutes != null && details.runtimeMinutes > 0) {
+                                        Text(
+                                            text = "${details.runtimeMinutes} min",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = NetflixLightGray
+                                        )
+                                    } else if (details != null && details.numberOfSeasons > 0) {
+                                        Text(
+                                            text = "${details.numberOfSeasons} Stagioni",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = NetflixLightGray
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
                                 Text(
-                                    text = "Trailer & Anteprime Ufficiali (TMDB)",
-                                    style = MaterialTheme.typography.titleMedium,
+                                    text = currentItem.title,
+                                    style = MaterialTheme.typography.headlineLarge,
                                     color = NetflixWhite
                                 )
+
+                                if (!details?.tagline.isNullOrBlank()) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "\"${details?.tagline}\"",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = NetflixLightGray
+                                    )
+                                }
+
+                                if (savedProgress != null && savedProgress.startSeconds > 0L) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(NetflixCardSurface)
+                                            .padding(12.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val epBadge = if (savedProgress.seasonNumber != null && savedProgress.episodeNumber != null) {
+                                                "S${savedProgress.seasonNumber}:E${savedProgress.episodeNumber} • "
+                                            } else ""
+                                            Text(
+                                                text = "${epBadge}Salvato su Room al minuto ${savedProgress.startMinutes} (${formatSecondsToMmSs(savedProgress.startSeconds)})",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = NetflixWhite
+                                            )
+                                            Text(
+                                                text = "startAt=${savedProgress.startSeconds}s",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = NetflixRed
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        LinearProgressIndicator(
+                                            progress = { savedProgress.progressFraction },
+                                            color = NetflixRed,
+                                            trackColor = NetflixElevatedSurface,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(5.dp)
+                                                .clip(RoundedCornerShape(3.dp))
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(16.dp))
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .focusGroup(),
+                                    horizontalArrangement = Arrangement.spacedBy(if (hasResumeProgress) 18.dp else 24.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    DetailRoundActionButton(
+                                        icon = Icons.Default.PlayArrow,
+                                        label = if (hasResumeProgress) "Riprendi" else "Riproduci",
+                                        contentDescription = playActionDesc,
+                                        containerColor = NetflixWhite,
+                                        contentColor = NetflixBlack,
+                                        focusedBorderColor = NetflixRed,
+                                        focusRequester = detailPlayFocusRequester,
+                                        upFocusRequester = topReturnTarget,
+                                        downFocusRequester = downTargetFromActions,
+                                        rightFocusRequester = detailTrailerFocusRequester,
+                                        onFocusChange = { focused -> isPlayButtonFocused = focused },
+                                        testTag = "detail_play_button",
+                                        onClick = { onPlayMain(false) }
+                                    )
+
+                                    DetailRoundActionButton(
+                                        icon = Icons.Default.SmartDisplay,
+                                        label = "Trailer",
+                                        contentDescription = "Guarda Trailer su YouTube",
+                                        containerColor = NetflixRed,
+                                        contentColor = Color.White,
+                                        focusedBorderColor = NetflixWhite,
+                                        focusRequester = detailTrailerFocusRequester,
+                                        upFocusRequester = topReturnTarget,
+                                        downFocusRequester = downTargetFromActions,
+                                        leftFocusRequester = detailPlayFocusRequester,
+                                        rightFocusRequester = detailWatchlistFocusRequester,
+                                        onFocusChange = { focused ->
+                                            isTrailerButtonFocused = focused
+                                            if (focused) isOtherActionFocused = true
+                                        },
+                                        testTag = "detail_watch_trailer_button",
+                                        onClick = onOpenYouTubeTrailerPopup
+                                    )
+
+                                    DetailRoundActionButton(
+                                        icon = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
+                                        label = if (isInWatchlist) "Nella lista" else "La mia lista",
+                                        contentDescription = if (isInWatchlist) "Rimuovi dalla Mia Lista" else "Aggiungi alla Lista",
+                                        containerColor = watchlistBg,
+                                        contentColor = watchlistTint,
+                                        borderColor = watchlistBorder,
+                                        focusedBorderColor = NetflixWhite,
+                                        focusRequester = detailWatchlistFocusRequester,
+                                        upFocusRequester = topReturnTarget,
+                                        downFocusRequester = downTargetFromActions,
+                                        leftFocusRequester = detailTrailerFocusRequester,
+                                        rightFocusRequester = if (hasResumeProgress) detailRestartFocusRequester else null,
+                                        onFocusChange = { focused ->
+                                            isWatchlistButtonFocused = focused
+                                            if (focused) isOtherActionFocused = true
+                                        },
+                                        testTag = "detail_watchlist_button",
+                                        onClick = onToggleWatchlist
+                                    )
+
+                                    if (hasResumeProgress) {
+                                        DetailRoundActionButton(
+                                            icon = Icons.Default.Replay,
+                                            label = "Dall'inizio",
+                                            contentDescription = "Riproduci dall'inizio",
+                                            containerColor = NetflixCardSurface,
+                                            contentColor = NetflixWhite,
+                                            borderColor = NetflixElevatedSurface,
+                                            focusedBorderColor = NetflixWhite,
+                                            focusRequester = detailRestartFocusRequester,
+                                            upFocusRequester = topReturnTarget,
+                                            downFocusRequester = downTargetFromActions,
+                                            leftFocusRequester = detailWatchlistFocusRequester,
+                                            onFocusChange = { focused ->
+                                                isRestartButtonFocused = focused
+                                                if (focused) isOtherActionFocused = true
+                                            },
+                                            testTag = "detail_restart_button",
+                                            onClick = { onPlayMain(true) }
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(16.dp))
+
+                                if (currentItem.overview.isNotBlank()) {
+                                    Text(
+                                        text = currentItem.overview,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = NetflixWhite
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                }
+
+                                if (!details?.genres.isNullOrEmpty()) {
+                                    Text(
+                                        text = "Generi: ${details?.genres?.joinToString(", ")}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = NetflixLightGray
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "TMDB ID: ${currentItem.id} • Endpoint VixSrc: https://vixsrc.to/${currentItem.mediaType}/${currentItem.id}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NetflixMutedGray
+                                )
                             }
+                        }
+                    }
+
+                    // SEZIONE DEDICATA: Trailer & Video Ufficiali da TMDB (/movie/{id}/videos o /tv/{id}/videos)
+                    if (trailers.isNotEmpty()) {
+                        val downFromTrailers = when {
+                            currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
+                            currentItem.isSeries && episodesList.isNotEmpty() -> firstEpisodeFocus
+                            similarList.isNotEmpty() -> firstSimilarFocus
+                            else -> null
+                        }
+                        item(key = "detail_trailers_section", contentType = "detail_trailers") {
+                            Spacer(modifier = Modifier.height(20.dp))
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("tmdb_trailers_section")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Movie,
+                                            contentDescription = null,
+                                            tint = NetflixRed,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Trailer & Anteprime Ufficiali (TMDB)",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = NetflixWhite
+                                        )
+                                    }
+                                    Text(
+                                        text = "${trailers.size} video",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NetflixMatchGreen
+                                    )
+                                }
+
+                                Text(
+                                    text = "Seleziona un trailer per guardarlo direttamente in-app prima di avviare lo streaming completo.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = NetflixLightGray,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                val trailersListState = rememberLazyListState()
+                                LazyRow(
+                                    state = trailersListState,
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    itemsIndexed(
+                                        items = trailers,
+                                        key = { _, it -> it.id.ifBlank { it.key } },
+                                        contentType = { _, _ -> "detail_trailer_card" }
+                                    ) { index, video ->
+                                        TmdbTrailerCard(
+                                            video = video,
+                                            fallbackBackdropUrl = currentItem.backdropUrl,
+                                            itemIndex = index,
+                                            listState = trailersListState,
+                                            onClick = onOpenYouTubeTrailerPopup,
+                                            modifier = Modifier
+                                                .then(
+                                                    if (index == 0) Modifier.safeFocusRequester(firstTrailerFocus) else Modifier
+                                                )
+                                                .focusProperties {
+                                                    detailPlayFocusRequester.takeIfAttached()?.let { up = it }
+                                                    downFromTrailers?.takeIfAttached()?.let { down = it }
+                                                }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Cast TMDB
+                    if (castList.isNotEmpty()) {
+                        item(key = "detail_cast_section", contentType = "detail_cast") {
+                            Spacer(modifier = Modifier.height(18.dp))
                             Text(
-                                text = "${trailers.size} video",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixMatchGreen
+                                text = "Cast Principale",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = NetflixWhite,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                             )
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(
+                                    items = castList,
+                                    key = { it.id },
+                                    contentType = { "detail_cast_card" }
+                                ) { actor ->
+                                    CastCard(actor = actor)
+                                }
+                            }
+                        }
+                    }
+
+                    // Selettore Stagioni ed Episodi per Serie TV
+                    if (currentItem.isSeries) {
+                        val upFromSeasons = if (trailers.isNotEmpty()) firstTrailerFocus else detailPlayFocusRequester
+                        item(key = "detail_seasons_header", contentType = "detail_seasons") {
+                            Spacer(modifier = Modifier.height(22.dp))
+                            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                                Text(
+                                    text = "Episodi (Streaming diretto VixSrc)",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = NetflixWhite
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                val seasons = details?.seasons.orEmpty()
+                                if (seasons.isNotEmpty()) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState())
+                                            .focusGroup(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        seasons.forEachIndexed { sIndex, season ->
+                                            val isSelected = currentState.selectedSeason == season.seasonNumber
+                                            val seasonBg = if (isSelected) NetflixRed else NetflixCardSurface
+                                            val seasonBorder = if (isSelected) NetflixRed else NetflixElevatedSurface
+                                            Surface(
+                                                color = seasonBg,
+                                                shape = RoundedCornerShape(8.dp),
+                                                border = BorderStroke(1.dp, seasonBorder),
+                                                modifier = Modifier
+                                                    .then(
+                                                        if (sIndex == 0) Modifier.safeFocusRequester(firstSeasonFocus) else Modifier
+                                                    )
+                                                    .focusProperties {
+                                                        upFromSeasons.takeIfAttached()?.let { up = it }
+                                                        firstEpisodeFocus.takeIfAttached()?.let { down = it }
+                                                    }
+                                                    .tvFocusableControl(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        focusedScale = 1.06f,
+                                                        onClick = { onSelectSeason(season.seasonNumber) }
+                                                    )
+                                            ) {
+                                                Text(
+                                                    text = "Stagione ${season.seasonNumber} (${season.episodeCount})",
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    color = NetflixWhite,
+                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
                         }
 
-                        Text(
-                            text = "Seleziona un trailer per guardarlo direttamente in-app prima di avviare lo streaming completo.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = NetflixLightGray,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        val trailersListState = rememberLazyListState()
-                        LazyRow(
-                            state = trailersListState,
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
+                        if (currentState.isLoadingEpisodes) {
+                            item(key = "detail_episodes_loading", contentType = "detail_status") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(color = NetflixRed)
+                                }
+                            }
+                        } else {
                             itemsIndexed(
-                                items = trailers,
-                                key = { _, it -> it.id.ifBlank { it.key } },
-                                contentType = { _, _ -> "detail_trailer_card" }
-                            ) { index, video ->
-                                TmdbTrailerCard(
-                                    video = video,
+                                episodesList,
+                                key = { _, ep -> "ep_${ep.seasonNumber}_${ep.episodeNumber}" },
+                                contentType = { _, _ -> "detail_episode_row" }
+                            ) { epIndex, ep ->
+                                EpisodeRowItem(
+                                    episode = ep,
+                                    savedEpProgress = currentState.episodeProgressMap[ep.episodeNumber],
                                     fallbackBackdropUrl = currentItem.backdropUrl,
-                                    itemIndex = index,
-                                    listState = trailersListState,
-                                    onClick = onOpenYouTubeTrailerPopup,
+                                    onPlayEpisode = {
+                                        onPlayEpisode(ep.seasonNumber, ep.episodeNumber, ep.name)
+                                    },
                                     modifier = Modifier
                                         .then(
-                                            if (index == 0) Modifier.safeFocusRequester(firstTrailerFocus) else Modifier
+                                            if (epIndex == 0) Modifier.safeFocusRequester(firstEpisodeFocus) else Modifier
                                         )
                                         .focusProperties {
-                                            if (index == 0) {
-                                                detailPlayFocusRequester.takeIfAttached()?.let { up = it }
+                                            if (epIndex == 0) {
+                                                val upFromFirstEp = if (!details?.seasons.isNullOrEmpty()) {
+                                                    firstSeasonFocus
+                                                } else if (trailers.isNotEmpty()) {
+                                                    firstTrailerFocus
+                                                } else {
+                                                    detailPlayFocusRequester
+                                                }
+                                                upFromFirstEp.takeIfAttached()?.let { up = it }
                                             }
                                         }
                                 )
                             }
                         }
                     }
-                }
-            }
 
-            // Cast TMDB
-            if (castList.isNotEmpty()) {
-                item(key = "detail_cast_section", contentType = "detail_cast") {
-                    Spacer(modifier = Modifier.height(18.dp))
-                    Text(
-                        text = "Cast Principale",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = NetflixWhite,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                    )
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(
-                            items = castList,
-                            key = { it.id },
-                            contentType = { "detail_cast_card" }
-                        ) { actor ->
-                            CastCard(actor = actor)
+                    // Contenuti simili da TMDB
+                    if (similarList.isNotEmpty()) {
+                        val upToBeforeSimilar = when {
+                            currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
+                            trailers.isNotEmpty() -> firstTrailerFocus
+                            else -> detailPlayFocusRequester
+                        }
+                        item(key = "detail_similar_section", contentType = "detail_similar") {
+                            Spacer(modifier = Modifier.height(20.dp))
+                            MediaCatalogRow(
+                                title = "Titoli Simili su TMDB",
+                                items = similarList,
+                                onItemClick = onSelectSimilar,
+                                onItemQuickPlay = { sim -> onSelectSimilar(sim) },
+                                firstItemFocusRequester = firstSimilarFocus,
+                                upFocusRequester = if (currentItem.isSeries && episodesList.isNotEmpty()) null else upToBeforeSimilar
+                            )
                         }
                     }
                 }
-            }
 
-            // Selettore Stagioni ed Episodi per Serie TV
-            if (currentItem.isSeries) {
-                item(key = "detail_seasons_header", contentType = "detail_seasons") {
-                    Spacer(modifier = Modifier.height(22.dp))
-                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        Text(
-                            text = "Episodi (Streaming diretto VixSrc)",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = NetflixWhite
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        val seasons = details?.seasons.orEmpty()
-                        if (seasons.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState())
-                                    .focusGroup(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                seasons.forEachIndexed { sIndex, season ->
-                                    val isSelected = currentState.selectedSeason == season.seasonNumber
-                                    val seasonBg = if (isSelected) NetflixRed else NetflixCardSurface
-                                    val seasonBorder = if (isSelected) NetflixRed else NetflixElevatedSurface
-                                    Surface(
-                                        color = seasonBg,
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = BorderStroke(1.dp, seasonBorder),
-                                        modifier = Modifier
-                                            .then(
-                                                if (sIndex == 0) Modifier.safeFocusRequester(firstSeasonFocus) else Modifier
-                                            )
-                                            .focusProperties {
-                                                if (sIndex == 0 && trailers.isEmpty()) {
-                                                    detailPlayFocusRequester.takeIfAttached()?.let { up = it }
-                                                }
-                                            }
-                                            .tvFocusableControl(
-                                                shape = RoundedCornerShape(8.dp),
-                                                focusedScale = 1.06f,
-                                                onClick = { onSelectSeason(season.seasonNumber) }
-                                            )
-                                    ) {
-                                        Text(
-                                            text = "Stagione ${season.seasonNumber} (${season.episodeCount})",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = NetflixWhite,
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                                        )
-                                    }
+                // Barra superiore fissa: Torna al titolo precedente (se stack > 1) e Chiudi scheda
+                Row(
+                    horizontalArrangement = if (detailStackDepth > 1) Arrangement.SpaceBetween else Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .focusGroup()
+                ) {
+                    if (detailStackDepth > 1) {
+                        Surface(
+                            color = NetflixBlack.copy(alpha = 0.8f),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(1.dp, NetflixElevatedSurface),
+                            modifier = Modifier
+                                .safeFocusRequester(detailBackFocusRequester)
+                                .focusProperties {
+                                    detailPlayFocusRequester.takeIfAttached()?.let { down = it }
+                                    detailCloseFocusRequester.takeIfAttached()?.let { right = it }
                                 }
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(50),
+                                    focusedBorderColor = NetflixWhite,
+                                    focusedScale = 1.08f,
+                                    onFocusChange = { focused ->
+                                        isTopBarButtonFocused = focused
+                                        if (focused) isOtherActionFocused = true
+                                    },
+                                    onClick = onBack
+                                )
+                                .testTag("detail_back_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Torna al titolo precedente",
+                                    tint = NetflixWhite,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = previousDetailTitle?.let { "Torna a $it" } ?: "Indietro",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = NetflixWhite,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 220.dp)
+                                )
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
 
-                if (currentState.isLoadingEpisodes) {
-                    item(key = "detail_episodes_loading", contentType = "detail_status") {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(color = NetflixRed)
-                        }
-                    }
-                } else {
-                    itemsIndexed(
-                        episodesList,
-                        key = { _, ep -> "ep_${ep.seasonNumber}_${ep.episodeNumber}" },
-                        contentType = { _, _ -> "detail_episode_row" }
-                    ) { epIndex, ep ->
-                        EpisodeRowItem(
-                            episode = ep,
-                            savedEpProgress = currentState.episodeProgressMap[ep.episodeNumber],
-                            fallbackBackdropUrl = currentItem.backdropUrl,
-                            onPlayEpisode = {
-                                onPlayEpisode(ep.seasonNumber, ep.episodeNumber, ep.name)
-                            },
-                            modifier = Modifier
-                                .then(
-                                    if (epIndex == 0) Modifier.safeFocusRequester(firstEpisodeFocus) else Modifier
-                                )
-                                .focusProperties {
-                                    if (epIndex == 0 && !details?.seasons.isNullOrEmpty()) {
-                                        firstSeasonFocus.takeIfAttached()?.let { up = it }
-                                    }
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .safeFocusRequester(detailCloseFocusRequester)
+                            .focusProperties {
+                                detailPlayFocusRequester.takeIfAttached()?.let { down = it }
+                                if (detailStackDepth > 1) {
+                                    detailBackFocusRequester.takeIfAttached()?.let { left = it }
                                 }
+                            }
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusedScale = 1.12f,
+                                onFocusChange = { focused ->
+                                    isTopBarButtonFocused = focused
+                                    if (focused) isOtherActionFocused = true
+                                }
+                            )
+                            .clip(CircleShape)
+                            .background(NetflixBlack.copy(alpha = 0.78f))
+                            .testTag("detail_close_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Chiudi",
+                            tint = NetflixWhite
                         )
                     }
                 }
-            }
-
-            // Contenuti simili da TMDB
-            if (similarList.isNotEmpty()) {
-                val upToBeforeSimilar = when {
-                    currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
-                    trailers.isNotEmpty() -> firstTrailerFocus
-                    else -> detailPlayFocusRequester
-                }
-                item(key = "detail_similar_section", contentType = "detail_similar") {
-                    Spacer(modifier = Modifier.height(20.dp))
-                    MediaCatalogRow(
-                        title = "Titoli Simili su TMDB",
-                        items = similarList,
-                        onItemClick = onSelectSimilar,
-                        onItemQuickPlay = { sim -> onSelectSimilar(sim) },
-                        firstItemFocusRequester = firstSimilarFocus,
-                        upFocusRequester = if (currentItem.isSeries && episodesList.isNotEmpty()) null else upToBeforeSimilar
-                    )
-                }
-            }
             }
         }
 
@@ -873,6 +1353,7 @@ private fun DetailRoundActionButton(
     downFocusRequester: FocusRequester? = null,
     leftFocusRequester: FocusRequester? = null,
     rightFocusRequester: FocusRequester? = null,
+    onDownKey: ((androidx.compose.ui.input.key.KeyEvent) -> Boolean)? = null,
     onFocusChange: ((Boolean) -> Unit)? = null,
     testTag: String,
     onClick: () -> Unit
@@ -888,6 +1369,13 @@ private fun DetailRoundActionButton(
             modifier = Modifier
                 .size(56.dp)
                 .safeFocusRequester(focusRequester)
+                .then(
+                    if (onDownKey != null) {
+                        Modifier.onPreviewKeyEvent { onDownKey(it) }
+                    } else {
+                        Modifier
+                    }
+                )
                 .focusProperties {
                     upFocusRequester.takeIfAttached()?.let { up = it }
                     downFocusRequester.takeIfAttached()?.let { down = it }
