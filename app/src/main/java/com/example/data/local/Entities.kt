@@ -78,3 +78,65 @@ data class WatchlistEntity(
     val releaseYear: String,
     val addedAt: Long = System.currentTimeMillis()
 )
+
+@Immutable
+@Entity(tableName = "catalog_snapshot_cache")
+data class CatalogSnapshotEntity(
+    @PrimaryKey val id: String = "home_feed_v1",
+    val feedJson: String,
+    val movieGenresJson: String,
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+@Immutable
+@Entity(tableName = "media_details_cache")
+data class MediaDetailsCacheEntity(
+    @PrimaryKey val cacheKey: String, // "{mediaType}_{tmdbId}"
+    val mediaType: String,
+    val tmdbId: Int,
+    val detailsJson: String,
+    val updatedAtMs: Long = System.currentTimeMillis(),
+    val lastAccessedAtMs: Long = System.currentTimeMillis()
+)
+
+@Immutable
+@Entity(tableName = "season_episodes_cache")
+data class SeasonEpisodesCacheEntity(
+    @PrimaryKey val cacheKey: String, // "tv_{tvId}_s{seasonNumber}"
+    val tvId: Int,
+    val seasonNumber: Int,
+    val episodesJson: String,
+    val updatedAtMs: Long = System.currentTimeMillis(),
+    val lastAccessedAtMs: Long = System.currentTimeMillis()
+)
+
+@Immutable
+@Entity(tableName = "stream_link_cache")
+data class ResolvedStreamCacheEntity(
+    @PrimaryKey val cacheKey: String, // "{mediaType}_{tmdbId}_{seasonOr0}_{episodeOr0}_{lang}"
+    val tmdbId: Int,
+    val mediaType: String,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val lang: String,
+    val streamUrl: String,
+    val embedUrl: String,
+    val referer: String,
+    val userAgent: String,
+    val startSeconds: Long,
+    val startMinutes: Int,
+    val subtitlesJson: String,
+    val expiresAtMs: Long,
+    val verifiedAtMs: Long = System.currentTimeMillis(),
+    val lastUsedAtMs: Long = System.currentTimeMillis()
+)
+
+@Immutable
+data class CacheStatsSummary(
+    val catalogUpdatedAtMs: Long? = null,
+    val cachedDetailsCount: Int = 0,
+    val cachedSeasonsCount: Int = 0,
+    val validStreamLinksCount: Int = 0,
+    val imageCacheSizeBytes: Long = 0L
+)
+

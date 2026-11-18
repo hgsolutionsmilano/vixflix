@@ -2,10 +2,13 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.res.Configuration
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.cache.BackgroundCachePrefetcher
 import com.example.data.local.AppPreferences
+import com.example.data.local.CacheStatsSummary
 import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.VixFlixDatabase
@@ -24,6 +27,7 @@ import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -34,6 +38,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class NavTab(val label: String) {
     HOME("Home"),
@@ -125,6 +130,7 @@ class VixFlixViewModel @JvmOverloads constructor(
 ) : AndroidViewModel(application) {
     private val database = VixFlixDatabase.getInstance(application)
     private val preferences = AppPreferences(application)
+    private val imagePrefetcher = BackgroundCachePrefetcher(application)
 
     private val _selectedTab = MutableStateFlow(NavTab.HOME)
     val selectedTab: StateFlow<NavTab> = _selectedTab.asStateFlow()
@@ -149,6 +155,18 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     val bufferPreset: StateFlow<StreamingBufferPreset> = preferences.bufferPresetFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, StreamingBufferPreset.DEFAULT)
+
+    val backgroundPrefetchEnabled: StateFlow<Boolean> = preferences.backgroundPrefetchFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    private val _cacheStats = MutableStateFlow(CacheStatsSummary())
+    val cacheStats: StateFlow<CacheStatsSummary> = _cacheStats.asStateFlow()
+
+    private val _isBackgroundCatalogRefreshing = MutableStateFlow(false)
+    val isBackgroundCatalogRefreshing: StateFlow<Boolean> = _isBackgroundCatalogRefreshing.asStateFlow()
+
+    private val _cacheClearedFeedbackNonce = MutableStateFlow(0)
+    val cacheClearedFeedbackNonce: StateFlow<Int> = _cacheClearedFeedbackNonce.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -181,9 +199,12 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     private val movieGenreCache = mutableMapOf<Int, List<MediaItem>>()
 
+    private var catalogLoadJob: Job? = null
+    private var imagePrefetchJob: Job? = null
     private var searchJob: Job? = null
     private var movieGenreJob: Job? = null
     private var seasonProgressJob: Job? = null
+    private var seasonLoadJob: Job? = null
     private var trailerJob: Job? = null
     private var detailLoadJob: Job? = null
     private var playbackResolveJob: Job? = null
@@ -203,36 +224,119 @@ class VixFlixViewModel @JvmOverloads constructor(
     }
 
     init {
-        loadCatalog()
+        loadCatalog(forceRefresh = false)
         initGitHubUpdateChecker()
+        refreshCacheStats()
     }
 
     fun selectTab(tab: NavTab) {
         _selectedTab.value = tab
+        if (tab == NavTab.SETTINGS) {
+            refreshCacheStats()
+        }
     }
 
-    fun loadCatalog() {
-        viewModelScope.launch {
-            _catalogState.value = CatalogUiState.Loading
-            launch {
-                val genres = repository.fetchMovieGenres()
-                _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
-            }
-            val result = repository.fetchLiveCatalogFeed()
-            result.fold(
-                onSuccess = { feed ->
-                    _catalogState.value = CatalogUiState.Success(feed)
-                    // Pre-riscalda in background e senza blocchi la connessione TLS verso i server video
-                    launch {
-                        repository.vixSrcResolver.prewarmConnection()
-                    }
-                },
-                onFailure = { error ->
-                    _catalogState.value = CatalogUiState.Error(
-                        error.localizedMessage ?: "Impossibile connettersi alle API di TMDB."
-                    )
+    private fun isTvEnvironment(): Boolean {
+        val uiMode = getApplication<Application>().resources.configuration.uiMode
+        return (uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION
+    }
+
+    private fun scheduleCatalogImagePrefetch(feed: CatalogFeed) {
+        if (!backgroundPrefetchEnabled.value || _playbackSession.value != null) return
+        imagePrefetchJob?.cancel()
+        imagePrefetchJob = viewModelScope.launch(Dispatchers.IO) {
+            // Attende la fine dell'animazione di ingresso iniziale per non competere con il primo render UI
+            delay(350L)
+            imagePrefetcher.prefetchCatalogVisuals(
+                feed = feed,
+                continueWatching = continueWatching.value,
+                watchlist = watchlist.value,
+                isTvDevice = isTvEnvironment(),
+                shouldContinue = {
+                    backgroundPrefetchEnabled.value && _playbackSession.value == null
                 }
             )
+            refreshCacheStats()
+        }
+    }
+
+    private fun scheduleDetailImagePrefetch(details: MediaDetails, episodes: List<TmdbEpisodeDto>) {
+        if (!backgroundPrefetchEnabled.value || _playbackSession.value != null) return
+        imagePrefetchJob?.cancel()
+        imagePrefetchJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(250L)
+            imagePrefetcher.prefetchDetailVisuals(
+                details = details,
+                episodes = episodes,
+                shouldContinue = {
+                    backgroundPrefetchEnabled.value && _playbackSession.value == null
+                }
+            )
+        }
+    }
+
+    fun loadCatalog(forceRefresh: Boolean = false) {
+        catalogLoadJob?.cancel()
+        catalogLoadJob = viewModelScope.launch {
+            val cached = if (!forceRefresh) repository.getCachedCatalogFeed() else null
+            if (cached != null) {
+                _movieGenreState.value = _movieGenreState.value.copy(genres = cached.genres)
+                _catalogState.value = CatalogUiState.Success(cached.feed)
+                launch { repository.vixSrcResolver.prewarmConnection() }
+                scheduleCatalogImagePrefetch(cached.feed)
+                refreshCacheStats()
+
+                if (!cached.isStale) {
+                    return@launch
+                }
+                // Stale-While-Revalidate silenzioso in background senza mostrare spinner né bloccare la UI
+                _isBackgroundCatalogRefreshing.value = true
+                try {
+                    val genres = repository.fetchMovieGenres()
+                    _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
+                    repository.fetchLiveCatalogFeed(genresToPersist = genres).onSuccess { freshFeed ->
+                        val currentSuccess = (_catalogState.value as? CatalogUiState.Success)?.feed
+                        if (currentSuccess != freshFeed) {
+                            _catalogState.value = CatalogUiState.Success(freshFeed)
+                        }
+                        scheduleCatalogImagePrefetch(freshFeed)
+                        refreshCacheStats()
+                    }
+                } finally {
+                    _isBackgroundCatalogRefreshing.value = false
+                }
+                return@launch
+            }
+
+            if (_catalogState.value !is CatalogUiState.Success) {
+                _catalogState.value = CatalogUiState.Loading
+            } else {
+                _isBackgroundCatalogRefreshing.value = true
+            }
+
+            try {
+                val genresDef = async { repository.fetchMovieGenres() }
+                val genres = genresDef.await()
+                _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
+                val result = repository.fetchLiveCatalogFeed(genresToPersist = genres)
+                result.fold(
+                    onSuccess = { feed ->
+                        _catalogState.value = CatalogUiState.Success(feed)
+                        launch { repository.vixSrcResolver.prewarmConnection() }
+                        scheduleCatalogImagePrefetch(feed)
+                        refreshCacheStats()
+                    },
+                    onFailure = { error ->
+                        if (_catalogState.value !is CatalogUiState.Success) {
+                            _catalogState.value = CatalogUiState.Error(
+                                error.localizedMessage ?: "Impossibile connettersi alle API di TMDB."
+                            )
+                        }
+                    }
+                )
+            } finally {
+                _isBackgroundCatalogRefreshing.value = false
+            }
         }
     }
 
@@ -329,25 +433,55 @@ class VixFlixViewModel @JvmOverloads constructor(
         detailLoadJob?.cancel()
         trailerJob?.cancel()
         seasonProgressJob?.cancel()
+        seasonLoadJob?.cancel()
 
         detailLoadJob = viewModelScope.launch {
             launch { repository.vixSrcResolver.prewarmConnection() }
             // Controlla se abbiamo una stagione salvata in "Continua a guardare"
             val savedProgress = database.vixFlixDao().getWatchProgress(item.uniqueKey)
             val initialSeason = savedProgress?.seasonNumber ?: 1
-            val newEntry = DetailUiState(
-                mediaItem = item,
-                isLoading = true,
-                selectedSeason = initialSeason
-            )
+            val cachedEntry = repository.getCachedMediaDetails(item)
+
+            val initialEntry = if (cachedEntry != null) {
+                val cachedDetails = cachedEntry.value
+                val targetSeason = if (cachedDetails.seasons.any { it.seasonNumber == initialSeason }) {
+                    initialSeason
+                } else {
+                    cachedDetails.seasons.firstOrNull()?.seasonNumber ?: 1
+                }
+                DetailUiState(
+                    mediaItem = cachedDetails.item,
+                    isLoading = false,
+                    details = cachedDetails,
+                    selectedSeason = targetSeason,
+                    errorMessage = null
+                )
+            } else {
+                DetailUiState(
+                    mediaItem = item,
+                    isLoading = true,
+                    selectedSeason = initialSeason
+                )
+            }
 
             val currentStack = _detailBackStack.value
             val updatedStack = if (currentStack.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
-                currentStack.dropLast(1) + newEntry
+                currentStack.dropLast(1) + initialEntry
             } else {
-                (currentStack + newEntry).takeLast(12)
+                (currentStack + initialEntry).takeLast(12)
             }
             updateDetailStack(updatedStack)
+
+            if (cachedEntry != null) {
+                if (cachedEntry.value.item.isSeries) {
+                    selectSeason(cachedEntry.value.item.id, initialEntry.selectedSeason)
+                } else {
+                    scheduleDetailImagePrefetch(cachedEntry.value, emptyList())
+                }
+                if (!cachedEntry.isStale) {
+                    return@launch
+                }
+            }
 
             repository.fetchMediaDetails(item).fold(
                 onSuccess = { details ->
@@ -357,22 +491,31 @@ class VixFlixViewModel @JvmOverloads constructor(
                         details.seasons.firstOrNull()?.seasonNumber ?: 1
                     }
                     if (_detailBackStack.value.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
+                        val previouslySelectedSeason = _detailBackStack.value.lastOrNull()?.selectedSeason ?: targetSeason
+                        val resolvedSeason = if (details.seasons.any { it.seasonNumber == previouslySelectedSeason }) {
+                            previouslySelectedSeason
+                        } else {
+                            targetSeason
+                        }
                         updateTopDetail { top ->
                             top.copy(
                                 mediaItem = details.item,
                                 isLoading = false,
                                 details = details,
-                                selectedSeason = targetSeason,
+                                selectedSeason = resolvedSeason,
                                 errorMessage = null
                             )
                         }
-                        if (details.item.isSeries) {
-                            selectSeason(details.item.id, targetSeason)
+                        if (details.item.isSeries && (cachedEntry == null || resolvedSeason != initialEntry.selectedSeason)) {
+                            selectSeason(details.item.id, resolvedSeason)
+                        } else if (!details.item.isSeries) {
+                            scheduleDetailImagePrefetch(details, emptyList())
                         }
+                        refreshCacheStats()
                     }
                 },
                 onFailure = { err ->
-                    if (_detailBackStack.value.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
+                    if (_detailBackStack.value.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey && cachedEntry == null) {
                         updateTopDetail { top ->
                             top.copy(
                                 isLoading = false,
@@ -389,6 +532,7 @@ class VixFlixViewModel @JvmOverloads constructor(
         detailLoadJob?.cancel()
         trailerJob?.cancel()
         seasonProgressJob?.cancel()
+        seasonLoadJob?.cancel()
 
         val currentStack = _detailBackStack.value
         if (currentStack.size > 1) {
@@ -407,6 +551,7 @@ class VixFlixViewModel @JvmOverloads constructor(
         detailLoadJob?.cancel()
         trailerJob?.cancel()
         seasonProgressJob?.cancel()
+        seasonLoadJob?.cancel()
         updateDetailStack(emptyList())
     }
 
@@ -571,29 +716,55 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun selectSeason(tvId: Int, seasonNumber: Int) {
         if (_detailState.value == null) return
-        updateTopDetail { top ->
-            top.copy(
-                selectedSeason = seasonNumber,
-                isLoadingEpisodes = true
-            )
-        }
-
+        seasonLoadJob?.cancel()
         observeSeasonProgressForTop(tvId, seasonNumber)
 
-        viewModelScope.launch {
+        seasonLoadJob = viewModelScope.launch {
+            val cachedSeason = repository.getCachedSeasonEpisodes(tvId, seasonNumber)
+            if (cachedSeason != null) {
+                if (_detailState.value?.mediaItem?.id == tvId) {
+                    updateTopDetail { top ->
+                        top.copy(
+                            selectedSeason = seasonNumber,
+                            episodes = cachedSeason.value,
+                            isLoadingEpisodes = false
+                        )
+                    }
+                    _detailState.value?.details?.let { d ->
+                        scheduleDetailImagePrefetch(d, cachedSeason.value)
+                    }
+                }
+                if (!cachedSeason.isStale) {
+                    return@launch
+                }
+            } else {
+                updateTopDetail { top ->
+                    top.copy(
+                        selectedSeason = seasonNumber,
+                        isLoadingEpisodes = true
+                    )
+                }
+            }
+
             repository.fetchSeasonEpisodes(tvId, seasonNumber).fold(
                 onSuccess = { episodes ->
-                    if (_detailState.value?.mediaItem?.id == tvId) {
+                    val currentTop = _detailState.value
+                    if (currentTop?.mediaItem?.id == tvId && currentTop.selectedSeason == seasonNumber) {
                         updateTopDetail { top ->
                             top.copy(
                                 episodes = episodes,
                                 isLoadingEpisodes = false
                             )
                         }
+                        currentTop.details?.let { d ->
+                            scheduleDetailImagePrefetch(d, episodes)
+                        }
+                        refreshCacheStats()
                     }
                 },
                 onFailure = {
-                    if (_detailState.value?.mediaItem?.id == tvId) {
+                    val currentTop = _detailState.value
+                    if (currentTop?.mediaItem?.id == tvId && currentTop.selectedSeason == seasonNumber) {
                         updateTopDetail { top ->
                             top.copy(isLoadingEpisodes = false)
                         }
@@ -624,9 +795,12 @@ class VixFlixViewModel @JvmOverloads constructor(
         seasonNumber: Int? = null,
         episodeNumber: Int? = null,
         episodeTitle: String? = null,
-        explicitStartPositionMs: Long? = null
+        explicitStartPositionMs: Long? = null,
+        forceStreamRefresh: Boolean = false
     ) {
         playbackResolveJob?.cancel()
+        // Sospende subito eventuali prefetch locandine per dedicare il 100% della banda allo streaming video
+        imagePrefetchJob?.cancel()
 
         val lang = streamLanguage.value
         val useWebPlayer = preferWebPlayer.value
@@ -778,7 +952,8 @@ class VixFlixViewModel @JvmOverloads constructor(
                     season = targetSeason,
                     episode = targetEpisode,
                     startPositionMs = startPosMs,
-                    lang = resolvedLang
+                    lang = resolvedLang,
+                    forceRefresh = forceStreamRefresh
                 )
             }
 
@@ -854,6 +1029,41 @@ class VixFlixViewModel @JvmOverloads constructor(
             isResolvingStream = false,
             resolvedStream = updatedStream
         )
+        viewModelScope.launch {
+            repository.cacheInterceptedHlsStream(
+                item = current.mediaItem,
+                season = current.seasonNumber,
+                episode = current.episodeNumber,
+                lang = streamLanguage.value,
+                stream = updatedStream
+            )
+            refreshCacheStats()
+        }
+    }
+
+    /**
+     * Invalida l'eventuale link stream in cache (ad es. se scaduto anticipatamente con HTTP 403/410)
+     * ed esegue immediatamente una nuova risoluzione VixSrc mantenendo la posizione di riproduzione.
+     */
+    fun invalidateAndRetryCurrentStream() {
+        val current = _playbackSession.value ?: return
+        val lang = streamLanguage.value
+        viewModelScope.launch {
+            repository.invalidateCachedStream(
+                item = current.mediaItem,
+                season = current.seasonNumber,
+                episode = current.episodeNumber,
+                lang = lang
+            )
+            startPlayback(
+                item = current.mediaItem,
+                seasonNumber = current.seasonNumber,
+                episodeNumber = current.episodeNumber,
+                episodeTitle = current.episodeTitle,
+                explicitStartPositionMs = current.startPositionMs,
+                forceStreamRefresh = true
+            )
+        }
     }
 
     fun togglePlayerMode(forceWeb: Boolean) {
@@ -953,6 +1163,40 @@ class VixFlixViewModel @JvmOverloads constructor(
         }
     }
 
+    fun setBackgroundPrefetchEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setBackgroundPrefetch(enabled)
+            if (!enabled) {
+                imagePrefetchJob?.cancel()
+            } else {
+                (_catalogState.value as? CatalogUiState.Success)?.feed?.let { feed ->
+                    scheduleCatalogImagePrefetch(feed)
+                }
+            }
+        }
+    }
+
+    fun refreshCacheStats() {
+        viewModelScope.launch {
+            val imageBytes = withContext(Dispatchers.IO) {
+                imagePrefetcher.estimateImageDiskCacheBytes()
+            }
+            _cacheStats.value = repository.getCacheStatsSummary(imageBytes)
+        }
+    }
+
+    fun clearLocalCache() {
+        imagePrefetchJob?.cancel()
+        movieGenreCache.clear()
+        viewModelScope.launch {
+            repository.clearAllLocalCaches {
+                imagePrefetcher.clearCoilCaches()
+            }
+            _cacheClearedFeedbackNonce.value += 1
+            refreshCacheStats()
+        }
+    }
+
     private fun initGitHubUpdateChecker() {
         val rawPreview = TmdbApiConfig.readBundledJsonPreview(getApplication())
         _gitHubState.value = _gitHubState.value.copy(
@@ -981,7 +1225,7 @@ class VixFlixViewModel @JvmOverloads constructor(
         _gitHubState.value = _gitHubState.value.copy(tmdbApiKey = cleaned)
         viewModelScope.launch {
             preferences.setTmdbApiKey(cleaned)
-            loadCatalog()
+            loadCatalog(forceRefresh = true)
         }
     }
 
@@ -990,7 +1234,7 @@ class VixFlixViewModel @JvmOverloads constructor(
         _gitHubState.value = _gitHubState.value.copy(tmdbApiKey = defaultKey)
         viewModelScope.launch {
             preferences.setTmdbApiKey(defaultKey)
-            loadCatalog()
+            loadCatalog(forceRefresh = true)
         }
     }
 

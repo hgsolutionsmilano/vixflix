@@ -1,8 +1,14 @@
 package com.example.data.repository
 
+import android.util.LruCache
 import androidx.compose.runtime.Immutable
 import com.example.BuildConfig
+import com.example.data.local.CacheStatsSummary
+import com.example.data.local.CatalogSnapshotEntity
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.MediaDetailsCacheEntity
+import com.example.data.local.ResolvedStreamCacheEntity
+import com.example.data.local.SeasonEpisodesCacheEntity
 import com.example.data.local.VixFlixDao
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -12,6 +18,7 @@ import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.ResolvedTrailerStream
+import com.example.data.remote.SubtitleTrack
 import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.TmdbApiService
 import com.example.data.remote.TmdbEpisodeDto
@@ -24,16 +31,35 @@ import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.remote.toDomain
 import com.squareup.moshi.Moshi
+import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+
+@Immutable
+data class CachedValue<T>(
+    val value: T,
+    val updatedAtMs: Long,
+    val isStale: Boolean
+)
+
+@Immutable
+data class CachedCatalogResult(
+    val feed: CatalogFeed,
+    val genres: List<TmdbGenreDto>,
+    val updatedAtMs: Long,
+    val isStale: Boolean
+)
 
 @Immutable
 data class CatalogFeed(
@@ -52,9 +78,21 @@ data class CatalogFeed(
 class VixFlixRepository(
     private val dao: VixFlixDao,
     baseHttpClient: OkHttpClient = defaultRawOkHttpClient(),
-    tmdbBaseUrl: String = BuildConfig.TMDB_BASE_URL
+    tmdbBaseUrl: String = BuildConfig.TMDB_BASE_URL,
+    vixBaseUrl: String = BuildConfig.VIXSRC_BASE_URL
 ) {
     companion object {
+        private const val CATALOG_SNAPSHOT_ID = "home_feed_v1"
+        private const val CATALOG_FRESH_MS = 15L * 60L * 1000L
+        private const val CATALOG_MAX_RETENTION_MS = 7L * 24L * 3600L * 1000L
+
+        private const val DETAIL_FRESH_MS = 6L * 3600L * 1000L
+        private const val DETAIL_MAX_RETENTION_MS = 14L * 24L * 3600L * 1000L
+
+        private const val MAX_DETAILS_DISK_ENTRIES = 60
+        private const val MAX_SEASONS_DISK_ENTRIES = 40
+        private const val MAX_STREAMS_DISK_ENTRIES = 40
+
         private fun defaultRawOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -101,6 +139,29 @@ class VixFlixRepository(
         .addLast(KotlinJsonAdapterFactory())
         .build()
 
+    private val catalogFeedAdapter = moshi.adapter(CatalogFeed::class.java)
+    private val mediaDetailsAdapter = moshi.adapter(MediaDetails::class.java)
+    private val genreListAdapter = moshi.adapter<List<TmdbGenreDto>>(
+        Types.newParameterizedType(List::class.java, TmdbGenreDto::class.java)
+    )
+    private val episodeListAdapter = moshi.adapter<List<TmdbEpisodeDto>>(
+        Types.newParameterizedType(List::class.java, TmdbEpisodeDto::class.java)
+    )
+    private val subtitleListAdapter = moshi.adapter<List<SubtitleTrack>>(
+        Types.newParameterizedType(List::class.java, SubtitleTrack::class.java)
+    )
+
+    private data class TimedMemoryEntry<T>(
+        val value: T,
+        val updatedAtMs: Long
+    )
+
+    private val detailsMemoryCache = LruCache<String, TimedMemoryEntry<MediaDetails>>(30)
+    private val episodesMemoryCache = LruCache<String, TimedMemoryEntry<List<TmdbEpisodeDto>>>(24)
+    private val streamMemoryCache = ConcurrentHashMap<String, ResolvedStream>()
+    @Volatile
+    private var cachedGenresInMemory: TimedMemoryEntry<List<TmdbGenreDto>>? = null
+
     private val tmdbApi: TmdbApiService = Retrofit.Builder()
         .baseUrl(tmdbBaseUrl)
         .client(tmdbOkHttpClient)
@@ -108,7 +169,7 @@ class VixFlixRepository(
         .build()
         .create(TmdbApiService::class.java)
 
-    val vixSrcResolver = VixSrcStreamResolver(rawOkHttpClient)
+    val vixSrcResolver = VixSrcStreamResolver(rawOkHttpClient, vixBaseUrl)
     val trailerResolver = TmdbTrailerResolver(rawOkHttpClient, vixSrcResolver)
     val gitHubUpdateService = GitHubUpdateService(gitHubOkHttpClient)
 
@@ -119,10 +180,34 @@ class VixFlixRepository(
         dao.observeSeasonProgress(tmdbId, seasonNumber)
 
     /**
-     * Carica l'intero catalogo iniziale in parallelo direttamente dalle API live di TMDB.
-     * Nessun contenuto di fallback statico viene mai restituito.
+     * Legge immediatamente lo snapshot più recente del catalogo Home da Room per apertura istantanea.
      */
-    suspend fun fetchLiveCatalogFeed(): Result<CatalogFeed> = runCatching {
+    suspend fun getCachedCatalogFeed(): CachedCatalogResult? = withContext(Dispatchers.IO) {
+        runCatching {
+            val snapshot = dao.getCatalogSnapshot(CATALOG_SNAPSHOT_ID) ?: return@withContext null
+            val now = System.currentTimeMillis()
+            if (now - snapshot.updatedAtMs > CATALOG_MAX_RETENTION_MS) {
+                return@withContext null
+            }
+            val feed = catalogFeedAdapter.fromJson(snapshot.feedJson) ?: return@withContext null
+            val genres = runCatching {
+                genreListAdapter.fromJson(snapshot.movieGenresJson)
+            }.getOrNull()?.takeIf { it.isNotEmpty() } ?: TmdbGenreMap.defaultMovieGenres
+            cachedGenresInMemory = TimedMemoryEntry(genres, snapshot.updatedAtMs)
+            CachedCatalogResult(
+                feed = feed,
+                genres = genres,
+                updatedAtMs = snapshot.updatedAtMs,
+                isStale = (now - snapshot.updatedAtMs) > CATALOG_FRESH_MS
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Carica l'intero catalogo iniziale in parallelo direttamente dalle API live di TMDB
+     * e aggiorna lo snapshot persistente su Room per gli avvii successivi.
+     */
+    suspend fun fetchLiveCatalogFeed(genresToPersist: List<TmdbGenreDto>? = null): Result<CatalogFeed> = runCatching {
         val apiKey = TmdbApiConfig.currentApiKey.trim().ifBlank { TmdbApiConfig.INTEGRATED_TMDB_API_KEY }
         if (apiKey.isBlank()) {
             throw IllegalStateException("Chiave API TMDB mancante.")
@@ -153,7 +238,7 @@ class VixFlixRepository(
                 ?: popularMovies.firstOrNull()
                 ?: throw IllegalStateException("TMDB non ha restituito risultati per il catalogo.")
 
-            CatalogFeed(
+            val feed = CatalogFeed(
                 heroBanner = hero,
                 top10Today = trendingAll.take(10),
                 trendingMovies = trendingMovies,
@@ -165,11 +250,57 @@ class VixFlixRepository(
                 actionMovies = action,
                 sciFiMovies = sciFi
             )
+
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val genres = genresToPersist
+                        ?: cachedGenresInMemory?.value
+                        ?: TmdbGenreMap.defaultMovieGenres
+                    dao.upsertCatalogSnapshot(
+                        CatalogSnapshotEntity(
+                            id = CATALOG_SNAPSHOT_ID,
+                            feedJson = catalogFeedAdapter.toJson(feed),
+                            movieGenresJson = genreListAdapter.toJson(genres),
+                            updatedAtMs = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+
+            feed
         }
     }
 
+    suspend fun getCachedMediaDetails(mediaItem: MediaItem): CachedValue<MediaDetails>? = withContext(Dispatchers.IO) {
+        val key = mediaItem.uniqueKey
+        val now = System.currentTimeMillis()
+        detailsMemoryCache.get(key)?.let { mem ->
+            if (now - mem.updatedAtMs <= DETAIL_MAX_RETENTION_MS) {
+                return@withContext CachedValue(
+                    value = mem.value,
+                    updatedAtMs = mem.updatedAtMs,
+                    isStale = (now - mem.updatedAtMs) > DETAIL_FRESH_MS
+                )
+            }
+        }
+        runCatching {
+            val entity = dao.getMediaDetailsCache(key) ?: return@withContext null
+            if (now - entity.updatedAtMs > DETAIL_MAX_RETENTION_MS) {
+                return@withContext null
+            }
+            val parsed = mediaDetailsAdapter.fromJson(entity.detailsJson) ?: return@withContext null
+            detailsMemoryCache.put(key, TimedMemoryEntry(parsed, entity.updatedAtMs))
+            dao.touchMediaDetailsCache(key, now)
+            CachedValue(
+                value = parsed,
+                updatedAtMs = entity.updatedAtMs,
+                isStale = (now - entity.updatedAtMs) > DETAIL_FRESH_MS
+            )
+        }.getOrNull()
+    }
+
     suspend fun fetchMediaDetails(mediaItem: MediaItem): Result<MediaDetails> = runCatching {
-        if (mediaItem.isSeries) {
+        val details = if (mediaItem.isSeries) {
             val dto = tmdbApi.getTvDetails(mediaItem.id)
             val updatedItem = mediaItem.copy(
                 title = dto.name ?: mediaItem.title,
@@ -219,6 +350,26 @@ class VixFlixRepository(
                 trailers = prioritizeTrailers(rawVideos)
             )
         }
+
+        val now = System.currentTimeMillis()
+        val key = mediaItem.uniqueKey
+        detailsMemoryCache.put(key, TimedMemoryEntry(details, now))
+        withContext(Dispatchers.IO) {
+            runCatching {
+                dao.upsertMediaDetailsCache(
+                    MediaDetailsCacheEntity(
+                        cacheKey = key,
+                        mediaType = mediaItem.mediaType,
+                        tmdbId = mediaItem.id,
+                        detailsJson = mediaDetailsAdapter.toJson(details),
+                        updatedAtMs = now,
+                        lastAccessedAtMs = now
+                    )
+                )
+                dao.trimMediaDetailsCache(MAX_DETAILS_DISK_ENTRIES)
+            }
+        }
+        details
     }
 
     private fun prioritizeTrailers(videos: List<TmdbVideoDto>): List<TmdbVideoDto> {
@@ -251,21 +402,82 @@ class VixFlixRepository(
         return trailerResolver.resolveTrailerForExoPlayer(item = item, video = video, lang = lang)
     }
 
-    suspend fun fetchMovieGenres(): List<TmdbGenreDto> = runCatching {
-        tmdbApi.getMovieGenres().genres
-            .filter { it.id > 0 && it.name.isNotBlank() }
-            .distinctBy { it.id }
-            .ifEmpty { TmdbGenreMap.defaultMovieGenres }
-    }.getOrDefault(TmdbGenreMap.defaultMovieGenres)
+    suspend fun fetchMovieGenres(): List<TmdbGenreDto> {
+        val mem = cachedGenresInMemory
+        val now = System.currentTimeMillis()
+        if (mem != null && now - mem.updatedAtMs < DETAIL_FRESH_MS && mem.value.isNotEmpty()) {
+            return mem.value
+        }
+        val fetched = runCatching {
+            tmdbApi.getMovieGenres().genres
+                .filter { it.id > 0 && it.name.isNotBlank() }
+                .distinctBy { it.id }
+                .ifEmpty { TmdbGenreMap.defaultMovieGenres }
+        }.getOrNull()
+
+        if (fetched != null) {
+            cachedGenresInMemory = TimedMemoryEntry(fetched, now)
+            return fetched
+        }
+        return mem?.value?.takeIf { it.isNotEmpty() } ?: TmdbGenreMap.defaultMovieGenres
+    }
 
     suspend fun fetchMoviesByGenre(genreId: Int, page: Int = 1): Result<List<MediaItem>> = runCatching {
         val response = tmdbApi.discoverMoviesByGenre(genreId = genreId.toString(), page = page)
         response.results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
     }
 
+    suspend fun getCachedSeasonEpisodes(tvId: Int, seasonNumber: Int): CachedValue<List<TmdbEpisodeDto>>? =
+        withContext(Dispatchers.IO) {
+            val key = "tv_${tvId}_s${seasonNumber}"
+            val now = System.currentTimeMillis()
+            episodesMemoryCache.get(key)?.let { mem ->
+                if (now - mem.updatedAtMs <= DETAIL_MAX_RETENTION_MS) {
+                    return@withContext CachedValue(
+                        value = mem.value,
+                        updatedAtMs = mem.updatedAtMs,
+                        isStale = (now - mem.updatedAtMs) > DETAIL_FRESH_MS
+                    )
+                }
+            }
+            runCatching {
+                val entity = dao.getSeasonEpisodesCache(key) ?: return@withContext null
+                if (now - entity.updatedAtMs > DETAIL_MAX_RETENTION_MS) {
+                    return@withContext null
+                }
+                val parsed = episodeListAdapter.fromJson(entity.episodesJson) ?: return@withContext null
+                episodesMemoryCache.put(key, TimedMemoryEntry(parsed, entity.updatedAtMs))
+                dao.touchSeasonEpisodesCache(key, now)
+                CachedValue(
+                    value = parsed,
+                    updatedAtMs = entity.updatedAtMs,
+                    isStale = (now - entity.updatedAtMs) > DETAIL_FRESH_MS
+                )
+            }.getOrNull()
+        }
+
     suspend fun fetchSeasonEpisodes(tvId: Int, seasonNumber: Int): Result<List<TmdbEpisodeDto>> = runCatching {
         val season: TmdbSeasonDetailsDto = tmdbApi.getTvSeasonDetails(tvId = tvId, seasonNumber = seasonNumber)
-        season.episodes.distinctBy { it.seasonNumber to it.episodeNumber }
+        val episodes = season.episodes.distinctBy { it.seasonNumber to it.episodeNumber }
+        val now = System.currentTimeMillis()
+        val key = "tv_${tvId}_s${seasonNumber}"
+        episodesMemoryCache.put(key, TimedMemoryEntry(episodes, now))
+        withContext(Dispatchers.IO) {
+            runCatching {
+                dao.upsertSeasonEpisodesCache(
+                    SeasonEpisodesCacheEntity(
+                        cacheKey = key,
+                        tvId = tvId,
+                        seasonNumber = seasonNumber,
+                        episodesJson = episodeListAdapter.toJson(episodes),
+                        updatedAtMs = now,
+                        lastAccessedAtMs = now
+                    )
+                )
+                dao.trimSeasonEpisodesCache(MAX_SEASONS_DISK_ENTRIES)
+            }
+        }
+        episodes
     }
 
     suspend fun searchTmdb(query: String): Result<List<MediaItem>> = runCatching {
@@ -381,15 +593,73 @@ class VixFlixRepository(
         }
     }
 
+    private fun streamCacheKey(
+        tmdbId: Int,
+        mediaType: String,
+        season: Int?,
+        episode: Int?,
+        lang: String
+    ): String = "${mediaType}_${tmdbId}_${season ?: 0}_${episode ?: 0}_${lang.lowercase()}"
+
     suspend fun resolveVixSrcStream(
         item: MediaItem,
         season: Int?,
         episode: Int?,
         startPositionMs: Long,
-        lang: String
+        lang: String,
+        forceRefresh: Boolean = false
     ): Result<ResolvedStream> {
         val startSeconds = (startPositionMs / 1000L).coerceAtLeast(0L)
-        return vixSrcResolver.resolveStreamForExoPlayer(
+        val startMinutes = (startSeconds / 60L).toInt()
+        val key = streamCacheKey(item.id, item.mediaType, season, episode, lang)
+        val now = System.currentTimeMillis()
+
+        if (!forceRefresh) {
+            val mem = streamMemoryCache[key]
+            if (mem != null && mem.isDirectHls && mem.expiresAtMs > now) {
+                withContext(Dispatchers.IO) {
+                    runCatching { dao.touchStreamCache(key, now) }
+                }
+                return Result.success(
+                    mem.copy(
+                        startSeconds = startSeconds,
+                        startMinutes = startMinutes,
+                        fromCache = true
+                    )
+                )
+            }
+
+            val cachedEntity = withContext(Dispatchers.IO) {
+                runCatching { dao.getStreamCache(key) }.getOrNull()
+            }
+            if (cachedEntity != null && cachedEntity.expiresAtMs > now && cachedEntity.streamUrl.isNotBlank()) {
+                val subtitles = runCatching {
+                    subtitleListAdapter.fromJson(cachedEntity.subtitlesJson).orEmpty()
+                }.getOrDefault(emptyList())
+                val restored = ResolvedStream(
+                    streamUrl = cachedEntity.streamUrl,
+                    embedUrl = cachedEntity.embedUrl,
+                    referer = cachedEntity.referer,
+                    userAgent = cachedEntity.userAgent,
+                    startSeconds = startSeconds,
+                    startMinutes = startMinutes,
+                    subtitles = subtitles,
+                    isDirectHls = true,
+                    vixCatalogVerified = true,
+                    expiresAtMs = cachedEntity.expiresAtMs,
+                    fromCache = true
+                )
+                streamMemoryCache[key] = restored
+                withContext(Dispatchers.IO) {
+                    runCatching { dao.touchStreamCache(key, now) }
+                }
+                return Result.success(restored)
+            }
+        } else {
+            invalidateCachedStream(item, season, episode, lang)
+        }
+
+        val liveResult = vixSrcResolver.resolveStreamForExoPlayer(
             tmdbId = item.id,
             mediaType = item.mediaType,
             season = season,
@@ -397,6 +667,122 @@ class VixFlixRepository(
             startSeconds = startSeconds,
             lang = lang
         )
+
+        liveResult.onSuccess { resolved ->
+            val resolvedNow = System.currentTimeMillis()
+            val safeExpiresAt = if (resolved.expiresAtMs > resolvedNow) {
+                resolved.expiresAtMs
+            } else {
+                resolvedNow + 20L * 60L * 1000L
+            }
+            val cleanForCache = resolved.copy(expiresAtMs = safeExpiresAt, fromCache = false)
+            streamMemoryCache[key] = cleanForCache
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    dao.upsertStreamCache(
+                        ResolvedStreamCacheEntity(
+                            cacheKey = key,
+                            tmdbId = item.id,
+                            mediaType = item.mediaType,
+                            seasonNumber = season,
+                            episodeNumber = episode,
+                            lang = lang.lowercase(),
+                            streamUrl = cleanForCache.streamUrl,
+                            embedUrl = cleanForCache.embedUrl,
+                            referer = cleanForCache.referer,
+                            userAgent = cleanForCache.userAgent,
+                            startSeconds = cleanForCache.startSeconds,
+                            startMinutes = cleanForCache.startMinutes,
+                            subtitlesJson = subtitleListAdapter.toJson(cleanForCache.subtitles),
+                            expiresAtMs = safeExpiresAt,
+                            verifiedAtMs = resolvedNow,
+                            lastUsedAtMs = resolvedNow
+                        )
+                    )
+                    dao.deleteExpiredStreamCaches(resolvedNow)
+                    dao.trimStreamCaches(MAX_STREAMS_DISK_ENTRIES)
+                }
+            }
+        }
+        return liveResult
+    }
+
+    suspend fun cacheInterceptedHlsStream(
+        item: MediaItem,
+        season: Int?,
+        episode: Int?,
+        lang: String,
+        stream: ResolvedStream
+    ) {
+        val key = streamCacheKey(item.id, item.mediaType, season, episode, lang)
+        val now = System.currentTimeMillis()
+        val safeExpires = vixSrcResolver.computeSafeExpiresAtMs(stream.streamUrl, now)
+        val clean = stream.copy(expiresAtMs = safeExpires, fromCache = false)
+        streamMemoryCache[key] = clean
+        withContext(Dispatchers.IO) {
+            runCatching {
+                dao.upsertStreamCache(
+                    ResolvedStreamCacheEntity(
+                        cacheKey = key,
+                        tmdbId = item.id,
+                        mediaType = item.mediaType,
+                        seasonNumber = season,
+                        episodeNumber = episode,
+                        lang = lang.lowercase(),
+                        streamUrl = clean.streamUrl,
+                        embedUrl = clean.embedUrl,
+                        referer = clean.referer,
+                        userAgent = clean.userAgent,
+                        startSeconds = clean.startSeconds,
+                        startMinutes = clean.startMinutes,
+                        subtitlesJson = subtitleListAdapter.toJson(clean.subtitles),
+                        expiresAtMs = safeExpires,
+                        verifiedAtMs = now,
+                        lastUsedAtMs = now
+                    )
+                )
+                dao.trimStreamCaches(MAX_STREAMS_DISK_ENTRIES)
+            }
+        }
+    }
+
+    suspend fun invalidateCachedStream(
+        item: MediaItem,
+        season: Int?,
+        episode: Int?,
+        lang: String
+    ) {
+        val key = streamCacheKey(item.id, item.mediaType, season, episode, lang)
+        streamMemoryCache.remove(key)
+        withContext(Dispatchers.IO) {
+            runCatching { dao.deleteStreamCache(key) }
+        }
+    }
+
+    suspend fun getCacheStatsSummary(imageCacheBytes: Long): CacheStatsSummary = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        runCatching { dao.deleteExpiredStreamCaches(now) }
+        CacheStatsSummary(
+            catalogUpdatedAtMs = runCatching { dao.getCatalogSnapshot(CATALOG_SNAPSHOT_ID)?.updatedAtMs }.getOrNull(),
+            cachedDetailsCount = runCatching { dao.countMediaDetailsCache() }.getOrDefault(0),
+            cachedSeasonsCount = runCatching { dao.countSeasonEpisodesCache() }.getOrDefault(0),
+            validStreamLinksCount = runCatching { dao.countValidStreamCaches(now) }.getOrDefault(0),
+            imageCacheSizeBytes = imageCacheBytes
+        )
+    }
+
+    suspend fun clearAllLocalCaches(clearImageCaches: () -> Unit) {
+        detailsMemoryCache.evictAll()
+        episodesMemoryCache.evictAll()
+        streamMemoryCache.clear()
+        cachedGenresInMemory = null
+        withContext(Dispatchers.IO) {
+            runCatching { dao.clearCatalogSnapshot() }
+            runCatching { dao.clearMediaDetailsCache() }
+            runCatching { dao.clearSeasonEpisodesCache() }
+            runCatching { dao.clearStreamCaches() }
+            runCatching { clearImageCaches() }
+        }
     }
 
     suspend fun checkGitHubRelease(repo: String): Result<GitHubReleaseInfo> {

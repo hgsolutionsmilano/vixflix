@@ -100,6 +100,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
+import com.example.data.local.CacheStatsSummary
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.TmdbApiConfig
 import com.example.ui.GitHubUpdateUiState
@@ -155,6 +156,12 @@ fun SettingsScreen(
     onTriggerUpdate: () -> Unit,
     onUpdateTmdbKey: (String) -> Unit,
     onResetTmdbKey: () -> Unit,
+    backgroundPrefetchEnabled: Boolean = true,
+    cacheStats: CacheStatsSummary = CacheStatsSummary(),
+    isBackgroundCatalogRefreshing: Boolean = false,
+    cacheClearedFeedbackNonce: Int = 0,
+    onSetBackgroundPrefetch: (Boolean) -> Unit = {},
+    onClearLocalCache: () -> Unit = {},
     firstControlFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
@@ -257,6 +264,13 @@ fun SettingsScreen(
                         isTvLayout = isTvLayout,
                         continueWatchingCount = continueWatchingCount,
                         watchlistCount = watchlistCount,
+                        backgroundPrefetchEnabled = backgroundPrefetchEnabled,
+                        cacheStats = cacheStats,
+                        isBackgroundCatalogRefreshing = isBackgroundCatalogRefreshing,
+                        cacheClearedFeedbackNonce = cacheClearedFeedbackNonce,
+                        onSetBackgroundPrefetch = onSetBackgroundPrefetch,
+                        onRefreshCatalog = onRefreshCatalog,
+                        onClearLocalCache = onClearLocalCache,
                         onClearContinueWatching = onClearContinueWatching,
                         navRailFocusRequester = navRailFocusRequester
                     )
@@ -1049,6 +1063,13 @@ private fun SystemSettingsPanel(
     isTvLayout: Boolean,
     continueWatchingCount: Int,
     watchlistCount: Int,
+    backgroundPrefetchEnabled: Boolean,
+    cacheStats: CacheStatsSummary,
+    isBackgroundCatalogRefreshing: Boolean,
+    cacheClearedFeedbackNonce: Int,
+    onSetBackgroundPrefetch: (Boolean) -> Unit,
+    onRefreshCatalog: () -> Unit,
+    onClearLocalCache: () -> Unit,
     onClearContinueWatching: () -> Unit,
     navRailFocusRequester: FocusRequester?
 ) {
@@ -1056,8 +1077,127 @@ private fun SystemSettingsPanel(
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SettingsSectionCard(
+            title = "Cache & Prestazioni",
+            subtitle = "Avvio immediato da Room, link stream validi e precaricamento locandine Coil",
+            icon = Icons.Default.Memory,
+            badgeText = when {
+                isBackgroundCatalogRefreshing -> "AGGIORNAMENTO…"
+                cacheStats.catalogUpdatedAtMs != null -> "CACHE ATTIVA"
+                else -> "VUOTA"
+            },
+            badgeColor = if (cacheStats.catalogUpdatedAtMs != null) NetflixMatchGreen else NetflixLightGray
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                SettingsStatTile(
+                    label = "Locandine Coil",
+                    value = formatCacheSizeMb(cacheStats.imageCacheSizeBytes),
+                    modifier = Modifier.weight(1f)
+                )
+                SettingsStatTile(
+                    label = "Link Video Validi",
+                    value = cacheStats.validStreamLinksCount.toString(),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                SettingsStatTile(
+                    label = "Schede Dettaglio",
+                    value = cacheStats.cachedDetailsCount.toString(),
+                    modifier = Modifier.weight(1f)
+                )
+                SettingsStatTile(
+                    label = "Stagioni Episodi",
+                    value = cacheStats.cachedSeasonsCount.toString(),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SettingsInfoLine(
+                label = "Snapshot Catalogo Home",
+                value = formatRelativeCacheAge(cacheStats.catalogUpdatedAtMs)
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SettingsSwitchRow(
+                label = "Precaricamento leggero locandine",
+                description = "Precarica in background Hero e locandine principali senza rallentare UI o streaming",
+                checked = backgroundPrefetchEnabled,
+                onCheckedChange = onSetBackgroundPrefetch,
+                navRailFocusRequester = navRailFocusRequester,
+                testTagName = "settings_prefetch_switch"
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+            ) {
+                OutlinedButton(
+                    onClick = onRefreshCatalog,
+                    enabled = !isBackgroundCatalogRefreshing,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .focusProperties {
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        }
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                        .testTag("settings_refresh_catalog_cache_button")
+                ) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isBackgroundCatalogRefreshing) "Aggiornamento…" else "Aggiorna Ora",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onClearLocalCache,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, NetflixRed),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                        .testTag("settings_clear_cache_button")
+                ) {
+                    Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (cacheClearedFeedbackNonce > 0 && cacheStats.catalogUpdatedAtMs == null) {
+                            "Cache Svuotata!"
+                        } else {
+                            "Svuota Cache"
+                        },
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
+
+        SettingsSectionCard(
             title = "Archivio & Cronologia Locale",
-            subtitle = "Dati salvati sul dispositivo tramite database Room",
+            subtitle = "Dati utente persistenti (non rimossi dallo svuotamento cache)",
             icon = Icons.Default.Storage
         ) {
             Row(
@@ -1121,6 +1261,23 @@ private fun SystemSettingsPanel(
             SettingsInfoLine(label = "Interfaccia Attiva", value = if (isTvLayout) "Android TV / Fire TV (Telecomando)" else "Smartphone / Tablet (Touch)")
             SettingsInfoLine(label = "Firma Keystore", value = "SHA1 96:99:D9:34…BB:7C")
         }
+    }
+}
+
+private fun formatCacheSizeMb(bytes: Long): String {
+    if (bytes <= 0L) return "0 MB"
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mb < 10.0) String.format("%.1f MB", mb) else "${mb.toInt()} MB"
+}
+
+private fun formatRelativeCacheAge(updatedAtMs: Long?): String {
+    if (updatedAtMs == null || updatedAtMs <= 0L) return "Non ancora salvato"
+    val diffSec = ((System.currentTimeMillis() - updatedAtMs) / 1000L).coerceAtLeast(0L)
+    return when {
+        diffSec < 60L -> "Aggiornato ora"
+        diffSec < 3600L -> "${diffSec / 60L} min fa"
+        diffSec < 86_400L -> "${diffSec / 3600L} ore fa"
+        else -> "${diffSec / 86_400L} giorni fa"
     }
 }
 

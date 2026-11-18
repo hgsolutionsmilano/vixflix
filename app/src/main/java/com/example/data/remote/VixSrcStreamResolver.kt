@@ -26,7 +26,9 @@ data class ResolvedStream(
     val startMinutes: Int = 0,
     val subtitles: List<SubtitleTrack> = emptyList(),
     val isDirectHls: Boolean = true,
-    val vixCatalogVerified: Boolean = true
+    val vixCatalogVerified: Boolean = true,
+    val expiresAtMs: Long = 0L,
+    val fromCache: Boolean = false
 ) {
     companion object {
         const val DEFAULT_USER_AGENT =
@@ -345,6 +347,7 @@ class VixSrcStreamResolver(
                 val extractedHls = parseMasterPlaylistFromHtml(html, fullEmbedUrl, lang, safeSeconds)
                     ?: throw IllegalStateException("Impossibile estrarre la masterPlaylist HLS da VixSrc.")
                 val subtitles = parseSubtitlesFromHtml(html)
+                val expiresAtMs = computeSafeExpiresAtMs(extractedHls)
 
                 ResolvedStream(
                     streamUrl = extractedHls,
@@ -354,10 +357,31 @@ class VixSrcStreamResolver(
                     startMinutes = startMinutes,
                     subtitles = subtitles,
                     isDirectHls = true,
-                    vixCatalogVerified = true
+                    vixCatalogVerified = true,
+                    expiresAtMs = expiresAtMs,
+                    fromCache = false
                 )
             }
         }
+    }
+
+    internal fun computeSafeExpiresAtMs(streamUrl: String, nowMs: Long = System.currentTimeMillis()): Long {
+        val defaultFallbackMs = nowMs + 20L * 60L * 1000L
+        val safetyMarginMs = 120_000L
+        val maxCapMs = nowMs + 6L * 3600L * 1000L
+
+        val rawExpires = Regex("""[?&]expires=(\d+)""")
+            .find(streamUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toLongOrNull()
+            ?: return defaultFallbackMs
+
+        val expiresEpochMs = if (rawExpires < 10_000_000_000L) rawExpires * 1000L else rawExpires
+        if (expiresEpochMs <= nowMs + safetyMarginMs + 60_000L) {
+            return defaultFallbackMs
+        }
+        return (expiresEpochMs - safetyMarginMs).coerceAtMost(maxCapMs)
     }
 
     private suspend fun <T> executeWithTransientRetry(

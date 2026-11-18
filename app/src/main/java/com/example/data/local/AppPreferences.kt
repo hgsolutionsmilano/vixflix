@@ -86,6 +86,7 @@ class AppPreferences(private val context: Context) {
         private val KEY_PREFER_WEB_PLAYER = booleanPreferencesKey("prefer_web_player")
         private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         private val KEY_BUFFER_PRESET = stringPreferencesKey("buffer_preset")
+        private val KEY_BACKGROUND_PREFETCH = booleanPreferencesKey("background_image_prefetch")
     }
 
     val githubRepoFlow: Flow<String> = context.dataStore.data.map { prefs ->
@@ -112,6 +113,10 @@ class AppPreferences(private val context: Context) {
 
     val bufferPresetFlow: Flow<StreamingBufferPreset> = context.dataStore.data.map { prefs ->
         StreamingBufferPreset.fromKey(prefs[KEY_BUFFER_PRESET])
+    }
+
+    val backgroundPrefetchFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[KEY_BACKGROUND_PREFETCH] ?: true
     }
 
     val lastUpdateCheckFlow: Flow<Long> = context.dataStore.data.map { prefs ->
@@ -153,6 +158,12 @@ class AppPreferences(private val context: Context) {
     suspend fun setBufferPreset(preset: StreamingBufferPreset) {
         context.dataStore.edit { prefs ->
             prefs[KEY_BUFFER_PRESET] = preset.storageKey
+        }
+    }
+
+    suspend fun setBackgroundPrefetch(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_BACKGROUND_PREFETCH] = enabled
         }
     }
 

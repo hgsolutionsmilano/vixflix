@@ -162,6 +162,10 @@ fun VixFlixAppScreen(
     val preferWebPlayer by viewModel.preferWebPlayer.collectAsStateWithLifecycle()
     val bufferPreset by viewModel.bufferPreset.collectAsStateWithLifecycle()
     val autoCheckUpdates by viewModel.autoCheckUpdates.collectAsStateWithLifecycle()
+    val backgroundPrefetchEnabled by viewModel.backgroundPrefetchEnabled.collectAsStateWithLifecycle()
+    val cacheStats by viewModel.cacheStats.collectAsStateWithLifecycle()
+    val isBackgroundCatalogRefreshing by viewModel.isBackgroundCatalogRefreshing.collectAsStateWithLifecycle()
+    val cacheClearedFeedbackNonce by viewModel.cacheClearedFeedbackNonce.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
@@ -485,13 +489,19 @@ fun VixFlixAppScreen(
                                 onSetPreferWebPlayer = viewModel::setPreferWebPlayer,
                                 onSelectBufferPreset = viewModel::setBufferPreset,
                                 onSetAutoCheckUpdates = viewModel::setAutoCheckUpdates,
-                                onRefreshCatalog = viewModel::loadCatalog,
+                                onRefreshCatalog = { viewModel.loadCatalog(forceRefresh = true) },
                                 onClearContinueWatching = viewModel::clearAllContinueWatching,
                                 onRepoSlugChange = viewModel::updateGitHubRepoSlug,
                                 onCheckUpdates = { slug -> viewModel.checkForGitHubUpdates(slug, showPopupIfAvailable = false) },
                                 onTriggerUpdate = { viewModel.performInAppUpdate(context) },
                                 onUpdateTmdbKey = viewModel::updateTmdbApiKey,
                                 onResetTmdbKey = viewModel::resetTmdbApiKeyToDefault,
+                                backgroundPrefetchEnabled = backgroundPrefetchEnabled,
+                                cacheStats = cacheStats,
+                                isBackgroundCatalogRefreshing = isBackgroundCatalogRefreshing,
+                                cacheClearedFeedbackNonce = cacheClearedFeedbackNonce,
+                                onSetBackgroundPrefetch = viewModel::setBackgroundPrefetchEnabled,
+                                onClearLocalCache = viewModel::clearLocalCache,
                                 firstControlFocusRequester = settingsFirstControlFocusRequester,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = topBarBrandFocusRequester,
@@ -909,7 +919,8 @@ fun VixFlixAppScreen(
                     onToggleLanguage = viewModel::setStreamLanguage,
                     onProgressUpdate = viewModel::onPlaybackProgressUpdate,
                     onNextEpisode = viewModel::playNextEpisode,
-                    onClose = viewModel::closePlayer
+                    onClose = viewModel::closePlayer,
+                    onInvalidateAndRetryStream = viewModel::invalidateAndRetryCurrentStream
                 )
             }
         }

@@ -155,7 +155,8 @@ fun VixPlayerScreen(
     onToggleLanguage: (String) -> Unit,
     onProgressUpdate: (positionMs: Long, durationMs: Long) -> Unit,
     onNextEpisode: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onInvalidateAndRetryStream: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val resolvedStream = session.resolvedStream
@@ -193,6 +194,9 @@ fun VixPlayerScreen(
     }
     var mediaActionBadge by remember { mutableStateOf<String?>(null) }
     var retryNonce by remember { mutableIntStateOf(0) }
+    var hasAutoRetriedCachedStream by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
 
     val isTvDevice = rememberIsTvDevice()
     val backButtonFocusRequester = remember { FocusRequester() }
@@ -363,6 +367,13 @@ fun VixPlayerScreen(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (resolvedStream?.fromCache == true && !hasAutoRetriedCachedStream && onInvalidateAndRetryStream != null) {
+                    hasAutoRetriedCachedStream = true
+                    isBuffering = true
+                    playerErrorMessage = null
+                    onInvalidateAndRetryStream.invoke()
+                    return
+                }
                 isBuffering = false
                 playerErrorMessage = "Errore stream VixSrc: ${error.errorCodeName} (${error.localizedMessage ?: "connessione interrotta"})"
             }
@@ -642,7 +653,11 @@ fun VixPlayerScreen(
                         playerErrorMessage = null
                         isBuffering = true
                         retryNonce++
-                        onToggleLanguage(streamLang)
+                        if (onInvalidateAndRetryStream != null) {
+                            onInvalidateAndRetryStream.invoke()
+                        } else {
+                            onToggleLanguage(streamLang)
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NetflixRed,
