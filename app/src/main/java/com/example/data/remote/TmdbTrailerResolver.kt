@@ -170,193 +170,18 @@ class TmdbTrailerResolver(
     }
 
     private fun resolveYouTubeTrailer(video: TmdbVideoDto): ResolvedTrailerStream {
-        val embedConfig = fetchYouTubeEmbedConfig(video.key)
-        val visitorData = embedConfig.visitorData
-        var lastReason: String? = null
-
-        val clients = listOf(
-            YouTubeClientProfile(
-                name = "ANDROID_VR",
-                clientId = "28",
-                clientVersion = "1.62.27",
-                clientJson = buildClientJson(
-                    clientName = "ANDROID_VR",
-                    clientVersion = "1.62.27",
-                    visitorData = visitorData,
-                    extraFields = """"deviceMake":"Oculus","deviceModel":"Quest 3","osName":"Android","osVersion":"12L","androidSdkVersion":32,"""
-                ),
-                userAgent = "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-            ),
-            YouTubeClientProfile(
-                name = "IOS",
-                clientId = "5",
-                clientVersion = "20.10.4",
-                clientJson = buildClientJson(
-                    clientName = "IOS",
-                    clientVersion = "20.10.4",
-                    visitorData = visitorData,
-                    extraFields = """"deviceMake":"Apple","deviceModel":"iPhone16,2","osName":"iPhone","osVersion":"18.3.2.22D82","""
-                ),
-                userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
-            ),
-            YouTubeClientProfile(
-                name = "ANDROID",
-                clientId = "3",
-                clientVersion = "20.10.38",
-                clientJson = buildClientJson(
-                    clientName = "ANDROID",
-                    clientVersion = "20.10.38",
-                    visitorData = visitorData,
-                    extraFields = """"osName":"Android","osVersion":"14","androidSdkVersion":34,"""
-                ),
-                userAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
-            ),
-            YouTubeClientProfile(
-                name = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-                clientId = "85",
-                clientVersion = "2.0",
-                clientJson = buildClientJson(
-                    clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-                    clientVersion = "2.0",
-                    visitorData = visitorData,
-                    extraFields = ""
-                ),
-                userAgent = "Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/7.0 TV Safari/537.36",
-                includeEmbedContext = true
-            ),
-            YouTubeClientProfile(
-                name = "MWEB",
-                clientId = "2",
-                clientVersion = "2.20250310.01.00",
-                clientJson = buildClientJson(
-                    clientName = "MWEB",
-                    clientVersion = "2.20250310.01.00",
-                    visitorData = visitorData,
-                    extraFields = ""
-                ),
-                userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
-            ),
-            YouTubeClientProfile(
-                name = "WEB_EMBEDDED_PLAYER",
-                clientId = "56",
-                clientVersion = "1.20250310.01.00",
-                clientJson = buildClientJson(
-                    clientName = "WEB_EMBEDDED_PLAYER",
-                    clientVersion = "1.20250310.01.00",
-                    visitorData = visitorData,
-                    extraFields = ""
-                ),
-                userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-                includeEmbedContext = true
-            )
+        val cleanKey = video.key.trim().replace(Regex("[^A-Za-z0-9_-]"), "")
+        if (cleanKey.isBlank()) {
+            throw IllegalStateException("Chiave video YouTube non valida per questo trailer.")
+        }
+        return ResolvedTrailerStream(
+            video = video,
+            streamUrl = "https://www.youtube.com/embed/$cleanKey",
+            isHls = false,
+            sourceLabel = "${video.typeBadge} • YouTube (${video.name})",
+            isYouTubeEmbedFallback = true,
+            embedVideoId = cleanKey
         )
-
-        val apiKeyQuery = embedConfig.apiKey?.takeIf { it.isNotBlank() }?.let { "&key=$it" }.orEmpty()
-
-        for (profile in clients) {
-            val thirdPartyBlock = if (profile.includeEmbedContext) {
-                ""","thirdParty":{"embedUrl":"https://www.youtube.com/"}"""
-            } else ""
-            val playbackContextBlock = if (profile.includeEmbedContext && embedConfig.signatureTimestamp != null) {
-                ""","playbackContext":{"contentPlaybackContext":{"signatureTimestamp":${embedConfig.signatureTimestamp}}}"""
-            } else ""
-
-            val payload = """
-                {
-                  "videoId": "${video.key}",
-                  "context": {
-                    "client": ${profile.clientJson}$thirdPartyBlock
-                  }$playbackContextBlock,
-                  "contentCheckOk": true,
-                  "racyCheckOk": true
-                }
-            """.trimIndent()
-
-            val requestBuilder = Request.Builder()
-                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false$apiKeyQuery")
-                .header("User-Agent", profile.userAgent)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .header("X-YouTube-Client-Name", profile.clientId)
-                .header("X-YouTube-Client-Version", profile.clientVersion)
-                .header("Origin", "https://www.youtube.com")
-                .header("Referer", "https://www.youtube.com/")
-                .post(payload.toRequestBody("application/json".toMediaType()))
-
-            if (!visitorData.isNullOrBlank()) {
-                requestBuilder.header("X-Goog-Visitor-Id", visitorData)
-            }
-
-            runCatching {
-                cleanTrailerHttpClient.newCall(requestBuilder.build()).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        lastReason = "YouTube HTTP ${response.code} (${profile.name})"
-                        return@use
-                    }
-                    val body = response.body?.string().orEmpty()
-                    if (body.isBlank()) return@use
-
-                    val json = JSONObject(body)
-                    extractFromPlayerResponseJson(
-                        video = video,
-                        json = json,
-                        userAgent = profile.userAgent,
-                        sourceSuffix = "YouTube ${profile.name}"
-                    )?.let { return it }
-
-                    val playability = json.optJSONObject("playabilityStatus")
-                    val status = playability?.optString("status").orEmpty()
-                    val reason = playability?.optString("reason").orEmpty()
-                    if (status.isNotEmpty() && status != "OK") {
-                        lastReason = reason.ifBlank { status }
-                    }
-                }
-            }
-        }
-
-        // Tentativo pagina watch HTML di YouTube (ytInitialPlayerResponse)
-        extractFromYouTubeWatchHtml(video)?.let { return it }
-
-        // Stage 1.5: Estrazione diretta via istanze pubbliche Piped / Invidious per riproduzione nativa ExoPlayer (zero WebView)
-        resolveViaPipedAndInvidious(video)?.let { return it }
-
-        // Stage 2: Verifica disponibilità e fallback su YouTube IFrame Embed Player (solo su hardware con GPU WebView stabile)
-        val oEmbedCode = checkYouTubeOEmbedStatus(video.key)
-        when (oEmbedCode) {
-            401, 403 -> {
-                throw IllegalStateException(
-                    "Riproduzione incorporata disabilitata dall'autore per questo video YouTube. Seleziona un altro trailer dalla lista."
-                )
-            }
-            400, 404 -> {
-                throw IllegalStateException(
-                    "Trailer YouTube non più disponibile o rimosso."
-                )
-            }
-        }
-
-        val canUseWebViewEmbed = !isSoftwareOnlyEmulator() && !isWebViewRendererUnstable
-        if (canUseWebViewEmbed && (oEmbedCode == 200 || embedConfig.isEmbedPageReachable)) {
-            return ResolvedTrailerStream(
-                video = video,
-                streamUrl = "https://www.youtube.com/embed/${video.key}",
-                isHls = false,
-                sourceLabel = "${video.typeBadge} • YouTube Player (${video.name})",
-                isYouTubeEmbedFallback = true,
-                embedVideoId = video.key
-            )
-        }
-
-        val detail = when {
-            isSoftwareOnlyEmulator() ->
-                "YouTube richiede verifica anti-bot da questo indirizzo e l'emulatore non supporta il player Web senza accelerazione GPU"
-            isWebViewRendererUnstable ->
-                "Player Web YouTube non stabile su questo dispositivo e nessuno stream diretto disponibile"
-            !lastReason.isNullOrBlank() -> lastReason
-            oEmbedCode != null -> "HTTP $oEmbedCode"
-            else -> null
-        }?.let { " ($it)" }.orEmpty()
-        throw IllegalStateException("Trailer non disponibile o bloccato su YouTube$detail. Seleziona un altro trailer dalla lista o riprova.")
     }
 
     private fun extractFromYouTubeWatchHtml(video: TmdbVideoDto): ResolvedTrailerStream? {
@@ -1171,33 +996,169 @@ class TmdbTrailerResolver(
         @Volatile
         var isWebViewRendererUnstable: Boolean = false
 
-        fun isSoftwareOnlyEmulator(): Boolean {
+        @Volatile
+        var forceSoftwareEmulatorMode: Boolean? = null
+
+        @Volatile
+        private var cachedGetPropMap: Map<String, String>? = null
+
+        private fun isRobolectricRuntime(): Boolean {
+            val fingerprint = Build.FINGERPRINT.orEmpty().lowercase()
+            val hardware = Build.HARDWARE.orEmpty().lowercase()
+            val product = Build.PRODUCT.orEmpty().lowercase()
+            return fingerprint == "robolectric" || hardware == "robolectric" || product == "robolectric"
+        }
+
+        private fun loadSystemPropsOnce(): Map<String, String> {
+            cachedGetPropMap?.let { return it }
+            if (isRobolectricRuntime()) {
+                cachedGetPropMap = emptyMap()
+                return emptyMap()
+            }
+            val props = runCatching {
+                val map = HashMap<String, String>()
+                val process = ProcessBuilder("/system/bin/getprop")
+                    .redirectErrorStream(true)
+                    .start()
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        // Formato standard getprop: [chiave]: [valore]
+                        val sepIdx = line.indexOf("]: [")
+                        if (line.startsWith("[") && sepIdx > 1 && line.endsWith("]")) {
+                            val key = line.substring(1, sepIdx).trim().lowercase()
+                            val value = line.substring(sepIdx + 4, line.length - 1).trim().lowercase()
+                            map[key] = value
+                        }
+                    }
+                }
+                runCatching { process.destroy() }
+                map
+            }.getOrDefault(emptyMap())
+            cachedGetPropMap = props
+            return props
+        }
+
+        @Suppress("PrivateApi")
+        private fun readSystemProperty(key: String): String {
+            val normalizedKey = key.trim().lowercase()
+            loadSystemPropsOnce()[normalizedKey]?.let { return it }
+            return runCatching {
+                val spClass = Class.forName("android.os.SystemProperties")
+                val getMethod = spClass.getMethod("get", String::class.java, String::class.java)
+                (getMethod.invoke(null, key, "") as? String).orEmpty().trim().lowercase()
+            }.getOrDefault("")
+        }
+
+        private fun hasOnlySoftwareVideoDecoders(): Boolean {
+            if (isRobolectricRuntime()) return false
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+            return runCatching {
+                val infos = android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).codecInfos
+                val videoDecoders = infos.filter { info ->
+                    !info.isEncoder && info.supportedTypes.any { it.startsWith("video/", ignoreCase = true) }
+                }
+                if (videoDecoders.isEmpty()) {
+                    false
+                } else {
+                    videoDecoders.none { info ->
+                        info.isHardwareAccelerated && !info.isSoftwareOnly
+                    }
+                }
+            }.getOrDefault(false)
+        }
+
+        fun isEmulator(): Boolean {
             val fingerprint = Build.FINGERPRINT.orEmpty().lowercase()
             val model = Build.MODEL.orEmpty().lowercase()
             val product = Build.PRODUCT.orEmpty().lowercase()
             val hardware = Build.HARDWARE.orEmpty().lowercase()
             val brand = Build.BRAND.orEmpty().lowercase()
             val device = Build.DEVICE.orEmpty().lowercase()
+            val board = Build.BOARD.orEmpty().lowercase()
+            val manufacturer = Build.MANUFACTURER.orEmpty().lowercase()
 
-            val looksLikeEmulator = fingerprint.startsWith("generic") ||
+            // Non classificare la JVM Robolectric come emulatore hardware privo di GPU nei test Compose di default
+            if (isRobolectricRuntime()) {
+                return false
+            }
+
+            val qemuKernel = readSystemProperty("ro.kernel.qemu")
+            val qemuBoot = readSystemProperty("ro.boot.qemu")
+            val eglDriver = readSystemProperty("ro.hardware.egl")
+            val vulkanDriver = readSystemProperty("ro.hardware.vulkan")
+            val characteristics = readSystemProperty("ro.build.characteristics")
+            val bootHardware = readSystemProperty("ro.boot.hardware")
+            val boardPlatform = readSystemProperty("ro.board.platform")
+
+            val hasX86Abi = Build.SUPPORTED_ABIS.orEmpty().any {
+                it.contains("x86", ignoreCase = true)
+            }
+
+            return fingerprint.startsWith("generic") ||
                 fingerprint.contains("emulator") ||
                 fingerprint.contains("vsoc") ||
                 fingerprint.contains("sdk_gphone") ||
+                fingerprint.contains("sdk_phone") ||
+                fingerprint.contains("cf_") ||
+                fingerprint.contains("aosp_") ||
                 model.contains("emulator") ||
                 model.contains("android sdk built for") ||
                 model.contains("cuttlefish") ||
+                model.contains("gphone") ||
                 product.contains("sdk") ||
                 product.contains("emulator") ||
                 product.contains("vsoc") ||
+                product.contains("cf_") ||
+                product.contains("aosp_") ||
                 hardware.contains("ranchu") ||
                 hardware.contains("goldfish") ||
                 hardware.contains("cutf") ||
-                (brand.startsWith("generic") && device.startsWith("generic"))
+                hardware.contains("vbox") ||
+                hardware.contains("virtio") ||
+                board.contains("goldfish") ||
+                board.contains("ranchu") ||
+                board.contains("cutf") ||
+                device.contains("vsoc") ||
+                device.contains("cf_") ||
+                device.contains("emulator") ||
+                manufacturer.contains("genymotion") ||
+                (brand.startsWith("generic") && device.startsWith("generic")) ||
+                hasX86Abi ||
+                qemuKernel == "1" ||
+                qemuBoot == "1" ||
+                characteristics.contains("emulator") ||
+                eglDriver.contains("swiftshader") ||
+                eglDriver.contains("emulation") ||
+                vulkanDriver.contains("pastel") ||
+                vulkanDriver.contains("swiftshader") ||
+                bootHardware.contains("cutf") ||
+                bootHardware.contains("ranchu") ||
+                bootHardware.contains("goldfish") ||
+                boardPlatform.contains("vsoc") ||
+                hasOnlySoftwareVideoDecoders()
+        }
 
-            if (!looksLikeEmulator) return false
+        fun isSoftwareOnlyEmulator(): Boolean {
+            forceSoftwareEmulatorMode?.let { return it }
+            if (isRobolectricRuntime()) return false
+
+            // Se l'hardware video/GPU è interamente software-only (es. container headless / SwiftShader),
+            // Chromium WebView fallirà su "Failed to open rendernode" e farà crashare il processo renderer.
+            if (hasOnlySoftwareVideoDecoders()) {
+                return true
+            }
+
+            if (!isEmulator()) return false
+
+            val eglDriver = readSystemProperty("ro.hardware.egl")
+            if (eglDriver.contains("swiftshader") || eglDriver.contains("emulation")) {
+                return true
+            }
 
             val hasHardwareRenderNode = runCatching {
-                File("/dev/dri").listFiles()?.any { it.name.startsWith("renderD") } == true
+                File("/dev/dri").listFiles()?.any {
+                    it.name.startsWith("renderD") && it.exists() && it.canRead()
+                } == true
             }.getOrDefault(false)
 
             return !hasHardwareRenderNode
