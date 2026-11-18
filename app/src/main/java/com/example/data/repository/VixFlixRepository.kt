@@ -26,6 +26,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
@@ -53,7 +55,14 @@ class VixFlixRepository(
         .followSslRedirects(true)
         .build()
 
+    private val tmdbDispatcher = Dispatcher().apply {
+        maxRequests = 32
+        maxRequestsPerHost = 6
+    }
+
     private val tmdbOkHttpClient: OkHttpClient = rawOkHttpClient.newBuilder()
+        .dispatcher(tmdbDispatcher)
+        .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
         .addInterceptor { chain ->
             val original = chain.request()
             val apiKey = TmdbApiConfig.currentApiKey.trim().ifBlank { TmdbApiConfig.INTEGRATED_TMDB_API_KEY }
@@ -66,6 +75,16 @@ class VixFlixRepository(
                 .build()
             chain.proceed(request)
         }
+        .build()
+
+    private val gitHubDispatcher = Dispatcher().apply {
+        maxRequests = 6
+        maxRequestsPerHost = 2
+    }
+
+    private val gitHubOkHttpClient: OkHttpClient = rawOkHttpClient.newBuilder()
+        .dispatcher(gitHubDispatcher)
+        .connectionPool(ConnectionPool(2, 3, TimeUnit.MINUTES))
         .build()
 
     private val moshi: Moshi = Moshi.Builder()
@@ -81,7 +100,7 @@ class VixFlixRepository(
 
     val vixSrcResolver = VixSrcStreamResolver(rawOkHttpClient)
     val trailerResolver = TmdbTrailerResolver(rawOkHttpClient, vixSrcResolver)
-    val gitHubUpdateService = GitHubUpdateService(rawOkHttpClient)
+    val gitHubUpdateService = GitHubUpdateService(gitHubOkHttpClient)
 
     val continueWatchingFlow: Flow<List<WatchProgressEntity>> = dao.observeContinueWatching()
     val watchlistFlow: Flow<List<WatchlistEntity>> = dao.observeWatchlist()

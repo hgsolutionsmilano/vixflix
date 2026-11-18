@@ -876,10 +876,7 @@ fun VixFlixAppScreen(
         // 3. LIVELLO SUPERIORE: Player Video a Tutto Schermo (ExoPlayer + VixSrc) con ingresso fluido e chiusura istantanea
         androidx.compose.animation.AnimatedVisibility(
             visible = isPlayerVisible,
-            enter = fadeIn(tween(240)) + scaleIn(
-                initialScale = 0.96f,
-                animationSpec = tween(260, easing = FastOutSlowInEasing)
-            ),
+            enter = fadeIn(tween(220)),
             exit = ExitTransition.None,
             modifier = Modifier.fillMaxSize()
         ) {

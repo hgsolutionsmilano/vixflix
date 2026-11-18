@@ -2,10 +2,14 @@ package com.example.data.remote
 
 import com.example.BuildConfig
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -76,21 +80,40 @@ class VixSrcOkHttpInterceptor : Interceptor {
         val response = chain.proceed(requestBuilder.build())
         val path = originalUrl.encodedPath
 
+        if (originalRequest.method.equals("HEAD", ignoreCase = true)) {
+            return response
+        }
+
         // Se è una playlist HLS (.m3u8) di VixSrc, assicura URI assoluta per la chiave AES-128 /storage/enc.key
-        if ((host.contains("vixsrc.to") && path.contains("/playlist/")) || path.endsWith(".m3u8")) {
-            val bodyString = response.body?.string().orEmpty()
-            if (bodyString.startsWith("#EXTM3U")) {
-                val fixedManifest = bodyString.replace(
-                    """URI="/storage/enc.key"""",
-                    """URI="https://vixsrc.to/storage/enc.key""""
-                )
+        val contentType = response.header("Content-Type").orEmpty()
+        val isM3u8Candidate = (host.contains("vixsrc.to") && path.contains("/playlist/")) ||
+            path.endsWith(".m3u8") ||
+            contentType.contains("mpegurl", ignoreCase = true)
+        if (response.isSuccessful && isM3u8Candidate) {
+            val rawBody = response.body?.string().orEmpty()
+            val cleanedManifest = rawBody.trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+            if (cleanedManifest.startsWith("#EXTM3U")) {
+                val isDefaultPort = (originalUrl.scheme == "https" && originalUrl.port == 443) ||
+                    (originalUrl.scheme == "http" && originalUrl.port == 80)
+                val keyBaseUrl = buildString {
+                    append(originalUrl.scheme).append("://").append(originalUrl.host)
+                    if (!isDefaultPort) {
+                        append(":").append(originalUrl.port)
+                    }
+                }
+                val encKeyRegex = Regex("""URI=(["'])/storage/enc\.key([^"']*)\1""")
+                val fixedManifest = encKeyRegex.replace(cleanedManifest) { match ->
+                    val quote = match.groupValues[1]
+                    val suffix = match.groupValues[2]
+                    "URI=${quote}$keyBaseUrl/storage/enc.key$suffix$quote"
+                }
                 val newBody = fixedManifest.toResponseBody("application/vnd.apple.mpegurl".toMediaType())
                 return response.newBuilder()
                     .header("Content-Type", "application/vnd.apple.mpegurl")
                     .body(newBody)
                     .build()
             } else {
-                val fallbackBody = bodyString.toResponseBody(response.body?.contentType())
+                val fallbackBody = rawBody.toResponseBody(response.body?.contentType())
                 return response.newBuilder().body(fallbackBody).build()
             }
         }
@@ -108,23 +131,74 @@ class VixSrcOkHttpInterceptor : Interceptor {
 }
 
 class VixSrcStreamResolver(
-    baseOkHttpClient: OkHttpClient
+    baseOkHttpClient: OkHttpClient,
+    rawBaseUrl: String = BuildConfig.VIXSRC_BASE_URL
 ) {
-    private val baseUrl = BuildConfig.VIXSRC_BASE_URL.trimEnd('/')
+    private val baseUrl = rawBaseUrl.trimEnd('/')
     private val catalogMutex = Mutex()
     private val cachedMovieIds = mutableSetOf<Int>()
     private val cachedTvIds = mutableSetOf<Int>()
+    private val prewarmInFlight = AtomicBoolean(false)
+    private val lastPrewarmMs = AtomicLong(0L)
+
+    /**
+     * Dispatcher e ConnectionPool dedicati esclusivamente allo streaming video (risoluzione + HLS ExoPlayer),
+     * isolati dalle richieste catalogo TMDB e dal download automatico degli aggiornamenti APK.
+     */
+    private val streamingDispatcher = Dispatcher().apply {
+        maxRequests = 64
+        maxRequestsPerHost = 12
+    }
+
+    private val streamingConnectionPool = ConnectionPool(8, 5, TimeUnit.MINUTES)
 
     /**
      * Client OkHttp condiviso con `OkHttpDataSource.Factory` di Media3 ExoPlayer.
      */
     val exoOkHttpClient: OkHttpClient = baseOkHttpClient.newBuilder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
+        .dispatcher(streamingDispatcher)
+        .connectionPool(streamingConnectionPool)
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .followRedirects(true)
         .followSslRedirects(true)
         .addInterceptor(VixSrcOkHttpInterceptor())
         .build()
+
+    private val resolverApiClient: OkHttpClient = exoOkHttpClient.newBuilder()
+        .callTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * Pre-riscalda in modo leggero e asincrono DNS, handshake TLS e socket keep-alive verso i server video
+     * subito dopo l'apertura dell'app, senza scaricare JSON pesanti né competere con la riproduzione.
+     */
+    suspend fun prewarmConnection() = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (now - lastPrewarmMs.get() < 60_000L) return@withContext
+        if (!prewarmInFlight.compareAndSet(false, true)) return@withContext
+        try {
+            val headRequest = Request.Builder()
+                .url("$baseUrl/api/list/movie/?lang=it")
+                .head()
+                .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
+                .header("Accept", "application/json, */*")
+                .build()
+            resolverApiClient.newBuilder()
+                .callTimeout(5, TimeUnit.SECONDS)
+                .build()
+                .newCall(headRequest)
+                .execute()
+                .close()
+            lastPrewarmMs.set(System.currentTimeMillis())
+        } catch (_: Throwable) {
+            // Solo ottimizzazione preventiva non bloccante
+        } finally {
+            prewarmInFlight.set(false)
+        }
+    }
 
     /**
      * Costruisce l'URL API/embed ufficiale di vixsrc.to passando sia i secondi (startAt)
@@ -235,9 +309,7 @@ class VixSrcStreamResolver(
         }
 
         runCatching {
-            val isVerifiedInCatalog = checkVixSrcCatalogAvailability(tmdbId, mediaType, lang)
-
-            // Step 1: Recupera il JSON {"src": "/embed/..."} dall'API VixSrc
+            // Step 1: Recupera il JSON {"src": "/embed/..."} dall'API VixSrc con retry su errori transitori
             val apiRequest = Request.Builder()
                 .url(apiEndpointUrl)
                 .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
@@ -245,7 +317,7 @@ class VixSrcStreamResolver(
                 .header("Accept", "application/json, text/javascript, */*; q=0.01")
                 .build()
 
-            val embedSrcPath = exoOkHttpClient.newCall(apiRequest).execute().use { apiResponse ->
+            val embedSrcPath = executeWithTransientRetry(apiRequest) { apiResponse ->
                 if (!apiResponse.isSuccessful) {
                     throw IllegalStateException("Titolo non trovato su VixSrc API (HTTP ${apiResponse.code})")
                 }
@@ -257,7 +329,7 @@ class VixSrcStreamResolver(
 
             val fullEmbedUrl = resolveRelativeUrl(embedSrcPath)
 
-            // Step 2: Scarica la pagina /embed/... ed estrai window.masterPlaylist
+            // Step 2: Scarica la pagina /embed/... ed estrai window.masterPlaylist con retry su errori transitori
             val embedRequest = Request.Builder()
                 .url(fullEmbedUrl)
                 .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
@@ -265,7 +337,7 @@ class VixSrcStreamResolver(
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .build()
 
-            exoOkHttpClient.newCall(embedRequest).execute().use { embedResponse ->
+            executeWithTransientRetry(embedRequest) { embedResponse ->
                 if (!embedResponse.isSuccessful) {
                     throw IllegalStateException("Errore caricamento player VixSrc (HTTP ${embedResponse.code})")
                 }
@@ -282,10 +354,36 @@ class VixSrcStreamResolver(
                     startMinutes = startMinutes,
                     subtitles = subtitles,
                     isDirectHls = true,
-                    vixCatalogVerified = isVerifiedInCatalog
+                    vixCatalogVerified = true
                 )
             }
         }
+    }
+
+    private suspend fun <T> executeWithTransientRetry(
+        request: Request,
+        maxAttempts: Int = 2,
+        parser: (Response) -> T
+    ): T {
+        var lastError: Throwable? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                resolverApiClient.newCall(request).execute().use { response ->
+                    val code = response.code
+                    val isTransientHttp = code == 403 || code == 429 || code in 500..599
+                    if (!response.isSuccessful && isTransientHttp && attempt < maxAttempts) {
+                        lastError = IllegalStateException("HTTP transitorio $code da VixSrc")
+                    } else {
+                        return parser(response)
+                    }
+                }
+            } catch (io: java.io.IOException) {
+                lastError = io
+                if (attempt >= maxAttempts) throw io
+            }
+            kotlinx.coroutines.delay(250L)
+        }
+        throw lastError ?: IllegalStateException("Connessione VixSrc non riuscita.")
     }
 
     /**

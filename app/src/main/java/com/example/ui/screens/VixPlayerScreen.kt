@@ -90,18 +90,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.upstream.DefaultAllocator
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
@@ -133,6 +134,7 @@ internal fun StreamingBufferPreset.toExoLoadControl(): DefaultLoadControl {
             bufferForPlaybackMs,
             bufferForPlaybackAfterRebufferMs
         )
+        .setBackBuffer(15_000, true)
         .setTargetBufferBytes(targetBufferBytes)
         .setPrioritizeTimeOverSizeThresholds(false)
         .build()
@@ -161,6 +163,11 @@ fun VixPlayerScreen(
     var currentPositionMs by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableLongStateOf(session.startPositionMs)
     }
+    LaunchedEffect(session.startPositionMs, session.isResolvingStream) {
+        if (session.isResolvingStream) {
+            currentPositionMs = session.startPositionMs
+        }
+    }
     var durationMs by remember { mutableLongStateOf(0L) }
     var hasSeekedInitial by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
@@ -182,6 +189,7 @@ fun VixPlayerScreen(
         mutableIntStateOf(10)
     }
     var mediaActionBadge by remember { mutableStateOf<String?>(null) }
+    var retryNonce by remember { mutableIntStateOf(0) }
 
     val isTvDevice = rememberIsTvDevice()
     val backButtonFocusRequester = remember { FocusRequester() }
@@ -226,8 +234,13 @@ fun VixPlayerScreen(
     }
 
     val exoPlayer = remember(context, bufferPreset) {
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
         ExoPlayer.Builder(context)
             .setLoadControl(bufferPreset.toExoLoadControl())
+            .setAudioAttributes(audioAttributes, true)
             .setSeekBackIncrementMs(10_000L)
             .setSeekForwardIncrementMs(10_000L)
             .build()
@@ -236,10 +249,11 @@ fun VixPlayerScreen(
             }
     }
 
-    // Imposta la lingua audio preferita (ita / eng) nel selettore tracce di ExoPlayer
-    LaunchedEffect(streamLang) {
+    // Imposta la lingua audio preferita (ita / eng) su ogni istanza attiva di ExoPlayer
+    LaunchedEffect(exoPlayer, streamLang) {
         val preferredIso = if (streamLang.equals("it", ignoreCase = true)) "ita" else "eng"
-        exoPlayer.trackSelectionParameters = TrackSelectionParameters.Builder(context)
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+            .buildUpon()
             .setPreferredAudioLanguage(preferredIso)
             .build()
     }
@@ -267,8 +281,16 @@ fun VixPlayerScreen(
         }
     }
 
-    // Configura HlsMediaSource in Media3 ExoPlayer quando lo stream reale di vixsrc.to è risolto
-    LaunchedEffect(resolvedStream?.streamUrl, session.isResolvingStream) {
+    // Configura HlsMediaSource in Media3 ExoPlayer (ri-eseguito anche se exoPlayer viene ricreato da cambio preset buffer)
+    LaunchedEffect(
+        exoPlayer,
+        session.mediaItem.uniqueKey,
+        session.seasonNumber,
+        session.episodeNumber,
+        resolvedStream?.streamUrl,
+        session.isResolvingStream,
+        retryNonce
+    ) {
         if (session.isResolvingStream) return@LaunchedEffect
         val stream = resolvedStream
         if (stream == null || !stream.isDirectHls) {
@@ -277,6 +299,7 @@ fun VixPlayerScreen(
         }
 
         playerErrorMessage = null
+        hasSeekedInitial = false
         isBuffering = true
         val targetUri = Uri.parse(stream.streamUrl)
         val mediaItem = ExoMediaItem.Builder()
@@ -286,12 +309,14 @@ fun VixPlayerScreen(
 
         val mediaSource = HlsMediaSource.Factory(okHttpDataSourceFactory)
             .setAllowChunklessPreparation(true)
+            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(4))
             .createMediaSource(mediaItem)
 
-        exoPlayer.setMediaSource(mediaSource)
-        if (session.startPositionMs > 0L && !hasSeekedInitial) {
-            exoPlayer.seekTo(session.startPositionMs)
-            hasSeekedInitial = true
+        val resumePosMs = maxOf(session.startPositionMs, currentPositionMs)
+        if (resumePosMs > 0L) {
+            exoPlayer.setMediaSource(mediaSource, resumePosMs)
+        } else {
+            exoPlayer.setMediaSource(mediaSource)
         }
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
@@ -309,15 +334,16 @@ fun VixPlayerScreen(
                     if (d != C.TIME_UNSET && d > 0L) {
                         durationMs = d
                     }
-                    if (session.startPositionMs > 0L && !hasSeekedInitial) {
-                        val safeSeek = if (durationMs > 0L) {
-                            session.startPositionMs.coerceAtMost((durationMs - 5_000L).coerceAtLeast(0L))
-                        } else {
-                            session.startPositionMs
-                        }
-                        exoPlayer.seekTo(safeSeek)
-                        currentPositionMs = safeSeek
+                    if (!hasSeekedInitial) {
                         hasSeekedInitial = true
+                        val targetStart = maxOf(session.startPositionMs, currentPositionMs)
+                        if (targetStart > 0L && durationMs > 0L) {
+                            val maxSafePos = (durationMs - 5_000L).coerceAtLeast(0L)
+                            if (exoPlayer.currentPosition > maxSafePos) {
+                                exoPlayer.seekTo(maxSafePos)
+                                currentPositionMs = maxSafePos
+                            }
+                        }
                     }
                 } else if (playbackState == Player.STATE_ENDED) {
                     isBuffering = false
@@ -556,6 +582,7 @@ fun VixPlayerScreen(
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = false
+                    setKeepContentOnPlayerReset(true)
                     isFocusable = false
                     isFocusableInTouchMode = false
                     this.resizeMode = resizeMode
@@ -566,8 +593,12 @@ fun VixPlayerScreen(
                 }
             },
             update = { view ->
-                view.player = exoPlayer
-                view.resizeMode = resizeMode
+                if (view.player !== exoPlayer) {
+                    view.player = exoPlayer
+                }
+                if (view.resizeMode != resizeMode) {
+                    view.resizeMode = resizeMode
+                }
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -604,7 +635,12 @@ fun VixPlayerScreen(
                 )
                 Spacer(modifier = Modifier.height(14.dp))
                 Button(
-                    onClick = { onToggleLanguage(streamLang) },
+                    onClick = {
+                        playerErrorMessage = null
+                        isBuffering = true
+                        retryNonce++
+                        onToggleLanguage(streamLang)
+                    },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NetflixRed,
                         contentColor = Color.White
@@ -627,6 +663,7 @@ fun VixPlayerScreen(
             VixStreamLoadingPopup(
                 session = session,
                 streamLang = streamLang,
+                bufferPreset = bufferPreset,
                 cancelFocusRequester = cancelLoadingFocusRequester,
                 upFocusRequester = backButtonFocusRequester,
                 onCancel = {
@@ -1259,6 +1296,7 @@ fun VixPlayerScreen(
 private fun VixStreamLoadingPopup(
     session: PlaybackSession,
     streamLang: String,
+    bufferPreset: StreamingBufferPreset,
     cancelFocusRequester: FocusRequester,
     upFocusRequester: FocusRequester,
     onCancel: () -> Unit,
@@ -1479,9 +1517,9 @@ private fun VixStreamLoadingPopup(
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = if (session.isResolvingStream) {
-                            "Connessione a vixsrc.to e recupero masterPlaylist HLS…"
+                            "Connessione diretta a vixsrc.to e recupero stream HLS…"
                         } else {
-                            "Preparazione flusso video in corso su ExoPlayer…"
+                            "Avvio rapido video (Buffer ${bufferPreset.label} • ${bufferPreset.sizeMb} MB)…"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = NetflixWhite

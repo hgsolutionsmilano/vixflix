@@ -22,6 +22,7 @@ import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
 import java.io.File
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -113,22 +114,22 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     val catalogState: StateFlow<CatalogUiState> = _catalogState.asStateFlow()
 
     val continueWatching: StateFlow<List<WatchProgressEntity>> = repository.continueWatchingFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val watchlist: StateFlow<List<WatchlistEntity>> = repository.watchlistFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val streamLanguage: StateFlow<String> = preferences.streamLanguageFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "it")
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "it")
 
     val preferWebPlayer: StateFlow<Boolean> = preferences.preferWebPlayerFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val autoCheckUpdates: StateFlow<Boolean> = preferences.autoCheckUpdatesFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     val bufferPreset: StateFlow<StreamingBufferPreset> = preferences.bufferPresetFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StreamingBufferPreset.DEFAULT)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, StreamingBufferPreset.DEFAULT)
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -160,6 +161,7 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     private var seasonProgressJob: Job? = null
     private var trailerJob: Job? = null
     private var detailLoadJob: Job? = null
+    private var playbackResolveJob: Job? = null
 
     private fun updateDetailStack(newStack: List<DetailUiState>) {
         _detailBackStack.value = newStack
@@ -191,6 +193,10 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
             result.fold(
                 onSuccess = { feed ->
                     _catalogState.value = CatalogUiState.Success(feed)
+                    // Pre-riscalda in background e senza blocchi la connessione TLS verso i server video
+                    launch {
+                        repository.vixSrcResolver.prewarmConnection()
+                    }
                 },
                 onFailure = { error ->
                     _catalogState.value = CatalogUiState.Error(
@@ -236,6 +242,7 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         seasonProgressJob?.cancel()
 
         detailLoadJob = viewModelScope.launch {
+            launch { repository.vixSrcResolver.prewarmConnection() }
             // Controlla se abbiamo una stagione salvata in "Continua a guardare"
             val savedProgress = database.vixFlixDao().getWatchProgress(item.uniqueKey)
             val initialSeason = savedProgress?.seasonNumber ?: 1
@@ -507,6 +514,17 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun initialSeasonEpisodesMatchTitle(
+        item: MediaItem,
+        cachedDetailEpisodes: List<TmdbEpisodeDto>,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ): String? {
+        if (!item.isSeries || seasonNumber == null || episodeNumber == null) return null
+        if (cachedDetailEpisodes.firstOrNull()?.seasonNumber != seasonNumber) return null
+        return cachedDetailEpisodes.firstOrNull { it.episodeNumber == episodeNumber }?.name
+    }
+
     /**
      * Avvia la riproduzione partendo da un elemento del catalogo o dai dettagli.
      * Se esiste un timestamp salvato su Room, riprende automaticamente da quel minuto/secondo
@@ -519,29 +537,79 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
         episodeTitle: String? = null,
         explicitStartPositionMs: Long? = null
     ) {
-        viewModelScope.launch {
-            val lang = streamLanguage.value
+        playbackResolveJob?.cancel()
+
+        val lang = streamLanguage.value
+        val useWebPlayer = preferWebPlayer.value
+        val cachedDetailEpisodes = _detailState.value
+            ?.takeIf { it.mediaItem.id == item.id }
+            ?.episodes
+            .orEmpty()
+
+        val initialSeason = seasonNumber
+        val initialEpisode = episodeNumber
+        val initialEpTitle = episodeTitle ?: initialSeasonEpisodesMatchTitle(
+            item = item,
+            cachedDetailEpisodes = cachedDetailEpisodes,
+            seasonNumber = initialSeason,
+            episodeNumber = initialEpisode
+        )
+        val initialStartPosMs = explicitStartPositionMs ?: 0L
+        val placeholderEmbedUrl = repository.vixSrcResolver.buildVixSrcApiUrl(
+            tmdbId = item.id,
+            mediaType = item.mediaType,
+            season = initialSeason,
+            episode = initialEpisode,
+            startSeconds = (initialStartPosMs / 1000L).coerceAtLeast(0L),
+            lang = lang
+        )
+
+        _playbackSession.value = PlaybackSession(
+            mediaItem = item,
+            seasonNumber = initialSeason,
+            episodeNumber = initialEpisode,
+            episodeTitle = initialEpTitle,
+            seasonEpisodes = if (item.isSeries && initialSeason != null && cachedDetailEpisodes.firstOrNull()?.seasonNumber == initialSeason) {
+                cachedDetailEpisodes
+            } else {
+                emptyList()
+            },
+            startPositionMs = initialStartPosMs,
+            isResolvingStream = true,
+            forceWebPlayer = useWebPlayer,
+            resolvedStream = ResolvedStream(
+                streamUrl = placeholderEmbedUrl,
+                embedUrl = placeholderEmbedUrl,
+                startSeconds = (initialStartPosMs / 1000L).coerceAtLeast(0L),
+                startMinutes = ((initialStartPosMs / 1000L) / 60L).toInt(),
+                isDirectHls = false
+            )
+        )
+
+        playbackResolveJob = viewModelScope.launch {
+            val resolvedLang = runCatching { preferences.streamLanguageFlow.first() }.getOrDefault(lang)
+            val resolvedWebPlayer = runCatching { preferences.preferWebPlayerFlow.first() }.getOrDefault(useWebPlayer)
             var targetSeason = seasonNumber
             var targetEpisode = episodeNumber
             var targetEpTitle = episodeTitle
-            var seasonEpisodes = _detailState.value?.takeIf { it.mediaItem.id == item.id }?.episodes.orEmpty()
 
-            if (item.isSeries) {
-                if (targetSeason == null || targetEpisode == null) {
-                    val saved = database.vixFlixDao().getWatchProgress(item.uniqueKey)
-                    targetSeason = saved?.seasonNumber ?: 1
-                    targetEpisode = saved?.episodeNumber ?: 1
-                    if (targetEpTitle.isNullOrBlank()) {
-                        targetEpTitle = saved?.episodeTitle
-                    }
-                }
-                val resolvedSeason = targetSeason ?: 1
-                if (seasonEpisodes.isEmpty() || seasonEpisodes.firstOrNull()?.seasonNumber != resolvedSeason) {
-                    seasonEpisodes = repository.fetchSeasonEpisodes(item.id, resolvedSeason).getOrDefault(emptyList())
-                }
+            if (item.isSeries && (targetSeason == null || targetEpisode == null)) {
+                val saved = database.vixFlixDao().getWatchProgress(item.uniqueKey)
+                targetSeason = targetSeason ?: saved?.seasonNumber ?: 1
+                targetEpisode = targetEpisode ?: saved?.episodeNumber ?: 1
                 if (targetEpTitle.isNullOrBlank()) {
-                    targetEpTitle = seasonEpisodes.firstOrNull { it.episodeNumber == targetEpisode }?.name
+                    targetEpTitle = saved?.episodeTitle
                 }
+            }
+
+            val resolvedSeason = targetSeason ?: 1
+            val initialSeasonEpisodes = if (item.isSeries && cachedDetailEpisodes.firstOrNull()?.seasonNumber == resolvedSeason) {
+                cachedDetailEpisodes
+            } else {
+                emptyList()
+            }
+            if (item.isSeries && targetEpTitle.isNullOrBlank()) {
+                targetEpTitle = initialSeasonEpisodes.firstOrNull { it.episodeNumber == targetEpisode }?.name
             }
 
             val startPosMs = explicitStartPositionMs ?: repository.getSavedProgress(
@@ -557,18 +625,22 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                 season = targetSeason,
                 episode = targetEpisode,
                 startSeconds = (startPosMs / 1000L).coerceAtLeast(0L),
-                lang = lang
+                lang = resolvedLang
             )
 
-            _playbackSession.value = PlaybackSession(
-                mediaItem = item,
+            val currentBeforeResolve = _playbackSession.value
+            if (currentBeforeResolve == null || currentBeforeResolve.mediaItem.id != item.id) {
+                return@launch
+            }
+
+            _playbackSession.value = currentBeforeResolve.copy(
                 seasonNumber = targetSeason,
                 episodeNumber = targetEpisode,
                 episodeTitle = targetEpTitle,
-                seasonEpisodes = seasonEpisodes,
+                seasonEpisodes = initialSeasonEpisodes,
                 startPositionMs = startPosMs,
                 isResolvingStream = true,
-                forceWebPlayer = preferWebPlayer.value,
+                forceWebPlayer = resolvedWebPlayer,
                 resolvedStream = ResolvedStream(
                     streamUrl = initialEmbedUrl,
                     embedUrl = initialEmbedUrl,
@@ -578,41 +650,72 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
                 )
             )
 
-            // Salva subito l'ingresso in "Continua a guardare" se parte da 0 così compare nella riga
+            // Salva subito l'ingresso in "Continua a guardare" se parte da un punto salvato
             if (startPosMs > 0L) {
-                repository.saveWatchProgress(
+                launch {
+                    repository.saveWatchProgress(
+                        item = item,
+                        seasonNumber = targetSeason,
+                        episodeNumber = targetEpisode,
+                        episodeTitle = targetEpTitle,
+                        positionMs = startPosMs,
+                        durationMs = 5_400_000L
+                    )
+                }
+            }
+
+            // Recupera eventuali episodi della stagione da TMDB in parallelo senza bloccare l'avvio del video
+            if (item.isSeries && initialSeasonEpisodes.isEmpty()) {
+                launch {
+                    val fetchedEpisodes = repository.fetchSeasonEpisodes(item.id, resolvedSeason)
+                        .getOrDefault(emptyList())
+                    if (fetchedEpisodes.isNotEmpty()) {
+                        val active = _playbackSession.value
+                        if (active != null && active.mediaItem.id == item.id && active.seasonNumber == targetSeason) {
+                            val resolvedEpName = active.episodeTitle?.takeIf { it.isNotBlank() }
+                                ?: fetchedEpisodes.firstOrNull { it.episodeNumber == targetEpisode }?.name
+                            _playbackSession.value = active.copy(
+                                seasonEpisodes = fetchedEpisodes,
+                                episodeTitle = resolvedEpName
+                            )
+                        }
+                    }
+                }
+            }
+
+            val streamDeferred = async {
+                repository.resolveVixSrcStream(
                     item = item,
-                    seasonNumber = targetSeason,
-                    episodeNumber = targetEpisode,
-                    episodeTitle = targetEpTitle,
-                    positionMs = startPosMs,
-                    durationMs = 5_400_000L
+                    season = targetSeason,
+                    episode = targetEpisode,
+                    startPositionMs = startPosMs,
+                    lang = resolvedLang
                 )
             }
 
-            val resolved = repository.resolveVixSrcStream(
-                item = item,
-                season = targetSeason,
-                episode = targetEpisode,
-                startPositionMs = startPosMs,
-                lang = lang
-            )
-
-            resolved.fold(
-                onSuccess = { stream ->
-                    _playbackSession.value = _playbackSession.value?.copy(
-                        isResolvingStream = false,
-                        resolvedStream = stream,
-                        errorMessage = null
-                    )
-                },
-                onFailure = { err ->
-                    _playbackSession.value = _playbackSession.value?.copy(
-                        isResolvingStream = false,
-                        errorMessage = err.localizedMessage
-                    )
-                }
-            )
+            val resolved = streamDeferred.await()
+            val active = _playbackSession.value
+            if (active != null &&
+                active.mediaItem.id == item.id &&
+                active.seasonNumber == targetSeason &&
+                active.episodeNumber == targetEpisode
+            ) {
+                resolved.fold(
+                    onSuccess = { stream ->
+                        _playbackSession.value = active.copy(
+                            isResolvingStream = false,
+                            resolvedStream = stream,
+                            errorMessage = null
+                        )
+                    },
+                    onFailure = { err ->
+                        _playbackSession.value = active.copy(
+                            isResolvingStream = false,
+                            errorMessage = err.localizedMessage
+                        )
+                    }
+                )
+            }
         }
     }
 
@@ -704,6 +807,7 @@ class VixFlixViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun closePlayer() {
+        playbackResolveJob?.cancel()
         _playbackSession.value = null
     }
 

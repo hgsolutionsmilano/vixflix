@@ -32,7 +32,7 @@ enum class StreamingBufferPreset(
         description = "Ideale per dispositivi con poca RAM o connessioni lente",
         minBufferMs = 5_000,
         maxBufferMs = 15_000,
-        bufferForPlaybackMs = 1_500,
+        bufferForPlaybackMs = 900,
         bufferForPlaybackAfterRebufferMs = 2_500
     ),
     DEFAULT(
@@ -43,8 +43,8 @@ enum class StreamingBufferPreset(
         description = "Equilibrio ottimale tra velocità di avvio e fluidità",
         minBufferMs = 15_000,
         maxBufferMs = 35_000,
-        bufferForPlaybackMs = 2_500,
-        bufferForPlaybackAfterRebufferMs = 5_000
+        bufferForPlaybackMs = 1_100,
+        bufferForPlaybackAfterRebufferMs = 4_500
     ),
     BALANCED(
         storageKey = "balanced",
@@ -54,7 +54,7 @@ enum class StreamingBufferPreset(
         description = "Riserva extra per flussi Full HD ad alto bitrate",
         minBufferMs = 25_000,
         maxBufferMs = 60_000,
-        bufferForPlaybackMs = 2_500,
+        bufferForPlaybackMs = 1_200,
         bufferForPlaybackAfterRebufferMs = 5_000
     ),
     EXTENDED(
@@ -65,8 +65,8 @@ enum class StreamingBufferPreset(
         description = "Precaricamento massimo per evitare pause su reti instabili",
         minBufferMs = 45_000,
         maxBufferMs = 120_000,
-        bufferForPlaybackMs = 3_000,
-        bufferForPlaybackAfterRebufferMs = 6_000
+        bufferForPlaybackMs = 1_400,
+        bufferForPlaybackAfterRebufferMs = 5_500
     );
 
     val targetBufferBytes: Int get() = sizeMb * 1024 * 1024
