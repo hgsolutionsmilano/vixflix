@@ -137,6 +137,7 @@ import com.example.ui.components.MovieGenreChipBar
 import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
 import com.example.ui.components.Top10Section
+import com.example.ui.components.VixFlixSplashScreen
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
@@ -157,7 +158,8 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun VixFlixAppScreen(
-    viewModel: VixFlixViewModel
+    viewModel: VixFlixViewModel,
+    splashMinDurationMs: Long = 1_150L
 ) {
     val context = LocalContext.current
     val isTvDevice = rememberIsTvDevice()
@@ -179,6 +181,7 @@ fun VixFlixAppScreen(
     val gitHubState by viewModel.gitHubState.collectAsStateWithLifecycle()
     val movieGenreState by viewModel.movieGenreState.collectAsStateWithLifecycle()
 
+    var isSplashVisible by remember { mutableStateOf(splashMinDurationMs > 0L) }
     var isSearchBarVisible by remember { mutableStateOf(false) }
     var requestedSettingsCategory by remember { mutableStateOf(SettingsCategory.PLAYBACK) }
     var requestedSettingsNonce by remember { mutableIntStateOf(0) }
@@ -210,9 +213,23 @@ fun VixFlixAppScreen(
         lastDetailSnapshot = detailState
     }
 
+    LaunchedEffect(splashMinDurationMs) {
+        if (splashMinDurationMs <= 0L) {
+            isSplashVisible = false
+            return@LaunchedEffect
+        }
+        delay(splashMinDurationMs)
+        var waitedExtra = 0L
+        while (catalogState is CatalogUiState.Loading && waitedExtra < 700L) {
+            delay(100L)
+            waitedExtra += 100L
+        }
+        isSplashVisible = false
+    }
+
     val isDetailVisible = detailState != null
     val isPlayerVisible = playbackSession != null
-    val isCatalogInteractive = !isDetailVisible && !isPlayerVisible
+    val isCatalogInteractive = !isSplashVisible && !isDetailVisible && !isPlayerVisible
 
     val tabContentEntryFocusRequester: FocusRequester? = when (selectedTab) {
         NavTab.SETTINGS -> settingsFirstControlFocusRequester
@@ -254,9 +271,10 @@ fun VixFlixAppScreen(
         }
     }
 
-    // Focus iniziale per cambio scheda / caricamento completato
+    // Focus iniziale per cambio scheda / caricamento completato / uscita dallo splash
     LaunchedEffect(
         isTvDevice,
+        isCatalogInteractive,
         selectedTab,
         catalogState is CatalogUiState.Success,
         catalogState is CatalogUiState.Error
@@ -280,17 +298,19 @@ fun VixFlixAppScreen(
         wasOverlayActive = !isCatalogInteractive
     }
 
-    // Popup automatico se GitHub Releases segnala una nuova versione
-    GitHubUpdateDialog(
-        state = gitHubState,
-        onDismiss = viewModel::dismissUpdateDialog,
-        onConfirmUpdate = { viewModel.performInAppUpdate(context) },
-        onOpenGitHubTab = {
-            requestedSettingsCategory = SettingsCategory.UPDATES
-            requestedSettingsNonce++
-            viewModel.selectTab(NavTab.SETTINGS)
-        }
-    )
+    // Popup automatico se GitHub Releases segnala una nuova versione (dopo lo splash)
+    if (!isSplashVisible) {
+        GitHubUpdateDialog(
+            state = gitHubState,
+            onDismiss = viewModel::dismissUpdateDialog,
+            onConfirmUpdate = { viewModel.performInAppUpdate(context) },
+            onOpenGitHubTab = {
+                requestedSettingsCategory = SettingsCategory.UPDATES
+                requestedSettingsNonce++
+                viewModel.selectTab(NavTab.SETTINGS)
+            }
+        )
+    }
 
     val navItems = remember {
         listOf(
@@ -355,7 +375,13 @@ fun VixFlixAppScreen(
             }
         }
 
-        // 1. LIVELLO BASE: Catalogo Principale (mantiene posizione di scorrimento e stato TV dietro ai dettagli)
+        // 1. LIVELLO BASE: Catalogo Principale (entra con dissolvenza dopo lo splash iniziale)
+        AnimatedVisibility(
+            visible = !isSplashVisible,
+            enter = fadeIn(tween(340)),
+            exit = ExitTransition.None,
+            modifier = Modifier.fillMaxSize()
+        ) {
         Scaffold(
             containerColor = NetflixBlack,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -845,6 +871,7 @@ fun VixFlixAppScreen(
                 }
             )
         }
+        }
 
         // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (con stack cronologico tra Titoli Simili)
         androidx.compose.animation.AnimatedVisibility(
@@ -928,6 +955,23 @@ fun VixFlixAppScreen(
                     onClose = viewModel::closePlayer
                 )
             }
+        }
+
+        // 4. SPLASH SCREEN ANIMATO IN FASE DI AVVIO (sincronizzato con Theme.VixFlix.Splash)
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isSplashVisible,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(380)) + scaleOut(
+                targetScale = 1.04f,
+                animationSpec = tween(380, easing = FastOutSlowInEasing)
+            ),
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(200f)
+        ) {
+            VixFlixSplashScreen(
+                isCatalogLoading = catalogState is CatalogUiState.Loading
+            )
         }
     }
 }

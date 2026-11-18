@@ -23,4 +23,8 @@
     <string name="action_retry">Riprova Connessione TMDB</string>
     <string name="update_available_title">Nuova Versione Disponibile su GitHub</string>
     <string name="update_now_button">Scarica e Aggiorna APK</string>
+    <string name="splash_logo_description">Logo VixFlix</string>
+    <string name="splash_tagline">STREAMING CINEMA &amp; SERIE TV</string>
+    <string name="splash_loading_catalog">Preparazione catalogo live…</string>
+    <string name="splash_ready">Esperienza cinema pronta</string>
 </resources>
