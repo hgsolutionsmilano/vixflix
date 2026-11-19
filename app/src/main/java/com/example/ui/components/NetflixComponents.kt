@@ -698,13 +698,7 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
                         .safeFocusRequester(watchFocusRequester)
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                navRailFocusRequester.safeRequestFocus()
-                            } else {
-                                handleHeroVerticalKey(keyEvent)
-                            }
-                        }
+                        .onPreviewKeyEvent(handleHeroVerticalKey)
                         .focusProperties {
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                             resolvedPlayFocusRequester.takeIfAttached()?.let { right = it }
@@ -899,7 +893,6 @@ fun ContinueWatchingSection(
                                 when (keyEvent.key) {
                                     Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
                                     Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
                                     else -> false
                                 }
                             } else {
@@ -1157,7 +1150,6 @@ fun Top10Section(
                                 when (keyEvent.key) {
                                     Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
                                     Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
                                     else -> false
                                 }
                             } else {
@@ -1366,7 +1358,6 @@ fun MediaCatalogRow(
                                 when (keyEvent.key) {
                                     Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
                                     Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
                                     else -> false
                                 }
                             } else {
@@ -1586,13 +1577,7 @@ fun MovieGenreChipBar(
                             Modifier
                         }
                     )
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                            navRailFocusRequester.safeRequestFocus()
-                        } else {
-                            handleGenreVerticalKey(keyEvent)
-                        }
-                    }
+                    .onPreviewKeyEvent(handleGenreVerticalKey)
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                         upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1837,13 +1822,7 @@ fun StreamingPlatformsStrip(
                         isSelected = false,
                         onClick = { onSelectProvider(null) },
                         modifier = Modifier
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                    navRailFocusRequester.safeRequestFocus()
-                                } else {
-                                    handlePlatformVerticalKey(keyEvent)
-                                }
-                            }
+                            .onPreviewKeyEvent(handlePlatformVerticalKey)
                             .focusProperties {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                                 upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1878,17 +1857,7 @@ fun StreamingPlatformsStrip(
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown &&
-                                keyEvent.key == Key.DirectionLeft &&
-                                index == 0 &&
-                                selectedProvider == null
-                            ) {
-                                navRailFocusRequester.safeRequestFocus()
-                            } else {
-                                handlePlatformVerticalKey(keyEvent)
-                            }
-                        }
+                        .onPreviewKeyEvent(handlePlatformVerticalKey)
                         .focusProperties {
                             if (index == 0 && selectedProvider == null) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }

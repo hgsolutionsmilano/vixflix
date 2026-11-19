@@ -1048,26 +1048,18 @@ private fun TvExpandableNavigationRail(
             .onFocusChanged { onFocusChanged(it.hasFocus) }
             .focusGroup()
             .focusProperties {
-                @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-                enter = { selectedItemFocusRequester }
                 (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
                     right = it
                 }
             }
             .testTag("tv_navigation_rail")
     ) {
-        // Mini badge brand in cima alla barra laterale: al click quando il menu non è selezionato porta subito sull'icona Home
+        // Mini badge brand in cima alla barra laterale
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    selectedItemFocusRequester.safeRequestFocus()
-                }
                 .padding(horizontal = if (isExpanded) 8.dp else 0.dp, vertical = 6.dp)
         ) {
             Box(
@@ -1116,10 +1108,10 @@ private fun TvExpandableNavigationRail(
             }
             val resolveRailRequester: (Int) -> FocusRequester = { railIndex ->
                 if (railIndex == 0) {
-                    searchDedicatedRequester
+                    if (isSearchOpen) selectedItemFocusRequester else searchDedicatedRequester
                 } else {
                     val tab = navItems[railIndex - 1].first
-                    if (tab == NavTab.HOME) {
+                    if (selectedTab == tab && !isSearchOpen) {
                         selectedItemFocusRequester
                     } else {
                         tabDedicatedRequesters.getValue(tab)
@@ -2343,7 +2335,6 @@ private fun CatalogFeedContent(
                                                                 when (keyEvent.key) {
                                                                     Key.DirectionDown -> if (next != null) navigateToTarget(next) else false
                                                                     Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
-                                                                    Key.DirectionLeft -> if (colIdx == 0) navRailFocusRequester.safeRequestFocus() else false
                                                                     else -> false
                                                                 }
                                                             } else {
@@ -2642,7 +2633,6 @@ private fun CatalogFeedContent(
                                                                 when (keyEvent.key) {
                                                                     Key.DirectionDown -> if (next != null) navigateToTarget(next) else false
                                                                     Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
-                                                                    Key.DirectionLeft -> if (colIdx == 0) navRailFocusRequester.safeRequestFocus() else false
                                                                     else -> false
                                                                 }
                                                             } else {

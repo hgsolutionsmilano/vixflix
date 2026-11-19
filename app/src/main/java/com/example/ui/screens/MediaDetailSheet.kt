@@ -504,6 +504,18 @@ fun MediaDetailScreen(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
+                                            Surface(
+                                                color = NetflixRed,
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = "VIXSRC STREAM",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
                                             Text(
                                                 text = "${currentItem.matchPercentage}% Compatibile",
                                                 style = MaterialTheme.typography.labelLarge,
@@ -828,6 +840,18 @@ fun MediaDetailScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
+                                    Surface(
+                                        color = NetflixRed,
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "VIXSRC STREAM",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
                                     Text(
                                         text = "${currentItem.matchPercentage}% Compatibile",
                                         style = MaterialTheme.typography.labelLarge,
