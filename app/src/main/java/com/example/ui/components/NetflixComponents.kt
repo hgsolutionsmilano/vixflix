@@ -1967,7 +1967,7 @@ private fun StreamingPlatformCard(
                     }
                 }
                 Text(
-                    text = if (isSelected) "Catalogo attivo" else "Catalogo TMDB",
+                    text = if (isSelected) "Catalogo attivo" else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (isSelected) NetflixMatchGreen else NetflixLightGray,
                     maxLines = 1
