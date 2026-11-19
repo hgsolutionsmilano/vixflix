@@ -54,6 +54,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Home
@@ -62,6 +63,7 @@ import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.outlined.Info
@@ -452,13 +454,22 @@ fun VixFlixAppScreen(
                     .fillMaxSize()
                     .background(NetflixBlack)
             ) {
+                val activeTopBarFocusRequester = if (useTvNavigationRail) {
+                    if (isSearchBarVisible) searchInputFocusRequester else null
+                } else {
+                    topBarBrandFocusRequester
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(start = if (useTvNavigationRail) 72.dp else 0.dp)
                         .background(NetflixBlack)
                 ) {
-                    val topBarOffset = if (useTvNavigationRail) 78.dp else 122.dp
+                    val topBarOffset = when {
+                        !useTvNavigationRail -> 122.dp
+                        isSearchBarVisible -> 72.dp
+                        else -> 16.dp
+                    }
                     val sectionKey = MainSectionKey(
                         isSearch = isSearchBarVisible && searchQuery.isNotBlank(),
                         tab = selectedTab,
@@ -541,7 +552,7 @@ fun VixFlixAppScreen(
                                 onClearLocalCache = viewModel::clearLocalCache,
                                 firstControlFocusRequester = sectionSettingsFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
-                                upFocusRequester = topBarBrandFocusRequester,
+                                upFocusRequester = activeTopBarFocusRequester,
                                 contentPadding = PaddingValues(
                                     top = topBarOffset,
                                     bottom = innerPadding.calculateBottomPadding()
@@ -554,7 +565,7 @@ fun VixFlixAppScreen(
                                 isTvLayout = useTvNavigationRail,
                                 firstRowFocusRequester = sectionFirstRowFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
-                                topBarFocusRequester = topBarBrandFocusRequester,
+                                topBarFocusRequester = activeTopBarFocusRequester,
                                 onBrowseCatalog = { viewModel.selectTab(NavTab.HOME) },
                                 onOpenItem = viewModel::openDetails,
                                 onPlayItem = { viewModel.startPlayback(it) },
@@ -656,7 +667,7 @@ fun VixFlixAppScreen(
                                         platformStripFocusRequester = sectionPlatformStripFocus,
                                         firstRowFocusRequester = sectionFirstRowFocus,
                                         navRailFocusRequester = navRailSelectedFocusRequester,
-                                        topBarFocusRequester = topBarBrandFocusRequester,
+                                        topBarFocusRequester = activeTopBarFocusRequester,
                                         onSelectMovieGenre = viewModel::selectMovieGenre,
                                         onRetryMovieGenre = viewModel::retrySelectedMovieGenre,
                                         onSelectStreamingPlatform = viewModel::selectStreamingPlatform,
@@ -765,18 +776,26 @@ fun VixFlixAppScreen(
                     TvExpandableNavigationRail(
                         navItems = navItems,
                         selectedTab = selectedTab,
+                        isSearchOpen = isSearchBarVisible,
                         isExpanded = isRailFocused,
                         selectedItemFocusRequester = navRailSelectedFocusRequester,
-                        rightToContentFocusRequester = activeContentEntryFocusRequester,
-                        fallbackRightFocusRequester = topBarBrandFocusRequester,
+                        rightToContentFocusRequester = if (isSearchBarVisible) searchInputFocusRequester else activeContentEntryFocusRequester,
+                        fallbackRightFocusRequester = activeTopBarFocusRequester,
                         onFocusChanged = { isRailFocused = it },
+                        onToggleSearch = {
+                            isSearchBarVisible = !isSearchBarVisible
+                            if (!isSearchBarVisible) {
+                                viewModel.clearSearch()
+                            }
+                        },
                         onSelectTab = { tab ->
                             isSearchBarVisible = false
                             viewModel.clearSearch()
                             viewModel.selectTab(tab)
                         },
                         onMoveFocusRight = {
-                            lastFocusedContentRequester.safeRequestFocus() ||
+                            (if (isSearchBarVisible) searchInputFocusRequester.safeRequestFocus() else false) ||
+                                lastFocusedContentRequester.safeRequestFocus() ||
                                 tabContentEntryFocusRequester.safeRequestFocus() ||
                                 heroPlayFocusRequester.safeRequestFocus() ||
                                 firstRowFocusRequester.safeRequestFocus()
@@ -991,11 +1010,13 @@ fun VixFlixAppScreen(
 private fun TvExpandableNavigationRail(
     navItems: List<Triple<NavTab, String, ImageVector>>,
     selectedTab: NavTab,
+    isSearchOpen: Boolean,
     isExpanded: Boolean,
     selectedItemFocusRequester: FocusRequester,
     rightToContentFocusRequester: FocusRequester?,
     fallbackRightFocusRequester: FocusRequester? = null,
     onFocusChanged: (Boolean) -> Unit,
+    onToggleSearch: () -> Unit,
     onSelectTab: (NavTab) -> Unit,
     onMoveFocusRight: () -> Boolean,
     modifier: Modifier = Modifier
@@ -1064,14 +1085,112 @@ private fun TvExpandableNavigationRail(
             }
         }
 
-        Spacer(modifier = Modifier.height(18.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
+            // Voce Cerca integrata nella barra laterale (solo visualizzazione orizzontale / TV)
+            var searchFocused by remember { mutableStateOf(false) }
+            val searchBgColor = when {
+                searchFocused -> NetflixRed
+                isSearchOpen -> NetflixElevatedSurface
+                else -> Color.Transparent
+            }
+            val searchTint = when {
+                searchFocused -> Color.White
+                isSearchOpen -> NetflixRed
+                else -> NetflixMutedGray
+            }
+            val searchLabel = if (isSearchOpen) "Chiudi Ricerca" else "Cerca"
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(searchBgColor)
+                    .then(
+                        if (searchFocused) {
+                            Modifier.border(2.dp, NetflixWhite, RoundedCornerShape(12.dp))
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .then(
+                        if (isSearchOpen) {
+                            Modifier.safeFocusRequester(selectedItemFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .focusProperties {
+                        (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
+                            right = it
+                        }
+                    }
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown &&
+                            keyEvent.key == Key.DirectionRight
+                        ) {
+                            onMoveFocusRight()
+                        } else if (keyEvent.type == KeyEventType.KeyUp &&
+                            (keyEvent.key == Key.DirectionCenter ||
+                                keyEvent.key == Key.Enter ||
+                                keyEvent.key == Key.NumPadEnter)
+                        ) {
+                            onToggleSearch()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    .onFocusChanged { searchFocused = it.isFocused }
+                    .focusable()
+                    .clickable { onToggleSearch() }
+                    .padding(horizontal = 12.dp)
+                    .testTag("search_toggle_button"),
+                contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        modifier = Modifier.size(26.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isSearchOpen) Icons.Default.Close else Icons.Default.Search,
+                            contentDescription = "Cerca su TMDB",
+                            tint = if (searchFocused) Color.White else searchTint,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    AnimatedVisibility(
+                        visible = isExpanded,
+                        enter = fadeIn(tween(100)) + expandHorizontally(tween(110)),
+                        exit = fadeOut(tween(80)) + shrinkHorizontally(tween(90))
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = searchLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (isSearchOpen || searchFocused) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSearchOpen || searchFocused) NetflixWhite else NetflixLightGray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
             navItems.forEach { (tab, label, icon) ->
-                val isSelected = selectedTab == tab
+                val isSelected = selectedTab == tab && !isSearchOpen
                 var itemFocused by remember { mutableStateOf(false) }
 
                 val bgColor = when {
@@ -1412,7 +1531,7 @@ private fun CatalogFeedContent(
     platformStripFocusRequester: FocusRequester,
     firstRowFocusRequester: FocusRequester,
     navRailFocusRequester: FocusRequester,
-    topBarFocusRequester: FocusRequester,
+    topBarFocusRequester: FocusRequester?,
     onSelectMovieGenre: (TmdbGenreDto?) -> Unit,
     onRetryMovieGenre: () -> Unit,
     onSelectStreamingPlatform: (TmdbWatchProviderDto?) -> Unit,
@@ -1520,7 +1639,7 @@ private fun CatalogFeedContent(
         ) {
             if (selectedTab == NavTab.MOVIES) {
                 item(key = "movies_top_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(if (isTvLayout) 56.dp else 118.dp))
+                    Spacer(modifier = Modifier.height(if (isTvLayout) 16.dp else 118.dp))
                 }
                 item(key = "movies_genre_chip_bar", contentType = "genre_bar") {
                     val genreDownTarget = when {
@@ -1544,7 +1663,7 @@ private fun CatalogFeedContent(
 
             if (selectedTab == NavTab.HOME && activePlatform != null) {
                 item(key = "home_platform_top_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(if (isTvLayout) 56.dp else 118.dp))
+                    Spacer(modifier = Modifier.height(if (isTvLayout) 16.dp else 118.dp))
                 }
             }
 
@@ -1574,7 +1693,7 @@ private fun CatalogFeedContent(
                 }
             } else if (selectedTab == NavTab.NEW_POPULAR) {
                 item(key = "new_popular_top_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(if (isTvLayout) 72.dp else 118.dp))
+                    Spacer(modifier = Modifier.height(if (isTvLayout) 16.dp else 118.dp))
                 }
             }
 
@@ -2383,7 +2502,7 @@ private fun MyListScreen(
     isTvLayout: Boolean,
     firstRowFocusRequester: FocusRequester,
     navRailFocusRequester: FocusRequester,
-    topBarFocusRequester: FocusRequester,
+    topBarFocusRequester: FocusRequester?,
     onBrowseCatalog: () -> Unit,
     onOpenItem: (MediaItem) -> Unit,
     onPlayItem: (MediaItem) -> Unit = onOpenItem,

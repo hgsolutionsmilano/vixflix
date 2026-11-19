@@ -150,7 +150,7 @@ class TvNavigationAndViewsCrashTest {
         composeRule.onNodeWithTag("catalog_lazy_column").performScrollToIndex(5)
         composeRule.waitForIdle()
 
-        // Ora naviga verso i film popolari e premi Su / Sinistra / Giù dalla TopBar verso le categorie
+        // Ora naviga verso i film popolari e premi Su / Sinistra verso la barra categorie e la navigation rail
         composeRule.onNodeWithTag("poster_card_movie_301", useUnmergedTree = true)
             .performKeyInput {
                 pressKey(Key.DirectionUp)
@@ -159,11 +159,22 @@ class TvNavigationAndViewsCrashTest {
             }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag("brand_logo", useUnmergedTree = true)
-            .performKeyInput {
-                pressKey(Key.DirectionDown)
-            }
-        composeRule.waitForIdle()
+        // In modalità orizzontale / TV il logo e le icone della barra superiore non devono esistere
+        assertTrue(
+            "Top bar brand_logo must be removed in landscape/TV view",
+            composeRule.onAllNodesWithTag("brand_logo", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "Top bar lang_toggle_button must be removed in landscape/TV view",
+            composeRule.onAllNodesWithTag("lang_toggle_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "Top bar github_update_button must be removed in landscape/TV view",
+            composeRule.onAllNodesWithTag("github_update_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
     }
 
     @Test
@@ -183,8 +194,8 @@ class TvNavigationAndViewsCrashTest {
             .performScrollToNode(hasTestTag("genre_chip_37"))
         composeRule.waitForIdle()
 
-        // Premi Giù da Hero / Brand verso la barra categorie mentre "Tutti" è fuori schermo
-        composeRule.onNodeWithTag("brand_logo", useUnmergedTree = true)
+        // Premi Giù dalla chip Western mentre "Tutti" è fuori schermo
+        composeRule.onNodeWithTag("genre_chip_37", useUnmergedTree = true)
             .performKeyInput {
                 pressKey(Key.DirectionDown)
             }
@@ -713,10 +724,31 @@ class TvNavigationAndViewsCrashTest {
 
         launchTvApp()
 
-        // 1. Verifica che su Tablet in orizzontale (UI_MODE_TYPE_NORMAL) sia attiva la Navigation Rail TV
+        // 1. Verifica che su Tablet in orizzontale (UI_MODE_TYPE_NORMAL) sia attiva la Navigation Rail TV,
+        // che il logo e le icone della barra superiore siano eliminati e che la ricerca sia nella barra laterale
         assertTrue(
             "Landscape tablet must display the unified TV navigation rail",
             composeRule.onAllNodesWithTag("tv_navigation_rail", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+        assertTrue(
+            "Landscape tablet must not display brand_logo in the top bar",
+            composeRule.onAllNodesWithTag("brand_logo", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "Landscape tablet must not display lang_toggle_button in the top bar",
+            composeRule.onAllNodesWithTag("lang_toggle_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "Landscape tablet must not display github_update_button in the top bar",
+            composeRule.onAllNodesWithTag("github_update_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "Landscape tablet must include search_toggle_button in the vertical navigation rail",
+            composeRule.onAllNodesWithTag("search_toggle_button", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         )
 

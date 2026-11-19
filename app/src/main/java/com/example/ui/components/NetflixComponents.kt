@@ -143,6 +143,10 @@ fun NetflixTopBar(
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
 
+    if (isTvLayout && !isSearchOpen) {
+        return
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -165,88 +169,22 @@ fun NetflixTopBar(
             downToContentFocusRequester
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Logo VixFlix (navigabile con D-pad: Sinistra -> Barra laterale, Giù -> Titoli/Hero)
+        if (!isTvLayout) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .safeFocusRequester(brandLogoFocusRequester)
-                    .focusProperties {
-                        navRailFocusRequester.takeIfAttached()?.let { left = it }
-                        resolvedDownTarget.takeIfAttached()?.let { down = it }
-                    }
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown &&
-                            keyEvent.key == Key.DirectionDown
-                        ) {
-                            resolvedDownTarget.safeRequestFocus()
-                        } else {
-                            false
-                        }
-                    }
-                    .tvFocusableControl(
-                        shape = RoundedCornerShape(8.dp),
-                        focusedBorderColor = NetflixRed,
-                        onClick = { onSelectTab(NavTab.HOME) }
-                    )
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-                    .testTag("brand_logo")
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(NetflixRed),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "V",
-                        fontFamily = BebasNeueFontFamily,
-                        fontSize = 26.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "VIXFLIX",
-                    fontFamily = BebasNeueFontFamily,
-                    fontSize = 28.sp,
-                    letterSpacing = 2.sp,
-                    color = NetflixRed
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Surface(
-                    color = NetflixElevatedSurface,
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text(
-                        text = if (isTvLayout) "TV • v${BuildConfig.VERSION_NAME}" else "v${BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NetflixLightGray,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-            }
-
-            Row(
+                    .fillMaxWidth()
+                    .focusGroup(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Switch lingua Audio/Sub VixSrc (IT / EN)
-                Surface(
-                    color = NetflixCardSurface,
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                // Logo VixFlix (visibile solo in visualizzazione verticale)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .safeFocusRequester(brandLogoFocusRequester)
                         .focusProperties {
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
                             resolvedDownTarget.takeIfAttached()?.let { down = it }
                         }
                         .onPreviewKeyEvent { keyEvent ->
@@ -260,23 +198,130 @@ fun NetflixTopBar(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(8.dp),
-                            focusedBorderColor = NetflixWhite,
-                            onClick = onToggleLang
+                            focusedBorderColor = NetflixRed,
+                            onClick = { onSelectTab(NavTab.HOME) }
                         )
-                        .testTag("lang_toggle_button")
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .testTag("brand_logo")
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(NetflixRed),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "V",
+                            fontFamily = BebasNeueFontFamily,
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = streamLang.uppercase(),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = NetflixWhite,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        text = "VIXFLIX",
+                        fontFamily = BebasNeueFontFamily,
+                        fontSize = 28.sp,
+                        letterSpacing = 2.sp,
+                        color = NetflixRed
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = NetflixElevatedSurface,
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "v${BuildConfig.VERSION_NAME}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NetflixLightGray,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
 
-                // Pulsante GitHub Update check
-                Box {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Switch lingua Audio/Sub VixSrc (IT / EN)
+                    Surface(
+                        color = NetflixCardSurface,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                        modifier = Modifier
+                            .focusProperties {
+                                resolvedDownTarget.takeIfAttached()?.let { down = it }
+                            }
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown &&
+                                    keyEvent.key == Key.DirectionDown
+                                ) {
+                                    resolvedDownTarget.safeRequestFocus()
+                                } else {
+                                    false
+                                }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(8.dp),
+                                focusedBorderColor = NetflixWhite,
+                                onClick = onToggleLang
+                            )
+                            .testTag("lang_toggle_button")
+                    ) {
+                        Text(
+                            text = streamLang.uppercase(),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = NetflixWhite,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+
+                    // Pulsante GitHub Update check
+                    Box {
+                        IconButton(
+                            onClick = onClickUpdateIcon,
+                            modifier = Modifier
+                                .focusProperties {
+                                    resolvedDownTarget.takeIfAttached()?.let { down = it }
+                                }
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown &&
+                                        keyEvent.key == Key.DirectionDown
+                                    ) {
+                                        resolvedDownTarget.safeRequestFocus()
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .tvFocusableControl(
+                                    shape = CircleShape,
+                                    focusedBorderColor = NetflixWhite
+                                )
+                                .testTag("github_update_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CloudDownload,
+                                contentDescription = "Controlla aggiornamenti GitHub",
+                                tint = if (hasUpdateAvailable) NetflixMatchGreen else NetflixWhite
+                            )
+                        }
+                        if (hasUpdateAvailable) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(NetflixRed)
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = (-6).dp, y = 6.dp)
+                            )
+                        }
+                    }
+
+                    // Pulsante Cerca TMDB
                     IconButton(
-                        onClick = onClickUpdateIcon,
+                        onClick = onToggleSearch,
                         modifier = Modifier
                             .focusProperties {
                                 resolvedDownTarget.takeIfAttached()?.let { down = it }
@@ -294,53 +339,14 @@ fun NetflixTopBar(
                                 shape = CircleShape,
                                 focusedBorderColor = NetflixWhite
                             )
-                            .testTag("github_update_button")
+                            .testTag("search_toggle_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.CloudDownload,
-                            contentDescription = "Controlla aggiornamenti GitHub",
-                            tint = if (hasUpdateAvailable) NetflixMatchGreen else NetflixWhite
+                            imageVector = if (isSearchOpen) Icons.Default.Close else Icons.Default.Search,
+                            contentDescription = "Cerca su TMDB",
+                            tint = NetflixWhite
                         )
                     }
-                    if (hasUpdateAvailable) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(NetflixRed)
-                                .align(Alignment.TopEnd)
-                                .offset(x = (-6).dp, y = 6.dp)
-                        )
-                    }
-                }
-
-                // Pulsante Cerca TMDB
-                IconButton(
-                    onClick = onToggleSearch,
-                    modifier = Modifier
-                        .focusProperties {
-                            resolvedDownTarget.takeIfAttached()?.let { down = it }
-                        }
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown &&
-                                keyEvent.key == Key.DirectionDown
-                            ) {
-                                resolvedDownTarget.safeRequestFocus()
-                            } else {
-                                false
-                            }
-                        }
-                        .tvFocusableControl(
-                            shape = CircleShape,
-                            focusedBorderColor = NetflixWhite
-                        )
-                        .testTag("search_toggle_button")
-                ) {
-                    Icon(
-                        imageVector = if (isSearchOpen) Icons.Default.Close else Icons.Default.Search,
-                        contentDescription = "Cerca su TMDB",
-                        tint = NetflixWhite
-                    )
                 }
             }
         }
@@ -368,14 +374,20 @@ fun NetflixTopBar(
                     )
                 },
                 trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
+                    if (searchQuery.isNotEmpty() || isTvLayout) {
                         IconButton(
-                            onClick = { onSearchQueryChange("") },
+                            onClick = {
+                                if (searchQuery.isNotEmpty()) {
+                                    onSearchQueryChange("")
+                                } else {
+                                    onToggleSearch()
+                                }
+                            },
                             modifier = Modifier.tvFocusableControl(shape = CircleShape)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
-                                contentDescription = "Cancella ricerca",
+                                contentDescription = "Cancella o chiudi ricerca",
                                 tint = NetflixLightGray
                             )
                         }
@@ -401,18 +413,28 @@ fun NetflixTopBar(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp)
+                    .padding(top = if (isTvLayout) 4.dp else 8.dp)
                     .safeFocusRequester(searchFocusRequester)
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                         downToContentFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown &&
-                            keyEvent.key == Key.DirectionDown
-                        ) {
-                            keyboardController?.hide()
-                            downToContentFocusRequester.safeRequestFocus()
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.DirectionDown -> {
+                                    keyboardController?.hide()
+                                    downToContentFocusRequester.safeRequestFocus()
+                                }
+                                Key.DirectionLeft -> {
+                                    if (searchQuery.isEmpty()) {
+                                        navRailFocusRequester.safeRequestFocus()
+                                    } else {
+                                        false
+                                    }
+                                }
+                                else -> false
+                            }
                         } else {
                             false
                         }
