@@ -195,10 +195,12 @@ fun VixFlixAppScreen(
     var lastBackPressMs by remember { mutableLongStateOf(0L) }
     var showExitHintBanner by remember { mutableStateOf(false) }
 
-    val heroPlayFocusRequester = remember { FocusRequester() }
+    val heroPlayFocusRequesters = remember { NavTab.entries.associateWith { FocusRequester() } }
+    val firstRowFocusRequesters = remember { NavTab.entries.associateWith { FocusRequester() } }
+    val heroPlayFocusRequester = heroPlayFocusRequesters.getValue(selectedTab)
     val movieGenreBarFocusRequester = remember { FocusRequester() }
     val platformStripFocusRequester = remember { FocusRequester() }
-    val firstRowFocusRequester = remember { FocusRequester() }
+    val firstRowFocusRequester = firstRowFocusRequesters.getValue(selectedTab)
     val navRailSelectedFocusRequester = remember { FocusRequester() }
     val topBarBrandFocusRequester = remember { FocusRequester() }
     val searchInputFocusRequester = remember { FocusRequester() }
@@ -294,8 +296,15 @@ fun VixFlixAppScreen(
     ) {
         if (isTvDevice && isCatalogInteractive && !isSearchBarVisible) {
             val target = tabContentEntryFocusRequester ?: return@LaunchedEffect
-            delay(140L)
-            target.safeRequestFocus()
+            for (frame in 1..4) {
+                androidx.compose.runtime.withFrameNanos { }
+                if (target.safeRequestFocus()) return@LaunchedEffect
+            }
+            delay(60L)
+            if (!target.safeRequestFocus()) {
+                delay(120L)
+                target.safeRequestFocus()
+            }
         }
     }
 
@@ -348,7 +357,7 @@ fun VixFlixAppScreen(
             .fillMaxSize()
             .background(NetflixBlack)
     ) {
-        val useTvNavigationRail = isTvDevice || maxWidth >= 840.dp
+        val useTvNavigationRail = isTvDevice || maxWidth >= 600.dp || maxWidth > maxHeight
 
         // Gestione tasto INDIETRO ottimale per Android TV / Google TV nel catalogo principale:
         // 1. Chiude menu rapido o ricerca se aperti
@@ -469,6 +478,13 @@ fun VixFlixAppScreen(
                         modifier = Modifier.fillMaxSize()
                     ) { currentSection ->
                         val isSectionActive = currentSection == sectionKey
+                        val sectionSearchFirstFocus = if (isSectionActive) searchFirstItemFocusRequester else remember { FocusRequester() }
+                        val sectionSettingsFirstFocus = if (isSectionActive) settingsFirstControlFocusRequester else remember { FocusRequester() }
+                        val sectionHeroPlayFocus = if (isSectionActive) heroPlayFocusRequesters.getValue(currentSection.tab) else remember { FocusRequester() }
+                        val sectionMovieGenreBarFocus = if (isSectionActive) movieGenreBarFocusRequester else remember { FocusRequester() }
+                        val sectionPlatformStripFocus = if (isSectionActive) platformStripFocusRequester else remember { FocusRequester() }
+                        val sectionFirstRowFocus = if (isSectionActive) firstRowFocusRequesters.getValue(currentSection.tab) else remember { FocusRequester() }
+                        val sectionRetryFocus = if (isSectionActive) retryButtonFocusRequester else remember { FocusRequester() }
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -480,10 +496,10 @@ fun VixFlixAppScreen(
                                 isSearching = isSearching,
                                 results = searchResults,
                                 isTvLayout = useTvNavigationRail,
-                                firstItemFocusRequester = searchFirstItemFocusRequester,
+                                firstItemFocusRequester = sectionSearchFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = searchInputFocusRequester,
-                                onItemFocused = { lastFocusedContentRequester = it },
+                                onItemFocused = { if (isSectionActive) lastFocusedContentRequester = it },
                                 onItemQuickPlay = { item -> viewModel.startPlayback(item) },
                                 onItemLongClick = { item -> tvQuickActionItem = item },
                                 onItemClick = viewModel::openDetails,
@@ -523,7 +539,7 @@ fun VixFlixAppScreen(
                                 cacheClearedFeedbackNonce = cacheClearedFeedbackNonce,
                                 onSetBackgroundPrefetch = viewModel::setBackgroundPrefetchEnabled,
                                 onClearLocalCache = viewModel::clearLocalCache,
-                                firstControlFocusRequester = settingsFirstControlFocusRequester,
+                                firstControlFocusRequester = sectionSettingsFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = topBarBrandFocusRequester,
                                 contentPadding = PaddingValues(
@@ -536,7 +552,7 @@ fun VixFlixAppScreen(
                                 watchlist = watchlist,
                                 continueWatching = continueWatching,
                                 isTvLayout = useTvNavigationRail,
-                                firstRowFocusRequester = firstRowFocusRequester,
+                                firstRowFocusRequester = sectionFirstRowFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 topBarFocusRequester = topBarBrandFocusRequester,
                                 onBrowseCatalog = { viewModel.selectTab(NavTab.HOME) },
@@ -546,7 +562,7 @@ fun VixFlixAppScreen(
                                 onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
                                 onTvLongPressContinueWatching = { entry -> tvQuickActionEntry = entry },
                                 onTvLongPressPoster = { item -> tvQuickActionItem = item },
-                                onRememberContentFocus = { requester -> lastFocusedContentRequester = requester },
+                                onRememberContentFocus = { requester -> if (isSectionActive) lastFocusedContentRequester = requester },
                                 contentPadding = PaddingValues(
                                     top = topBarOffset,
                                     bottom = innerPadding.calculateBottomPadding() + 24.dp
@@ -610,7 +626,7 @@ fun VixFlixAppScreen(
                                                 ),
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
-                                                    .safeFocusRequester(retryButtonFocusRequester)
+                                                    .safeFocusRequester(sectionRetryFocus)
                                                     .focusProperties {
                                                         navRailSelectedFocusRequester.takeIfAttached()?.let { left = it }
                                                         topBarBrandFocusRequester.takeIfAttached()?.let { up = it }
@@ -635,10 +651,10 @@ fun VixFlixAppScreen(
                                         movieGenreState = movieGenreState,
                                         platformState = platformState,
                                         isTvLayout = useTvNavigationRail,
-                                        heroPlayFocusRequester = heroPlayFocusRequester,
-                                        movieGenreBarFocusRequester = movieGenreBarFocusRequester,
-                                        platformStripFocusRequester = platformStripFocusRequester,
-                                        firstRowFocusRequester = firstRowFocusRequester,
+                                        heroPlayFocusRequester = sectionHeroPlayFocus,
+                                        movieGenreBarFocusRequester = sectionMovieGenreBarFocus,
+                                        platformStripFocusRequester = sectionPlatformStripFocus,
+                                        firstRowFocusRequester = sectionFirstRowFocus,
                                         navRailFocusRequester = navRailSelectedFocusRequester,
                                         topBarFocusRequester = topBarBrandFocusRequester,
                                         onSelectMovieGenre = viewModel::selectMovieGenre,
@@ -1448,13 +1464,6 @@ private fun CatalogFeedContent(
 
     val scrollAndFocusDown: (FocusRequester?) -> Boolean = { targetRequester ->
         if (targetRequester != null && targetRequester.safeRequestFocus()) {
-            val layoutInfo = catalogListState.layoutInfo
-            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
-            if (lastVisible != null && (lastVisible.offset + lastVisible.size) > (layoutInfo.viewportEndOffset - 60)) {
-                coroutineScope.launch {
-                    runCatching { catalogListState.scrollBy(scrollStepPx * 0.65f) }
-                }
-            }
             true
         } else if (targetRequester != null) {
             coroutineScope.launch {
@@ -1462,7 +1471,7 @@ private fun CatalogFeedContent(
                     runCatching {
                         catalogListState.scrollBy(scrollStepPx.toFloat())
                     }
-                    androidx.compose.runtime.withFrameNanos { }
+                    repeat(2) { androidx.compose.runtime.withFrameNanos { } }
                     if (targetRequester.safeRequestFocus()) {
                         break
                     }

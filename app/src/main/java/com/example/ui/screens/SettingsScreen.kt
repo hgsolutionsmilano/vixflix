@@ -342,7 +342,7 @@ private fun SettingsHeaderBanner(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "v${BuildConfig.VERSION_NAME} • ${if (isTvLayout) "Fire TV / Android TV" else "Mobile & Tablet"} • ${if (preferWebPlayer) "Web Player" else "ExoPlayer"} (${bufferPreset.sizeMb} MB)",
+                            text = "v${BuildConfig.VERSION_NAME} • ${if (isTvLayout) "TV & Tablet Widescreen" else "Smartphone Verticale"} • ${if (preferWebPlayer) "Web Player" else "ExoPlayer"} (${bufferPreset.sizeMb} MB)",
                             style = MaterialTheme.typography.bodySmall,
                             color = NetflixLightGray
                         )
@@ -1258,7 +1258,7 @@ private fun SystemSettingsPanel(
         ) {
             SettingsInfoLine(label = "Versione App", value = "v${BuildConfig.VERSION_NAME} (Code ${BuildConfig.VERSION_CODE})")
             SettingsInfoLine(label = "Application ID", value = BuildConfig.APPLICATION_ID)
-            SettingsInfoLine(label = "Interfaccia Attiva", value = if (isTvLayout) "Android TV / Fire TV (Telecomando)" else "Smartphone / Tablet (Touch)")
+            SettingsInfoLine(label = "Interfaccia Attiva", value = if (isTvLayout) "Android TV / Google TV / Fire Stick / Tablet Orizzontale (Touch + D-Pad)" else "Smartphone Verticale (Touch)")
             SettingsInfoLine(label = "Firma Keystore", value = "SHA1 96:99:D9:34…BB:7C")
         }
     }

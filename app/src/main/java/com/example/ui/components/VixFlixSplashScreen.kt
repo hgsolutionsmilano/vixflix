@@ -156,7 +156,7 @@ fun VixFlixSplashScreen(
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .testTag("vixflix_splash_screen")
     ) {
-        val isLargeScreen = isTvDevice || maxWidth >= 840.dp
+        val isLargeScreen = isTvDevice || maxWidth >= 600.dp || maxWidth > maxHeight
         val emblemSize = if (isLargeScreen) 128.dp else 96.dp
         val titleSize = if (isLargeScreen) 56.sp else 44.sp
         val letterSpacing = if (isLargeScreen) 8.sp else 5.5.sp

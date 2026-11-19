@@ -567,11 +567,8 @@ class TvNavigationAndViewsCrashTest {
                 .fetchSemanticsNodes().isNotEmpty()
         )
 
-        // 2. Nella sezione Film (NavTab.MOVIES), entra nei contenuti dalla rail, sali ai banner generi e scendi fino a Film di Tendenza
+        // 2. Nella sezione Film (NavTab.MOVIES), sali ai banner generi e scendi fino a Film di Tendenza
         composeRule.onNodeWithTag("tv_rail_movies").performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag("tv_navigation_rail", useUnmergedTree = true)
-            .performKeyInput { pressKey(Key.DirectionRight) }
         composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
@@ -590,15 +587,17 @@ class TvNavigationAndViewsCrashTest {
             .performKeyInput { pressKey(Key.DirectionDown) }
         composeRule.waitForIdle()
         assertTrue(
-            composeRule.onAllNodesWithTag("poster_card_movie_101", useUnmergedTree = true)
+            composeRule.onAllNodesWithTag("poster_card_movie_200", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         )
 
         // 3. Apri la scheda di dettaglio del film e verifica che sia centrata e NON si muova spostandosi tra le icone pulsanti
-        composeRule.onNodeWithTag("poster_card_movie_101", useUnmergedTree = true).performClick()
+        composeRule.onNodeWithTag("poster_card_movie_200", useUnmergedTree = true).performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithTag("detail_tv_poster", useUnmergedTree = true)
-                .fetchSemanticsNodes().isNotEmpty()
+                .fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.waitForIdle()
 
@@ -648,6 +647,106 @@ class TvNavigationAndViewsCrashTest {
         assertTrue(
             "Detail view must not move when navigating Left back to Trailer button (initial=${initialPosterBounds.top}, after=$afterLeftPosterTop)",
             kotlin.math.abs(initialPosterBounds.top - afterLeftPosterTop) < 1f
+        )
+
+        // 4. Premendo D-Pad Giù dai bottoni rapidi, la scheda deve scorrere sotto (Trailer / Cast / Titoli Simili)
+        // senza alcun flash/snap-back che la blocchi sulla vista d'ingresso
+        composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        assertTrue(
+            "After pressing D-Pad Down from action buttons, below-the-fold Trailer section must be visible in viewport",
+            composeRule.onAllNodesWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+        val scrolledHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Hero stage must have scrolled up to reveal below-the-fold content without snapping back to 0 (top=$scrolledHeroTop)",
+            scrolledHeroTop < -50f
+        )
+
+        // Premendo ancora D-Pad Giù da Trailer si passa a Cast e poi a Titoli Simili
+        composeRule.onNodeWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue(
+            "After pressing D-Pad Down from Trailer, Cast section must be visible",
+            composeRule.onAllNodesWithTag("cast_card_1", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue(
+            "After pressing D-Pad Down from Cast, Similar titles must be visible",
+            composeRule.onAllNodesWithTag("poster_card_movie_900", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        // Premendo D-Pad Su da Titoli Simili -> Cast -> Trailer -> Hero Stage, la scheda torna centrata a top == 0f
+        composeRule.onNodeWithTag("poster_card_movie_900", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+
+        val restoredHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Hero stage top must return to 0f when pressing Up back to Hero stage, was $restoredHeroTop",
+            kotlin.math.abs(restoredHeroTop) < 1f
+        )
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w1024dp-h768dp-land")
+    fun `landscape tablet renders exact same unified widescreen layout and detail view as Android TV and Fire Stick`() {
+        val uiModeManager = app.getSystemService(Context.UI_MODE_SERVICE) as android.app.UiModeManager
+        shadowOf(uiModeManager).currentModeType = Configuration.UI_MODE_TYPE_NORMAL
+
+        launchTvApp()
+
+        // 1. Verifica che su Tablet in orizzontale (UI_MODE_TYPE_NORMAL) sia attiva la Navigation Rail TV
+        assertTrue(
+            "Landscape tablet must display the unified TV navigation rail",
+            composeRule.onAllNodesWithTag("tv_navigation_rail", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        // 2. Naviga nella sezione Film con Touch o D-Pad e apri la scheda dettaglio widescreen
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("hero_info_button", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("detail_tv_poster", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        // 3. Verifica che la scheda dettaglio su Tablet usi esattamente detail_tv_hero_stage centrato
+        // e rimanga immobile muovendosi tra i bottoni
+        val initialPosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        val afterRightPosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(
+            "Tablet landscape detail view must not shift when moving across buttons (initial=$initialPosterTop, after=$afterRightPosterTop)",
+            kotlin.math.abs(initialPosterTop - afterRightPosterTop) < 1f
         )
     }
 

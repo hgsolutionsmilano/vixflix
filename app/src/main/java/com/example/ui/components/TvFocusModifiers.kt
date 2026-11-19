@@ -162,24 +162,45 @@ fun FocusRequester?.safeRequestFocus(): Boolean {
 }
 
 /**
- * Rileva se l'app è eseguita su Android TV / Google TV (o dispositivo con interfaccia Leanback).
+ * Rileva se l'app deve usare la modalità Widescreen unificata per Android TV, Google TV,
+ * Fire TV Stick e Tablet / modalità Orizzontale (larghezza >= 600dp o orientamento landscape),
+ * garantendo parità 1:1 di layout, scheda dettaglio e navigazione Touch + D-Pad.
  */
 @Composable
 fun rememberIsTvDevice(): Boolean {
     val context = LocalContext.current
-    return remember(context) { isAndroidTvDevice(context) }
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    return remember(
+        context,
+        configuration.orientation,
+        configuration.screenWidthDp,
+        configuration.screenHeightDp,
+        configuration.smallestScreenWidthDp,
+        configuration.uiMode
+    ) {
+        isAndroidTvDevice(context, configuration)
+    }
 }
 
 @Suppress("DEPRECATION")
-fun isAndroidTvDevice(context: Context): Boolean {
+fun isAndroidTvDevice(
+    context: Context,
+    configuration: Configuration = context.resources.configuration
+): Boolean {
     val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
-    val isTvMode = uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+    val isTvMode = uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+        (configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION
     val pm = context.packageManager
     val hasLeanback = pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     val hasTelevision = pm.hasSystemFeature(PackageManager.FEATURE_TELEVISION)
     val isAmazonFireTv = Build.MANUFACTURER.equals("Amazon", ignoreCase = true) &&
         Build.MODEL.startsWith("AFT", ignoreCase = true)
-    return isTvMode || hasLeanback || hasTelevision || isAmazonFireTv
+    val isLandscapeOrTablet = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE ||
+        configuration.screenWidthDp >= 600 ||
+        configuration.smallestScreenWidthDp >= 600 ||
+        (configuration.screenWidthDp > 0 && configuration.screenHeightDp > 0 &&
+            configuration.screenWidthDp > configuration.screenHeightDp)
+    return isTvMode || hasLeanback || hasTelevision || isAmazonFireTv || isLandscapeOrTablet
 }
 
 /**
@@ -302,7 +323,7 @@ fun Modifier.tvFocusableControl(
                         }
                     )
             } else {
-                Modifier
+                Modifier.focusable(interactionSource = interactionSource)
             }
         )
 }
