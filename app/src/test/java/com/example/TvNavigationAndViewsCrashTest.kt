@@ -1090,9 +1090,9 @@ class TvNavigationAndViewsCrashTest {
         composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionDown) }
         composeRule.waitForIdle()
-        assertTrue("Settings must move focus down to first control (lang_chip_it)", isFocused("lang_chip_it"))
+        assertTrue("Settings must move focus down to first control (settings_lang_it)", isFocused("settings_lang_it"))
 
-        composeRule.onNodeWithTag("lang_chip_it", useUnmergedTree = true)
+        composeRule.onNodeWithTag("settings_lang_it", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionUp) }
         composeRule.waitForIdle()
         assertTrue("Settings must return focus up to settings_tab_playback", isFocused("settings_tab_playback"))
