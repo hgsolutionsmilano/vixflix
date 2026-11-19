@@ -225,6 +225,8 @@ fun MediaDetailScreen(
                     var trailerFocused: Boolean = false
                     var userMovedFocus: Boolean = false
                     var wasTrailerOpen: Boolean = false
+                    var lastTrailerTriggerRequester: FocusRequester? = null
+                    var lastTrailerTriggerWasBelowFold: Boolean = false
                 }
             }
 
@@ -232,32 +234,51 @@ fun MediaDetailScreen(
             val isTrailerOpen = currentState.activeTrailer != null
 
             LaunchedEffect(isCurrentActive, isInteractive, isTrailerOpen) {
-                if (isCurrentActive && isInteractive && !isTrailerOpen) {
+                if (!isCurrentActive) return@LaunchedEffect
+                if (isTrailerOpen) {
+                    focusTracker.wasTrailerOpen = true
+                    return@LaunchedEffect
+                }
+                if (isInteractive) {
                     val returnToTrailer = focusTracker.wasTrailerOpen
-                    val targetRequester = if (returnToTrailer) detailTrailerFocusRequester else detailPlayFocusRequester
+                    focusTracker.wasTrailerOpen = false
+                    focusTracker.userMovedFocus = false
                     if (!returnToTrailer) {
-                        focusTracker.userMovedFocus = false
                         if (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0) {
                             runCatching { listState.scrollToItem(0, 0) }
                         }
+                    } else {
+                        focusTracker.trailerFocused = false
+                        focusTracker.playFocused = false
                     }
+                    val targetRequester = if (returnToTrailer) {
+                        focusTracker.lastTrailerTriggerRequester?.takeIfAttached()
+                            ?: detailTrailerFocusRequester.takeIfAttached()
+                            ?: detailPlayFocusRequester
+                    } else {
+                        detailPlayFocusRequester
+                    }
+                    val expectHeroTrailerFocus = returnToTrailer && !focusTracker.lastTrailerTriggerWasBelowFold
                     androidx.compose.runtime.withFrameNanos { }
-                    val retryDelaysMs = longArrayOf(0L, 40L, 90L, 160L, 280L)
+                    val retryDelaysMs = longArrayOf(0L, 16L, 45L, 90L, 160L, 280L)
                     for (stepDelay in retryDelaysMs) {
                         if (stepDelay > 0L) {
                             kotlinx.coroutines.delay(stepDelay)
                         }
                         if (focusTracker.userMovedFocus) break
-                        val targetAlreadyFocused = if (returnToTrailer) {
-                            focusTracker.trailerFocused
-                        } else {
-                            focusTracker.playFocused
+                        val targetAlreadyFocused = when {
+                            returnToTrailer && focusTracker.lastTrailerTriggerWasBelowFold -> false
+                            expectHeroTrailerFocus -> focusTracker.trailerFocused
+                            else -> focusTracker.playFocused
                         }
                         if (targetAlreadyFocused) break
                         val requested = targetRequester.safeRequestFocus()
                         if (requested) {
                             kotlinx.coroutines.yield()
-                            val focusedAfterYield = if (returnToTrailer) {
+                            if (returnToTrailer && focusTracker.lastTrailerTriggerWasBelowFold) {
+                                break
+                            }
+                            val focusedAfterYield = if (expectHeroTrailerFocus) {
                                 focusTracker.trailerFocused
                             } else {
                                 focusTracker.playFocused
@@ -265,9 +286,6 @@ fun MediaDetailScreen(
                             if (focusedAfterYield || focusTracker.userMovedFocus) break
                         }
                     }
-                }
-                if (isCurrentActive) {
-                    focusTracker.wasTrailerOpen = isTrailerOpen
                 }
             }
 
@@ -674,7 +692,11 @@ fun MediaDetailScreen(
                                                     if (focused) focusTracker.userMovedFocus = true
                                                 },
                                                 testTag = "detail_watch_trailer_button",
-                                                onClick = onOpenYouTubeTrailerPopup
+                                                onClick = {
+                                                    focusTracker.lastTrailerTriggerRequester = detailTrailerFocusRequester
+                                                    focusTracker.lastTrailerTriggerWasBelowFold = false
+                                                    onOpenYouTubeTrailerPopup()
+                                                }
                                             )
 
                                             DetailRoundActionButton(
@@ -968,7 +990,11 @@ fun MediaDetailScreen(
                                             if (focused) focusTracker.userMovedFocus = true
                                         },
                                         testTag = "detail_watch_trailer_button",
-                                        onClick = onOpenYouTubeTrailerPopup
+                                        onClick = {
+                                            focusTracker.lastTrailerTriggerRequester = detailTrailerFocusRequester
+                                            focusTracker.lastTrailerTriggerWasBelowFold = false
+                                            onOpenYouTubeTrailerPopup()
+                                        }
                                     )
 
                                     DetailRoundActionButton(
@@ -1097,6 +1123,9 @@ fun MediaDetailScreen(
 
                                 val trailersListState = rememberLazyListState()
                                 val firstVisibleTrailerIdx = trailersListState.firstVisibleItemIndex.coerceIn(0, trailers.lastIndex)
+                                val trailerCardFocusRequesters = remember(trailers) {
+                                    trailers.associate { it.id.ifBlank { it.key } to FocusRequester() }
+                                }
                                 LazyRow(
                                     state = trailersListState,
                                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -1107,16 +1136,24 @@ fun MediaDetailScreen(
                                         key = { _, it -> it.id.ifBlank { it.key } },
                                         contentType = { _, _ -> "detail_trailer_card" }
                                     ) { index, video ->
+                                        val cardKey = video.id.ifBlank { video.key }
+                                        val cardRequester = if (index == firstVisibleTrailerIdx) {
+                                            firstTrailerFocus
+                                        } else {
+                                            trailerCardFocusRequesters[cardKey] ?: firstTrailerFocus
+                                        }
                                         TmdbTrailerCard(
                                             video = video,
                                             fallbackBackdropUrl = currentItem.backdropUrl,
                                             itemIndex = index,
                                             listState = trailersListState,
-                                            onClick = onOpenYouTubeTrailerPopup,
+                                            onClick = {
+                                                focusTracker.lastTrailerTriggerRequester = cardRequester
+                                                focusTracker.lastTrailerTriggerWasBelowFold = true
+                                                onOpenYouTubeTrailerPopup()
+                                            },
                                             modifier = Modifier
-                                                .then(
-                                                    if (index == firstVisibleTrailerIdx) Modifier.safeFocusRequester(firstTrailerFocus) else Modifier
-                                                )
+                                                .safeFocusRequester(cardRequester)
                                                 .onPreviewKeyEvent { keyEvent ->
                                                     if (keyEvent.type == KeyEventType.KeyDown) {
                                                         when (keyEvent.key) {

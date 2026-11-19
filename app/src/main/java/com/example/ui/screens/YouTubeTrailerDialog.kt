@@ -125,7 +125,12 @@ import com.example.ui.theme.NetflixLightGray
 import com.example.ui.theme.NetflixMatchGreen
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Modale cinematografico centrato 16:9 dedicato esclusivamente ai trailer ufficiali YouTube
@@ -168,14 +173,76 @@ fun YouTubeTrailerDialog(
     val context = LocalContext.current
 
     val isTvDevice = rememberIsTvDevice()
-    val modalPlayerFocusRequester = remember { FocusRequester() }
+    val coroutineScope = rememberCoroutineScope()
     val firstPlaylistFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
+    val errorOpenExternalFocusRequester = remember { FocusRequester() }
+    val errorCloseFocusRequester = remember { FocusRequester() }
+    val safePreviewOpenFocusRequester = remember { FocusRequester() }
+    val safePreviewCloseFocusRequester = remember { FocusRequester() }
     val closeFocusRequester = remember { FocusRequester() }
     val playlistState = rememberLazyListState()
 
     val uniqueTrailers = remember(trailerState.trailers) {
         trailerState.trailers.distinctBy { it.videoId }
+    }
+    val cardFocusRequesters = remember(uniqueTrailers) {
+        uniqueTrailers.associate { it.videoId to FocusRequester() }
+    }
+    val modalFocusTracker = remember {
+        object {
+            var focusedCardVideoId: String? = null
+            var isCloseFocused: Boolean = false
+            var isRetryFocused: Boolean = false
+            var isSafePreviewFocused: Boolean = false
+            var userNavigatedToPlaylist: Boolean = false
+        }
+    }
+
+    val focusPlaylistCardAtIndex: (Int) -> Boolean = { targetIdx ->
+        if (uniqueTrailers.isEmpty()) {
+            false
+        } else {
+            val safeIdx = targetIdx.coerceIn(0, uniqueTrailers.lastIndex)
+            val targetVideo = uniqueTrailers[safeIdx]
+            val targetRequester = cardFocusRequesters[targetVideo.videoId] ?: firstPlaylistFocusRequester
+            if (targetRequester.safeRequestFocus()) {
+                true
+            } else {
+                coroutineScope.launch {
+                    runCatching { playlistState.scrollToItem(safeIdx) }
+                    withFrameNanos { }
+                    val retryDelays = longArrayOf(0L, 16L, 45L, 90L)
+                    for (d in retryDelays) {
+                        if (d > 0L) delay(d)
+                        val req = cardFocusRequesters[targetVideo.videoId] ?: firstPlaylistFocusRequester
+                        if (req.safeRequestFocus()) break
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    val preferredPlaylistCardIndex: () -> Int = {
+        if (uniqueTrailers.isEmpty()) {
+            0
+        } else {
+            val focusedIdx = modalFocusTracker.focusedCardVideoId?.let { fId ->
+                uniqueTrailers.indexOfFirst { it.videoId == fId }
+            } ?: -1
+            val selectedIdx = selectedVideo?.videoId?.let { sId ->
+                uniqueTrailers.indexOfFirst { it.videoId == sId }
+            } ?: -1
+            val visibleIndices = playlistState.layoutInfo.visibleItemsInfo.map { it.index }
+            when {
+                focusedIdx >= 0 && (visibleIndices.isEmpty() || focusedIdx in visibleIndices) -> focusedIdx
+                selectedIdx >= 0 && (visibleIndices.isEmpty() || selectedIdx in visibleIndices) -> selectedIdx
+                visibleIndices.isNotEmpty() -> visibleIndices.first().coerceIn(0, uniqueTrailers.lastIndex)
+                selectedIdx >= 0 -> selectedIdx
+                else -> playlistState.firstVisibleItemIndex.coerceIn(0, uniqueTrailers.lastIndex)
+            }
+        }
     }
 
     val togglePlayPause: () -> Unit = {
@@ -267,13 +334,48 @@ fun YouTubeTrailerDialog(
         }
     }
 
-    // Focus automatico Android TV sui pulsanti principali del modale (senza intrappolare il fuoco nella WebView)
-    LaunchedEffect(activeKey, playbackError, trailerState.isSearching, trailerState.isLoadingStream) {
+    // Focus automatico Android TV / Tablet Landscape con retry multi-frame e preservazione
+    // del focus sulla lista dei trailer quando l'utente naviga o cambia trailer.
+    LaunchedEffect(
+        activeKey,
+        playbackError,
+        trailerState.isSearching,
+        trailerState.isLoadingStream,
+        uniqueTrailers.size
+    ) {
         if (!isTvDevice) return@LaunchedEffect
-        if (!playbackError.isNullOrBlank()) {
-            retryFocusRequester.safeRequestFocus()
-        } else {
-            closeFocusRequester.safeRequestFocus()
+        withFrameNanos { }
+        val retryDelaysMs = longArrayOf(0L, 16L, 45L, 90L, 180L)
+        for (stepDelay in retryDelaysMs) {
+            if (stepDelay > 0L) delay(stepDelay)
+            // Se l'utente ha già il focus attivo su una card trailer della playlist,
+            // manteniamo il focus sulla card senza strapparlo via al cambio trailer!
+            val currentFocusedVideoId = modalFocusTracker.focusedCardVideoId
+            if (currentFocusedVideoId != null && uniqueTrailers.any { it.videoId == currentFocusedVideoId }) {
+                break
+            }
+            if (modalFocusTracker.userNavigatedToPlaylist && uniqueTrailers.isNotEmpty()) {
+                val targetVideoId = selectedVideo?.videoId ?: uniqueTrailers.first().videoId
+                val req = cardFocusRequesters[targetVideoId] ?: firstPlaylistFocusRequester
+                if (req.safeRequestFocus()) break
+                continue
+            }
+            val targetRequester = if (!playbackError.isNullOrBlank()) {
+                retryFocusRequester.takeIfAttached() ?: closeFocusRequester
+            } else {
+                closeFocusRequester
+            }
+            if (!playbackError.isNullOrBlank() && modalFocusTracker.isRetryFocused) break
+            if (playbackError.isNullOrBlank() && modalFocusTracker.isCloseFocused) break
+            if (targetRequester.safeRequestFocus()) {
+                kotlinx.coroutines.yield()
+                if (modalFocusTracker.isCloseFocused ||
+                    modalFocusTracker.isRetryFocused ||
+                    modalFocusTracker.focusedCardVideoId != null
+                ) {
+                    break
+                }
+            }
         }
     }
 
@@ -281,20 +383,23 @@ fun YouTubeTrailerDialog(
         onClose()
     }
 
-    // Scrim scuro cinematografico in-window (evita una seconda Window Dialog sopra la WebView)
+    val isShowingSafePreview = playbackError.isNullOrBlank() &&
+        !trailerState.isSearching &&
+        !trailerState.isLoadingStream &&
+        !activeVideoId.isNullOrBlank() &&
+        !shouldMountWebView
+
+    // Scrim scuro cinematografico in-window (SENZA clickable/focusable di Compose sul contenitore
+    // esterno per non creare mai FocusTarget invisibili che rubano il D-Pad!)
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .zIndex(50f)
             .background(NetflixBlack.copy(alpha = 0.90f))
             .windowInsetsPadding(WindowInsets.safeDrawing)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClose
-            )
-            .safeFocusRequester(modalPlayerFocusRequester)
-            .focusable()
+            .pointerInput(onClose) {
+                detectTapGestures(onTap = { onClose() })
+            }
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
@@ -340,7 +445,7 @@ fun YouTubeTrailerDialog(
             !trailerState.isLoadingStream &&
             !activeVideoId.isNullOrBlank()
 
-        // Contenitore modale piatto (senza Card shadowElevation o verticalScroll attorno alla WebView)
+        // Contenitore modale piatto (senza Modifier.clickable che creerebbe un nodo FocusTarget trappola)
         Box(
             modifier = Modifier
                 .width(modalMaxWidth)
@@ -350,11 +455,9 @@ fun YouTubeTrailerDialog(
                     .fillMaxWidth()
                     .background(NetflixCardSurface, RoundedCornerShape(14.dp))
                     .border(1.dp, NetflixElevatedSurface, RoundedCornerShape(14.dp))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = {} // Blocca la propagazione click verso lo scrim esterno
-                    )
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = { /* Blocca la propagazione tap verso lo scrim esterno */ })
+                    }
                     .testTag("youtube_trailer_modal_card")
             ) {
                         // Linea accento superiore rossa cinematografica
@@ -471,14 +574,46 @@ fun YouTubeTrailerDialog(
                                 modifier = Modifier
                                     .size(44.dp)
                                     .safeFocusRequester(closeFocusRequester)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.key) {
+                                                Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight -> true
+                                                Key.DirectionDown -> {
+                                                    when {
+                                                        !playbackError.isNullOrBlank() ->
+                                                            retryFocusRequester.safeRequestFocus()
+                                                        uniqueTrailers.isNotEmpty() ->
+                                                            focusPlaylistCardAtIndex(preferredPlaylistCardIndex())
+                                                        isShowingSafePreview ->
+                                                            safePreviewOpenFocusRequester.safeRequestFocus()
+                                                        else -> true
+                                                    }
+                                                }
+                                                else -> false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .focusProperties {
                                         if (!playbackError.isNullOrBlank()) {
                                             retryFocusRequester.takeIfAttached()?.let { down = it }
                                         } else if (uniqueTrailers.isNotEmpty()) {
                                             firstPlaylistFocusRequester.takeIfAttached()?.let { down = it }
+                                        } else if (isShowingSafePreview) {
+                                            safePreviewOpenFocusRequester.takeIfAttached()?.let { down = it }
                                         }
                                     }
-                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
+                                    .tvFocusableControl(
+                                        shape = CircleShape,
+                                        focusedScale = 1.12f,
+                                        onFocusChange = { focused ->
+                                            modalFocusTracker.isCloseFocused = focused
+                                            if (focused) {
+                                                modalFocusTracker.userNavigatedToPlaylist = false
+                                            }
+                                        }
+                                    )
                                     .clip(CircleShape)
                                     .background(NetflixDarkSurface)
                                     .testTag("close_trailer_overlay_button")
@@ -554,6 +689,20 @@ fun YouTubeTrailerDialog(
                                         title = selectedVideo?.title ?: mediaItem.title,
                                         thumbnailUrl = selectedVideo?.thumbnailUrl
                                             ?: "https://i.ytimg.com/vi/$activeVideoId/hqdefault.jpg",
+                                        openFocusRequester = safePreviewOpenFocusRequester,
+                                        closeFocusRequester = safePreviewCloseFocusRequester,
+                                        upFocusRequester = closeFocusRequester,
+                                        downFocusRequester = if (uniqueTrailers.isNotEmpty()) firstPlaylistFocusRequester else null,
+                                        onDownToPlaylist = {
+                                            if (uniqueTrailers.isNotEmpty()) {
+                                                focusPlaylistCardAtIndex(preferredPlaylistCardIndex())
+                                            } else {
+                                                true
+                                            }
+                                        },
+                                        onFocusChange = { focused ->
+                                            modalFocusTracker.isSafePreviewFocused = focused
+                                        },
                                         onOpenExternalYouTube = {
                                             runCatching {
                                                 val ytIntent = Intent(
@@ -609,6 +758,7 @@ fun YouTubeTrailerDialog(
                                             verticalAlignment = Alignment.CenterVertically,
                                             modifier = Modifier.focusGroup()
                                         ) {
+                                            val hasExternalBtn = !activeVideoId.isNullOrBlank()
                                             Button(
                                                 onClick = {
                                                     playbackError = null
@@ -624,13 +774,44 @@ fun YouTubeTrailerDialog(
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
                                                     .safeFocusRequester(retryFocusRequester)
+                                                    .onPreviewKeyEvent { keyEvent ->
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionLeft -> true
+                                                                Key.DirectionRight -> {
+                                                                    val rightTarget = if (hasExternalBtn) errorOpenExternalFocusRequester else errorCloseFocusRequester
+                                                                    rightTarget.safeRequestFocus()
+                                                                    true
+                                                                }
+                                                                Key.DirectionUp -> {
+                                                                    closeFocusRequester.safeRequestFocus()
+                                                                    true
+                                                                }
+                                                                Key.DirectionDown -> {
+                                                                    if (uniqueTrailers.isNotEmpty()) {
+                                                                        focusPlaylistCardAtIndex(preferredPlaylistCardIndex())
+                                                                    } else {
+                                                                        true
+                                                                    }
+                                                                }
+                                                                else -> false
+                                                            }
+                                                        } else false
+                                                    }
                                                     .focusProperties {
                                                         closeFocusRequester.takeIfAttached()?.let { up = it }
                                                         if (uniqueTrailers.isNotEmpty()) {
                                                             firstPlaylistFocusRequester.takeIfAttached()?.let { down = it }
                                                         }
                                                     }
-                                                    .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
+                                                    .tvFocusableControl(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        focusedScale = 1.06f,
+                                                        onFocusChange = { focused ->
+                                                            modalFocusTracker.isRetryFocused = focused
+                                                            if (focused) modalFocusTracker.userNavigatedToPlaylist = false
+                                                        }
+                                                    )
                                                     .testTag("retry_trailer_button")
                                             ) {
                                                 Icon(
@@ -642,7 +823,7 @@ fun YouTubeTrailerDialog(
                                                 Text("Riprova")
                                             }
 
-                                            if (!activeVideoId.isNullOrBlank()) {
+                                            if (hasExternalBtn) {
                                                 OutlinedButton(
                                                     onClick = {
                                                         runCatching {
@@ -660,6 +841,33 @@ fun YouTubeTrailerDialog(
                                                     ),
                                                     shape = RoundedCornerShape(8.dp),
                                                     modifier = Modifier
+                                                        .safeFocusRequester(errorOpenExternalFocusRequester)
+                                                        .onPreviewKeyEvent { keyEvent ->
+                                                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                                                when (keyEvent.key) {
+                                                                    Key.DirectionLeft -> {
+                                                                        retryFocusRequester.safeRequestFocus()
+                                                                        true
+                                                                    }
+                                                                    Key.DirectionRight -> {
+                                                                        errorCloseFocusRequester.safeRequestFocus()
+                                                                        true
+                                                                    }
+                                                                    Key.DirectionUp -> {
+                                                                        closeFocusRequester.safeRequestFocus()
+                                                                        true
+                                                                    }
+                                                                    Key.DirectionDown -> {
+                                                                        if (uniqueTrailers.isNotEmpty()) {
+                                                                            focusPlaylistCardAtIndex(preferredPlaylistCardIndex())
+                                                                        } else {
+                                                                            true
+                                                                        }
+                                                                    }
+                                                                    else -> false
+                                                                }
+                                                            } else false
+                                                        }
                                                         .focusProperties {
                                                             closeFocusRequester.takeIfAttached()?.let { up = it }
                                                             if (uniqueTrailers.isNotEmpty()) {
@@ -685,6 +893,31 @@ fun YouTubeTrailerDialog(
                                                 ),
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
+                                                    .safeFocusRequester(errorCloseFocusRequester)
+                                                    .onPreviewKeyEvent { keyEvent ->
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionLeft -> {
+                                                                    val leftTarget = if (hasExternalBtn) errorOpenExternalFocusRequester else retryFocusRequester
+                                                                    leftTarget.safeRequestFocus()
+                                                                    true
+                                                                }
+                                                                Key.DirectionRight -> true
+                                                                Key.DirectionUp -> {
+                                                                    closeFocusRequester.safeRequestFocus()
+                                                                    true
+                                                                }
+                                                                Key.DirectionDown -> {
+                                                                    if (uniqueTrailers.isNotEmpty()) {
+                                                                        focusPlaylistCardAtIndex(preferredPlaylistCardIndex())
+                                                                    } else {
+                                                                        true
+                                                                    }
+                                                                }
+                                                                else -> false
+                                                            }
+                                                        } else false
+                                                    }
                                                     .focusProperties {
                                                         closeFocusRequester.takeIfAttached()?.let { up = it }
                                                         if (uniqueTrailers.isNotEmpty()) {
@@ -795,13 +1028,13 @@ fun YouTubeTrailerDialog(
                             }
 
                             if (uniqueTrailers.isNotEmpty()) {
+                                val entryPlaylistIdx = preferredPlaylistCardIndex()
                                 Spacer(modifier = Modifier.height(4.dp))
                                 LazyRow(
                                     state = playlistState,
                                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier
-                                        .safeFocusRequester(firstPlaylistFocusRequester)
                                         .focusGroup()
                                         .testTag("youtube_trailer_playlist_row")
                                 ) {
@@ -810,13 +1043,74 @@ fun YouTubeTrailerDialog(
                                         key = { _, it -> "yt_card_${it.videoId}" },
                                         contentType = { _, _ -> "youtube_trailer_card" }
                                     ) { index, candidate ->
+                                        val perCardRequester = cardFocusRequesters[candidate.videoId]
                                         YouTubeModalTrailerCard(
                                             candidate = candidate,
                                             isSelected = candidate.videoId == selectedVideo?.videoId,
                                             itemIndex = index,
                                             listState = playlistState,
-                                            onClick = { onSelectTrailer(candidate) },
+                                            onFocusChange = { focused ->
+                                                if (focused) {
+                                                    modalFocusTracker.focusedCardVideoId = candidate.videoId
+                                                    modalFocusTracker.userNavigatedToPlaylist = true
+                                                } else if (modalFocusTracker.focusedCardVideoId == candidate.videoId) {
+                                                    modalFocusTracker.focusedCardVideoId = null
+                                                }
+                                            },
+                                            onClick = {
+                                                modalFocusTracker.focusedCardVideoId = candidate.videoId
+                                                modalFocusTracker.userNavigatedToPlaylist = true
+                                                onSelectTrailer(candidate)
+                                            },
                                             modifier = Modifier
+                                                .then(
+                                                    if (perCardRequester != null) {
+                                                        Modifier.safeFocusRequester(perCardRequester)
+                                                    } else {
+                                                        Modifier
+                                                    }
+                                                )
+                                                .then(
+                                                    if (index == entryPlaylistIdx) {
+                                                        Modifier.safeFocusRequester(firstPlaylistFocusRequester)
+                                                    } else {
+                                                        Modifier
+                                                    }
+                                                )
+                                                .onPreviewKeyEvent { keyEvent ->
+                                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                                        when (keyEvent.key) {
+                                                            Key.DirectionLeft -> {
+                                                                if (index > 0) {
+                                                                    focusPlaylistCardAtIndex(index - 1)
+                                                                } else {
+                                                                    true // Blocca uscita a sinistra
+                                                                }
+                                                            }
+                                                            Key.DirectionRight -> {
+                                                                if (index < uniqueTrailers.lastIndex) {
+                                                                    focusPlaylistCardAtIndex(index + 1)
+                                                                } else {
+                                                                    true // Blocca uscita a destra
+                                                                }
+                                                            }
+                                                            Key.DirectionDown -> true // Blocca uscita in basso
+                                                            Key.DirectionUp -> {
+                                                                val upTarget = if (!playbackError.isNullOrBlank()) {
+                                                                    retryFocusRequester.takeIfAttached() ?: closeFocusRequester
+                                                                } else {
+                                                                    closeFocusRequester
+                                                                }
+                                                                modalFocusTracker.userNavigatedToPlaylist = false
+                                                                upTarget.safeRequestFocus()
+                                                                true
+                                                            }
+                                                            else -> false
+                                                        }
+                                                    } else {
+                                                        false
+                                                    }
+                                                }
                                                 .focusProperties {
                                                     val upTarget = if (!playbackError.isNullOrBlank()) {
                                                         retryFocusRequester
@@ -848,6 +1142,7 @@ private fun YouTubeModalTrailerCard(
     isSelected: Boolean,
     itemIndex: Int,
     listState: LazyListState,
+    onFocusChange: (Boolean) -> Unit = {},
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -894,7 +1189,10 @@ private fun YouTubeModalTrailerCard(
                 isFocused = isFocused,
                 shape = cardShape,
                 focusedScale = 1.07f,
-                onFocusedChanged = { isFocused = it },
+                onFocusedChanged = {
+                    isFocused = it
+                    onFocusChange(it)
+                },
                 onClick = onClick
             )
             .testTag("youtube_trailer_option_${candidate.videoId}")
@@ -1020,6 +1318,12 @@ private fun YouTubeEmulatorSafePreviewCard(
     videoId: String,
     title: String,
     thumbnailUrl: String,
+    openFocusRequester: FocusRequester,
+    closeFocusRequester: FocusRequester,
+    upFocusRequester: FocusRequester,
+    downFocusRequester: FocusRequester?,
+    onDownToPlaylist: () -> Boolean,
+    onFocusChange: (Boolean) -> Unit,
     onOpenExternalYouTube: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
@@ -1107,7 +1411,8 @@ private fun YouTubeEmulatorSafePreviewCard(
             )
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.focusGroup()
             ) {
                 Button(
                     onClick = onOpenExternalYouTube,
@@ -1118,7 +1423,33 @@ private fun YouTubeEmulatorSafePreviewCard(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
-                        .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
+                        .safeFocusRequester(openFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionLeft -> true
+                                    Key.DirectionRight -> {
+                                        closeFocusRequester.safeRequestFocus()
+                                        true
+                                    }
+                                    Key.DirectionUp -> {
+                                        upFocusRequester.safeRequestFocus()
+                                        true
+                                    }
+                                    Key.DirectionDown -> onDownToPlaylist()
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusProperties {
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester?.takeIfAttached()?.let { down = it }
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(8.dp),
+                            focusedScale = 1.06f,
+                            onFocusChange = onFocusChange
+                        )
                         .testTag("open_external_youtube_button")
                 ) {
                     Icon(
@@ -1140,7 +1471,33 @@ private fun YouTubeEmulatorSafePreviewCard(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
-                        .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
+                        .safeFocusRequester(closeFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionLeft -> {
+                                        openFocusRequester.safeRequestFocus()
+                                        true
+                                    }
+                                    Key.DirectionRight -> true
+                                    Key.DirectionUp -> {
+                                        upFocusRequester.safeRequestFocus()
+                                        true
+                                    }
+                                    Key.DirectionDown -> onDownToPlaylist()
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusProperties {
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester?.takeIfAttached()?.let { down = it }
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(8.dp),
+                            focusedScale = 1.06f,
+                            onFocusChange = onFocusChange
+                        )
                         .testTag("close_safe_preview_button")
                 ) {
                     Text("Chiudi", maxLines = 1)

@@ -750,6 +750,77 @@ class TvNavigationAndViewsCrashTest {
         )
     }
 
+    @Test
+    fun `opening and closing trailer popup from detail screen restores D-Pad focus to Trailer button`() {
+        com.example.data.remote.TmdbTrailerResolver.forceSoftwareEmulatorMode = true
+        try {
+            launchTvApp()
+
+            // 1. Apri la scheda dettaglio di un film
+            composeRule.onNodeWithTag("tv_rail_movies").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("hero_info_button", useUnmergedTree = true).performClick()
+            composeRule.waitUntil(timeoutMillis = 5_000L) {
+                composeRule.onAllNodesWithTag("detail_play_button", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            composeRule.waitForIdle()
+
+            // 2. Spostati con D-Pad Destra da Riproduci a Trailer (imposta userMovedFocus = true)
+            composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+                .performKeyInput { pressKey(Key.DirectionRight) }
+            composeRule.waitForIdle()
+
+            assertTrue(
+                "Trailer button must have D-Pad focus after pressing Right from Play",
+                composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+                    .fetchSemanticsNode().config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Focused) { false }
+            )
+
+            // 3. Apri il popup dei trailer cliccando sul pulsante Trailer
+            composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true).performClick()
+            composeRule.waitUntil(timeoutMillis = 5_000L) {
+                composeRule.onAllNodesWithTag("in_app_trailer_overlay", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            composeRule.waitForIdle()
+
+            // Verifica che il pulsante Chiudi nel popup abbia il focus D-Pad
+            assertTrue(
+                "Close button inside trailer popup must receive D-Pad focus",
+                composeRule.onNodeWithTag("close_trailer_overlay_button", useUnmergedTree = true)
+                    .fetchSemanticsNode().config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Focused) { false }
+            )
+
+            // 4. Chiudi il popup dei trailer e verifica che il focus D-Pad torni immediatamente sul bottone Trailer
+            composeRule.onNodeWithTag("close_trailer_overlay_button", useUnmergedTree = true).performClick()
+            composeRule.waitUntil(timeoutMillis = 5_000L) {
+                composeRule.onAllNodesWithTag("in_app_trailer_overlay", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty()
+            }
+            composeRule.waitForIdle()
+
+            assertTrue(
+                "Detail Trailer button must immediately regain D-Pad focus after closing trailer popup",
+                composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+                    .fetchSemanticsNode().config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Focused) { false }
+            )
+
+            // 5. Premendo D-Pad Destra o Sinistra dopo la chiusura del popup, il D-Pad funziona subito
+            composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+                .performKeyInput { pressKey(Key.DirectionRight) }
+            composeRule.waitForIdle()
+
+            assertTrue(
+                "Watchlist button must receive D-Pad focus when pressing Right after closing trailer popup",
+                composeRule.onNodeWithTag("detail_watchlist_button", useUnmergedTree = true)
+                    .fetchSemanticsNode().config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Focused) { false }
+            )
+        } finally {
+            com.example.data.remote.TmdbTrailerResolver.forceSoftwareEmulatorMode = null
+        }
+    }
+
     private class FullMockTmdbServer {
         private var socket: ServerSocket? = null
         private val executor = Executors.newCachedThreadPool()
