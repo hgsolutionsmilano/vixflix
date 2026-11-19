@@ -1103,6 +1103,46 @@ class TvNavigationAndViewsCrashTest {
             "Settings category tab bar must return to initial top ($settingsInitialTabTop), was $settingsRestoredTabTop",
             kotlin.math.abs(settingsRestoredTabTop - settingsInitialTabTop) < 2f
         )
+
+        // 7. Quando il menu della barra laterale non è selezionato, entrando da qualsiasi scheda (es. Impostazioni, Serie TV, Film)
+        // il focus si posiziona SEMPRE sull'icona Home (tv_rail_home)
+        composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        assertTrue("Entering unselected side menu from Settings must position on Home icon (tv_rail_home)", isFocused("tv_rail_home"))
+
+        composeRule.onNodeWithTag("tv_rail_series").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        assertTrue("Entering unselected side menu from Series row must position on Home icon (tv_rail_home)", isFocused("tv_rail_home"))
+
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput {
+                pressKey(Key.DirectionLeft)
+                pressKey(Key.DirectionLeft)
+            }
+        composeRule.waitForIdle()
+        assertTrue("Entering unselected side menu from Movies hero must position on Home icon (tv_rail_home)", isFocused("tv_rail_home"))
+
+        // 8. Verifica che il banner rosso "VIXSRC STREAM" sia stato eliminato dalla scheda dettagli
+        composeRule.onNodeWithTag("hero_info_button", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("detail_play_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+        assertTrue(
+            "Red banner VIXSRC STREAM must not be displayed in detail view",
+            composeRule.onAllNodes(androidx.compose.ui.test.hasText("VIXSRC STREAM"), useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
     }
 
     private class FullMockTmdbServer {
