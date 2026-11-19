@@ -528,6 +528,7 @@ fun NetflixHeroBanner(
     navRailFocusRequester: FocusRequester? = null,
     topBarFocusRequester: FocusRequester? = null,
     firstRowFocusRequester: FocusRequester? = null,
+    onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     isTvLayout: Boolean = false,
     modifier: Modifier = Modifier
@@ -542,9 +543,13 @@ fun NetflixHeroBanner(
     val heroGenres = remember(item.genreIds) { TmdbGenreMap.namesFor(item.genreIds) }
     val heroHeight = if (isTvLayout) 340.dp else 500.dp
 
-    val handleHeroDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
-        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
-            (onDownKey?.invoke() == true) || firstRowFocusRequester.safeRequestFocus()
+    val handleHeroVerticalKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
+        if (keyEvent.type == KeyEventType.KeyDown) {
+            when (keyEvent.key) {
+                Key.DirectionDown -> (onDownKey?.invoke() == true) || firstRowFocusRequester.safeRequestFocus()
+                Key.DirectionUp -> (onUpKey?.invoke() == true) || topBarFocusRequester.safeRequestFocus()
+                else -> false
+            }
         } else {
             false
         }
@@ -693,7 +698,7 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
                         .safeFocusRequester(watchFocusRequester)
-                        .onPreviewKeyEvent(handleHeroDownKey)
+                        .onPreviewKeyEvent(handleHeroVerticalKey)
                         .focusProperties {
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                             resolvedPlayFocusRequester.takeIfAttached()?.let { right = it }
@@ -727,7 +732,7 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 24.dp, vertical = 11.dp),
                     modifier = Modifier
                         .safeFocusRequester(resolvedPlayFocusRequester)
-                        .onPreviewKeyEvent(handleHeroDownKey)
+                        .onPreviewKeyEvent(handleHeroVerticalKey)
                         .focusProperties {
                             watchFocusRequester.takeIfAttached()?.let { left = it }
                             infoFocusRequester.takeIfAttached()?.let { right = it }
@@ -769,7 +774,7 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
                         .safeFocusRequester(infoFocusRequester)
-                        .onPreviewKeyEvent(handleHeroDownKey)
+                        .onPreviewKeyEvent(handleHeroVerticalKey)
                         .focusProperties {
                             resolvedPlayFocusRequester.takeIfAttached()?.let { left = it }
                             topBarFocusRequester.takeIfAttached()?.let { up = it }
@@ -810,6 +815,7 @@ fun ContinueWatchingSection(
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester? = null,
+    onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
@@ -883,10 +889,12 @@ fun ContinueWatchingSection(
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
                         .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown &&
-                                keyEvent.key == Key.DirectionDown
-                            ) {
-                                (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                    Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                    else -> false
+                                }
                             } else {
                                 false
                             }
@@ -1087,6 +1095,9 @@ fun Top10Section(
     onItemFocused: ((FocusRequester) -> Unit)? = null,
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
+    onUpKey: (() -> Boolean)? = null,
+    onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
@@ -1134,11 +1145,23 @@ fun Top10Section(
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                    Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             if (index == 0) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
                             upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
                         }
                 )
             }
@@ -1281,6 +1304,9 @@ fun MediaCatalogRow(
     onItemFocused: ((FocusRequester) -> Unit)? = null,
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
+    onUpKey: (() -> Boolean)? = null,
+    onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
@@ -1327,11 +1353,23 @@ fun MediaCatalogRow(
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                    Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             if (index == 0) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
                             upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
                         }
                 )
             }
@@ -1473,6 +1511,7 @@ fun MovieGenreChipBar(
     firstChipFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester? = null,
+    onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
@@ -1494,12 +1533,24 @@ fun MovieGenreChipBar(
         }
     }
 
-    val handleGenreDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
-        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
-            (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+    val handleGenreVerticalKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
+        if (keyEvent.type == KeyEventType.KeyDown) {
+            when (keyEvent.key) {
+                Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                else -> false
+            }
         } else {
             false
         }
+    }
+
+    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeGenres.size)
+    val focusTargetChipIdx = if (selectedGenre != null) {
+        val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
+        if (targetIndex in visibleIndices || visibleIndices.isEmpty()) targetIndex else firstVisibleIdx
+    } else {
+        firstVisibleIdx
     }
 
     LazyRow(
@@ -1509,7 +1560,6 @@ fun MovieGenreChipBar(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .safeFocusRequester(firstChipFocusRequester)
             .focusGroup()
             .testTag("movie_genre_chip_bar")
     ) {
@@ -1520,7 +1570,14 @@ fun MovieGenreChipBar(
                 isSelected = isSelected,
                 onClick = { onSelectGenre(null) },
                 modifier = Modifier
-                    .onPreviewKeyEvent(handleGenreDownKey)
+                    .then(
+                        if (focusTargetChipIdx == 0) {
+                            Modifier.safeFocusRequester(firstChipFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .onPreviewKeyEvent(handleGenreVerticalKey)
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                         upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1534,14 +1591,22 @@ fun MovieGenreChipBar(
             items = safeGenres,
             key = { _, genre -> "genre_${genre.id}" },
             contentType = { _, _ -> "genre_chip" }
-        ) { _, genre ->
+        ) { idx, genre ->
             val isSelected = selectedGenre?.id == genre.id
+            val chipLazyIndex = idx + 1
             GenreFilterChipItem(
                 label = genre.name,
                 isSelected = isSelected,
                 onClick = { onSelectGenre(genre) },
                 modifier = Modifier
-                    .onPreviewKeyEvent(handleGenreDownKey)
+                    .then(
+                        if (focusTargetChipIdx == chipLazyIndex) {
+                            Modifier.safeFocusRequester(firstChipFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .onPreviewKeyEvent(handleGenreVerticalKey)
                     .focusProperties {
                         upFocusRequester.takeIfAttached()?.let { up = it }
                         downFocusRequester.takeIfAttached()?.let { down = it }
@@ -1634,6 +1699,7 @@ fun StreamingPlatformsStrip(
     firstItemFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester? = null,
+    onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     onItemFocused: ((FocusRequester) -> Unit)? = null,
@@ -1658,9 +1724,13 @@ fun StreamingPlatformsStrip(
         }
     }
 
-    val handlePlatformDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
-        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
-            (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+    val handlePlatformVerticalKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
+        if (keyEvent.type == KeyEventType.KeyDown) {
+            when (keyEvent.key) {
+                Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                else -> false
+            }
         } else {
             false
         }
@@ -1700,7 +1770,7 @@ fun StreamingPlatformsStrip(
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(1.dp, NetflixRed),
                         modifier = Modifier
-                            .onPreviewKeyEvent(handlePlatformDownKey)
+                            .onPreviewKeyEvent(handlePlatformVerticalKey)
                             .focusProperties {
                                 upFocusRequester.takeIfAttached()?.let { up = it }
                                 downFocusRequester.takeIfAttached()?.let { down = it }
@@ -1752,7 +1822,7 @@ fun StreamingPlatformsStrip(
                         isSelected = false,
                         onClick = { onSelectProvider(null) },
                         modifier = Modifier
-                            .onPreviewKeyEvent(handlePlatformDownKey)
+                            .onPreviewKeyEvent(handlePlatformVerticalKey)
                             .focusProperties {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                                 upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1787,7 +1857,7 @@ fun StreamingPlatformsStrip(
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
-                        .onPreviewKeyEvent(handlePlatformDownKey)
+                        .onPreviewKeyEvent(handlePlatformVerticalKey)
                         .focusProperties {
                             if (index == 0 && selectedProvider == null) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }

@@ -853,6 +853,258 @@ class TvNavigationAndViewsCrashTest {
         }
     }
 
+    @Test
+    fun `landscape dpad vertical navigation scrolls down and returns to initial top across all tabs including series`() {
+        launchTvApp()
+
+        fun isFocused(tag: String): Boolean {
+            val nodes = composeRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes()
+            return nodes.any {
+                it.config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Focused) { false }
+            }
+        }
+
+        // 1. HOME: verifica top iniziale Hero Banner, scendi con D-Pad Giù fino alle righe inferiori e risali fino in cima
+        val homeInitialHeroTop = composeRule.onNodeWithTag("hero_banner_card", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue("Home initial hero top should be near 0f, was $homeInitialHeroTop", kotlin.math.abs(homeInitialHeroTop) < 5f)
+
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must move to continue_watching_card_movie_101", isFocused("continue_watching_card_movie_101"))
+
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must move to platform_card_337", isFocused("platform_card_337"))
+
+        composeRule.onNodeWithTag("platform_card_337", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must move to top10_card_1", isFocused("top10_card_1"))
+
+        composeRule.onNodeWithTag("top10_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must move to poster_card_movie_200", isFocused("poster_card_movie_200"))
+
+        // Risali con D-Pad Su fino all'Hero Banner e verifica che torni esattamente al punto iniziale (top == homeInitialHeroTop)
+        composeRule.onNodeWithTag("poster_card_movie_200", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must return to top10_card_1", isFocused("top10_card_1"))
+
+        composeRule.onNodeWithTag("top10_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must return to platform_card_337", isFocused("platform_card_337"))
+
+        composeRule.onNodeWithTag("platform_card_337", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must return to continue_watching_card_movie_101", isFocused("continue_watching_card_movie_101"))
+
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Focus must return to hero_play_button", isFocused("hero_play_button"))
+
+        val homeRestoredHeroTop = composeRule.onNodeWithTag("hero_banner_card", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Home hero banner must return to exact initial top ($homeInitialHeroTop), was $homeRestoredHeroTop",
+            kotlin.math.abs(homeRestoredHeroTop - homeInitialHeroTop) < 2f
+        )
+
+        // 2. SERIE TV: verifica che scorra verso il basso attraverso tutte le righe e torni al punto iniziale con D-Pad Su
+        composeRule.onNodeWithTag("tv_rail_series").performClick()
+        composeRule.waitForIdle()
+
+        val seriesInitialHeroTop = composeRule.onNodeWithTag("hero_banner_card", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue("Series initial hero top should be near 0f, was $seriesInitialHeroTop", kotlin.math.abs(seriesInitialHeroTop) < 5f)
+        assertTrue("Series hero_play_button must be focused on tab entry", isFocused("hero_play_button"))
+
+        // Scendi da Hero -> Serie TV in Tendenza (500) -> Serie TV Popolari (600) -> Serie TV Più Votate (604) -> Maratone (503)
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Series must scroll down to Trending TV row (poster_card_tv_500)", isFocused("poster_card_tv_500"))
+
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Series must scroll down to Popular TV row (poster_card_tv_600)", isFocused("poster_card_tv_600"))
+
+        composeRule.onNodeWithTag("poster_card_tv_600", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Series must scroll down to Top Rated TV row (poster_card_tv_604)", isFocused("poster_card_tv_604"))
+
+        composeRule.onNodeWithTag("poster_card_tv_604", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Series must scroll down to Binge TV row (poster_card_tv_504)", isFocused("poster_card_tv_504"))
+
+        // Risali con D-Pad Su fino all'Hero Banner di Serie TV
+        composeRule.onNodeWithTag("poster_card_tv_504", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Series must move up to Top Rated TV row (poster_card_tv_604)", isFocused("poster_card_tv_604"))
+
+        composeRule.onNodeWithTag("poster_card_tv_604", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Series must move up to Popular TV row (poster_card_tv_600)", isFocused("poster_card_tv_600"))
+
+        composeRule.onNodeWithTag("poster_card_tv_600", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Series must move up to Trending TV row (poster_card_tv_500)", isFocused("poster_card_tv_500"))
+
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Series must return focus to hero_play_button", isFocused("hero_play_button"))
+
+        val seriesRestoredHeroTop = composeRule.onNodeWithTag("hero_banner_card", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Series hero banner must return to exact initial top ($seriesInitialHeroTop), was $seriesRestoredHeroTop",
+            kotlin.math.abs(seriesRestoredHeroTop - seriesInitialHeroTop) < 2f
+        )
+
+        // 3. FILM: verifica discesa e risalita fino a Hero Banner e barra Categorie al punto iniziale
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+
+        val moviesInitialGenreBarTop = composeRule.onNodeWithTag("movie_genre_chip_bar", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        val moviesInitialHeroTop = composeRule.onNodeWithTag("hero_banner_card", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Movies must scroll down to continue_watching_card_movie_101", isFocused("continue_watching_card_movie_101"))
+
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Movies must scroll down to poster_card_movie_200", isFocused("poster_card_movie_200"))
+
+        composeRule.onNodeWithTag("poster_card_movie_200", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Movies must scroll down to poster_card_movie_400", isFocused("poster_card_movie_400"))
+
+        // Risali fino a hero_play_button e verifica che sia l'Hero Banner sia la barra Categorie tornino in cima
+        composeRule.onNodeWithTag("poster_card_movie_400", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_200", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Movies must return focus to hero_play_button", isFocused("hero_play_button"))
+
+        val moviesRestoredHeroTop = composeRule.onNodeWithTag("hero_banner_card", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        val moviesRestoredGenreBarTop = composeRule.onNodeWithTag("movie_genre_chip_bar", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Movies hero banner must return to initial top ($moviesInitialHeroTop), was $moviesRestoredHeroTop",
+            kotlin.math.abs(moviesRestoredHeroTop - moviesInitialHeroTop) < 2f
+        )
+        assertTrue(
+            "Movies genre chip bar must return to initial top ($moviesInitialGenreBarTop), was $moviesRestoredGenreBarTop",
+            kotlin.math.abs(moviesRestoredGenreBarTop - moviesInitialGenreBarTop) < 2f
+        )
+
+        // 4. NUOVI E POPOLARI: verifica discesa tra le righe e ritorno in cima
+        composeRule.onNodeWithTag("tv_rail_new_popular").performClick()
+        composeRule.waitForIdle()
+        assertTrue("New & Popular first card (top10_card_1) must be focused on tab entry", isFocused("top10_card_1"))
+        val newPopularInitialTop = composeRule.onNodeWithTag("top10_card_1", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+
+        composeRule.onNodeWithTag("top10_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("New & Popular must scroll down to poster_card_movie_400", isFocused("poster_card_movie_400"))
+
+        composeRule.onNodeWithTag("poster_card_movie_400", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("New & Popular must scroll down to poster_card_tv_500", isFocused("poster_card_tv_500"))
+
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_400", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("New & Popular must return focus to top10_card_1", isFocused("top10_card_1"))
+
+        val newPopularRestoredTop = composeRule.onNodeWithTag("top10_card_1", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "New & Popular top10_card_1 must return to initial top ($newPopularInitialTop), was $newPopularRestoredTop",
+            kotlin.math.abs(newPopularRestoredTop - newPopularInitialTop) < 2f
+        )
+
+        // 5. LA MIA LISTA: verifica discesa da Continua a guardare a Salvati nella Mia Lista e ritorno in cima
+        composeRule.onNodeWithTag("tv_rail_my_list").performClick()
+        composeRule.waitForIdle()
+        assertTrue("My List first card must be focused on tab entry", isFocused("continue_watching_card_movie_101"))
+        val myListInitialTop = composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("My List must scroll down to poster_card_movie_102", isFocused("poster_card_movie_102"))
+
+        composeRule.onNodeWithTag("poster_card_movie_102", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("My List must return focus to continue_watching_card_movie_101", isFocused("continue_watching_card_movie_101"))
+
+        val myListRestoredTop = composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "My List top item must return to initial top ($myListInitialTop), was $myListRestoredTop",
+            kotlin.math.abs(myListRestoredTop - myListInitialTop) < 2f
+        )
+
+        // 6. IMPOSTAZIONI: verifica discesa nei controlli del pannello e ritorno alla barra categorie con header visibile in cima
+        composeRule.onNodeWithTag("tv_rail_settings").performClick()
+        composeRule.waitForIdle()
+        assertTrue("Settings playback tab must be focused on tab entry", isFocused("settings_tab_playback"))
+        val settingsInitialTabTop = composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+
+        composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        assertTrue("Settings must move focus down to first control (lang_chip_it)", isFocused("lang_chip_it"))
+
+        composeRule.onNodeWithTag("lang_chip_it", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        assertTrue("Settings must return focus up to settings_tab_playback", isFocused("settings_tab_playback"))
+
+        val settingsRestoredTabTop = composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Settings category tab bar must return to initial top ($settingsInitialTabTop), was $settingsRestoredTabTop",
+            kotlin.math.abs(settingsRestoredTabTop - settingsInitialTabTop) < 2f
+        )
+    }
+
     private class FullMockTmdbServer {
         private var socket: ServerSocket? = null
         private val executor = Executors.newCachedThreadPool()
