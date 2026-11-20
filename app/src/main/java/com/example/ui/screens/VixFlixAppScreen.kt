@@ -300,15 +300,12 @@ fun VixFlixAppScreen(
     ) {
         if (isTvDevice && isCatalogInteractive && !isSearchBarVisible) {
             val target = tabContentEntryFocusRequester ?: return@LaunchedEffect
-            for (frame in 1..4) {
+            for (frame in 1..3) {
                 androidx.compose.runtime.withFrameNanos { }
-                if (target.safeRequestFocus()) return@LaunchedEffect
-            }
-            delay(60L)
-            if (!target.safeRequestFocus()) {
-                delay(120L)
                 target.safeRequestFocus()
             }
+            delay(60L)
+            target.safeRequestFocus()
         }
     }
 
@@ -380,6 +377,9 @@ fun VixFlixAppScreen(
                 }
                 selectedTab == NavTab.HOME && platformState.selectedProvider != null -> {
                     viewModel.selectStreamingPlatform(null)
+                }
+                selectedTab == NavTab.MOVIES && movieGenreState.selectedGenre != null -> {
+                    viewModel.selectMovieGenre(null)
                 }
                 useTvNavigationRail && !isRailFocused -> {
                     navRailSelectedFocusRequester.safeRequestFocus()
@@ -1654,9 +1654,28 @@ private fun CatalogFeedContent(
     ) {
         mutableMapOf<String, FocusRequester>()
     }
+    val gridRowLastCol = remember(
+        selectedTab,
+        activeMovieGenre?.id,
+        activePlatform?.providerId,
+        platformState.mediaTypeFilter
+    ) {
+        androidx.compose.runtime.mutableStateMapOf<String, Int>()
+    }
+    val clearGenreFilterFocusRequester = remember { FocusRequester() }
     fun requesterForKey(key: String, overrideRequester: FocusRequester? = null): FocusRequester {
         if (overrideRequester != null) return overrideRequester
         return dynamicRowRequesters.getOrPut(key) { FocusRequester() }
+    }
+    fun gridCellRequester(
+        rowKey: String,
+        colIdx: Int,
+        rowZeroColZeroRequester: FocusRequester? = null
+    ): FocusRequester {
+        if (colIdx == 0 && rowZeroColZeroRequester != null) {
+            return rowZeroColZeroRequester
+        }
+        return dynamicRowRequesters.getOrPut("${rowKey}_col_$colIdx") { FocusRequester() }
     }
 
     val (seriesTrendingRow, seriesPopularRow, seriesTopRated, seriesBinge) = remember(feed.trendingTv, feed.popularTv) {
@@ -1894,11 +1913,10 @@ private fun CatalogFeedContent(
                             nextLazyIdx++ // platform_grid_title
                             for (rowIdx in 0 until platformRows.size) {
                                 val rowKey = "platform_grid_row_$rowIdx"
-                                val rowRequester = if (!hasBothPlatformRows && rowIdx == 0) {
-                                    firstRowFocusRequester
-                                } else {
-                                    requesterForKey(rowKey)
-                                }
+                                val maxCol = (platformRows[rowIdx].size - 1).coerceAtLeast(0)
+                                val rememberedCol = (gridRowLastCol[rowKey] ?: 0).coerceIn(0, maxCol)
+                                val rowZeroColZero = if (!hasBothPlatformRows && rowIdx == 0) firstRowFocusRequester else null
+                                val rowRequester = gridCellRequester(rowKey, rememberedCol, rowZeroColZero)
                                 navTargets.add(
                                     CatalogNavTarget(
                                         key = rowKey,
@@ -1966,11 +1984,10 @@ private fun CatalogFeedContent(
                         else -> {
                             for (rowIdx in 0 until genreRows.size) {
                                 val rowKey = "genre_grid_row_$rowIdx"
-                                val rowRequester = if (rowIdx == 0) {
-                                    firstRowFocusRequester
-                                } else {
-                                    requesterForKey(rowKey)
-                                }
+                                val maxCol = (genreRows[rowIdx].size - 1).coerceAtLeast(0)
+                                val rememberedCol = (gridRowLastCol[rowKey] ?: 0).coerceIn(0, maxCol)
+                                val rowZeroColZero = if (rowIdx == 0) firstRowFocusRequester else null
+                                val rowRequester = gridCellRequester(rowKey, rememberedCol, rowZeroColZero)
                                 navTargets.add(
                                     CatalogNavTarget(
                                         key = rowKey,
@@ -2307,10 +2324,10 @@ private fun CatalogFeedContent(
                                     contentType = { "platform_grid_row" }
                                 ) { rowIdx ->
                                     val rowKey = "platform_grid_row_$rowIdx"
-                                    val currentTarget = targetFor(rowKey)
                                     val prev = prevTargetFor(rowKey)
                                     val next = nextTargetFor(rowKey)
                                     val rowItems = platformRows[rowIdx]
+                                    val rowZeroColZero = if (!hasBothPlatformRows && rowIdx == 0) firstRowFocusRequester else null
                                     Row(
                                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                                         modifier = Modifier
@@ -2321,12 +2338,55 @@ private fun CatalogFeedContent(
                                         for (colIdx in 0 until gridColumns) {
                                             if (colIdx < rowItems.size) {
                                                 val item = rowItems[colIdx]
-                                                val itemFocusRequester = if (colIdx == 0 && currentTarget != null) {
-                                                    currentTarget.requester
+                                                val itemFocusRequester = gridCellRequester(
+                                                    rowKey = rowKey,
+                                                    colIdx = colIdx,
+                                                    rowZeroColZeroRequester = rowZeroColZero
+                                                )
+                                                val leftColRequester = if (colIdx > 0) {
+                                                    gridCellRequester(
+                                                        rowKey = rowKey,
+                                                        colIdx = colIdx - 1,
+                                                        rowZeroColZeroRequester = rowZeroColZero
+                                                    )
                                                 } else {
-                                                    remember(activePlatform.providerId, platformState.mediaTypeFilter, item.uniqueKey) {
-                                                        FocusRequester()
-                                                    }
+                                                    navRailFocusRequester
+                                                }
+                                                val rightColRequester = if (colIdx + 1 < rowItems.size) {
+                                                    gridCellRequester(
+                                                        rowKey = rowKey,
+                                                        colIdx = colIdx + 1,
+                                                        rowZeroColZeroRequester = rowZeroColZero
+                                                    )
+                                                } else {
+                                                    null
+                                                }
+                                                val downCellTarget: CatalogNavTarget? = if (next != null && rowIdx + 1 < platformRows.size) {
+                                                    val nextRowKey = "platform_grid_row_${rowIdx + 1}"
+                                                    val nextRowCol = colIdx.coerceAtMost(platformRows[rowIdx + 1].lastIndex)
+                                                    next.copy(
+                                                        requester = gridCellRequester(
+                                                            rowKey = nextRowKey,
+                                                            colIdx = nextRowCol,
+                                                            rowZeroColZeroRequester = null
+                                                        )
+                                                    )
+                                                } else {
+                                                    next
+                                                }
+                                                val upCellTarget: CatalogNavTarget? = if (prev != null && rowIdx > 0) {
+                                                    val prevRowKey = "platform_grid_row_${rowIdx - 1}"
+                                                    val prevRowCol = colIdx.coerceAtMost(platformRows[rowIdx - 1].lastIndex)
+                                                    val prevRowZeroColZero = if (!hasBothPlatformRows && rowIdx - 1 == 0) firstRowFocusRequester else null
+                                                    prev.copy(
+                                                        requester = gridCellRequester(
+                                                            rowKey = prevRowKey,
+                                                            colIdx = prevRowCol,
+                                                            rowZeroColZeroRequester = prevRowZeroColZero
+                                                        )
+                                                    )
+                                                } else {
+                                                    prev
                                                 }
                                                 MediaPosterCard(
                                                     item = item,
@@ -2334,16 +2394,40 @@ private fun CatalogFeedContent(
                                                     onClick = { onOpenDetails(item) },
                                                     onQuickPlay = { onPlayItem(item) },
                                                     onLongClick = { onTvLongPressPoster(item) },
-                                                    onFocused = { onRememberContentFocus(itemFocusRequester) },
+                                                    onFocused = {
+                                                        gridRowLastCol[rowKey] = colIdx
+                                                        onRememberContentFocus(itemFocusRequester)
+                                                    },
                                                     modifier = Modifier
                                                         .weight(1f)
                                                         .safeFocusRequester(itemFocusRequester)
                                                         .onPreviewKeyEvent { keyEvent ->
                                                             if (keyEvent.type == KeyEventType.KeyDown) {
                                                                 when (keyEvent.key) {
-                                                                    Key.DirectionDown -> if (next != null) navigateToTarget(next) else false
-                                                                    Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
-                                                                    Key.DirectionLeft -> if (colIdx == 0) navRailFocusRequester.safeRequestFocus() else false
+                                                                    Key.DirectionDown -> {
+                                                                        if (downCellTarget != null) {
+                                                                            if (rowIdx + 1 < platformRows.size) {
+                                                                                gridRowLastCol["platform_grid_row_${rowIdx + 1}"] =
+                                                                                    colIdx.coerceAtMost(platformRows[rowIdx + 1].lastIndex)
+                                                                            }
+                                                                            navigateToTarget(downCellTarget)
+                                                                        } else {
+                                                                            false
+                                                                        }
+                                                                    }
+                                                                    Key.DirectionUp -> {
+                                                                        if (upCellTarget != null) {
+                                                                            if (rowIdx > 0) {
+                                                                                gridRowLastCol["platform_grid_row_${rowIdx - 1}"] =
+                                                                                    colIdx.coerceAtMost(platformRows[rowIdx - 1].lastIndex)
+                                                                            }
+                                                                            navigateToTarget(upCellTarget)
+                                                                        } else {
+                                                                            handleTopBoundaryUp()
+                                                                        }
+                                                                    }
+                                                                    Key.DirectionLeft -> leftColRequester.safeRequestFocus()
+                                                                    Key.DirectionRight -> rightColRequester?.safeRequestFocus() ?: true
                                                                     else -> false
                                                                 }
                                                             } else {
@@ -2351,11 +2435,10 @@ private fun CatalogFeedContent(
                                                             }
                                                         }
                                                         .focusProperties {
-                                                            if (colIdx == 0) {
-                                                                navRailFocusRequester.takeIfAttached()?.let { left = it }
-                                                            }
-                                                            prev?.requester?.takeIfAttached()?.let { up = it }
-                                                            next?.requester?.takeIfAttached()?.let { down = it }
+                                                            leftColRequester.takeIfAttached()?.let { left = it }
+                                                            rightColRequester?.takeIfAttached()?.let { right = it }
+                                                            upCellTarget?.requester?.takeIfAttached()?.let { up = it }
+                                                            downCellTarget?.requester?.takeIfAttached()?.let { down = it }
                                                         }
                                                 )
                                             } else {
@@ -2471,11 +2554,13 @@ private fun CatalogFeedContent(
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
                                     modifier = Modifier
                                         .heightIn(min = 48.dp)
+                                        .safeFocusRequester(clearGenreFilterFocusRequester)
                                         .onPreviewKeyEvent { keyEvent ->
                                             if (keyEvent.type == KeyEventType.KeyDown) {
                                                 when (keyEvent.key) {
                                                     Key.DirectionDown -> if (firstGridTarget != null) navigateToTarget(firstGridTarget) else false
                                                     Key.DirectionUp -> if (genreBarTarget != null) navigateToTarget(genreBarTarget) else handleTopBoundaryUp()
+                                                    Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
                                                     else -> false
                                                 }
                                             } else {
@@ -2608,10 +2693,10 @@ private fun CatalogFeedContent(
                                     contentType = { "genre_grid_row" }
                                 ) { rowIdx ->
                                     val rowKey = "genre_grid_row_$rowIdx"
-                                    val currentTarget = targetFor(rowKey)
                                     val prev = prevTargetFor(rowKey)
                                     val next = nextTargetFor(rowKey)
                                     val rowItems = genreRows[rowIdx]
+                                    val rowZeroColZero = if (rowIdx == 0) firstRowFocusRequester else null
                                     Row(
                                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                                         modifier = Modifier
@@ -2622,10 +2707,55 @@ private fun CatalogFeedContent(
                                         for (colIdx in 0 until gridColumns) {
                                             if (colIdx < rowItems.size) {
                                                 val item = rowItems[colIdx]
-                                                val itemFocusRequester = if (colIdx == 0 && currentTarget != null) {
-                                                    currentTarget.requester
+                                                val itemFocusRequester = gridCellRequester(
+                                                    rowKey = rowKey,
+                                                    colIdx = colIdx,
+                                                    rowZeroColZeroRequester = rowZeroColZero
+                                                )
+                                                val leftColRequester = if (colIdx > 0) {
+                                                    gridCellRequester(
+                                                        rowKey = rowKey,
+                                                        colIdx = colIdx - 1,
+                                                        rowZeroColZeroRequester = rowZeroColZero
+                                                    )
                                                 } else {
-                                                    remember(activeMovieGenre.id, item.uniqueKey) { FocusRequester() }
+                                                    navRailFocusRequester
+                                                }
+                                                val rightColRequester = if (colIdx + 1 < rowItems.size) {
+                                                    gridCellRequester(
+                                                        rowKey = rowKey,
+                                                        colIdx = colIdx + 1,
+                                                        rowZeroColZeroRequester = rowZeroColZero
+                                                    )
+                                                } else {
+                                                    null
+                                                }
+                                                val downCellTarget: CatalogNavTarget? = if (next != null && rowIdx + 1 < genreRows.size) {
+                                                    val nextRowKey = "genre_grid_row_${rowIdx + 1}"
+                                                    val nextRowCol = colIdx.coerceAtMost(genreRows[rowIdx + 1].lastIndex)
+                                                    next.copy(
+                                                        requester = gridCellRequester(
+                                                            rowKey = nextRowKey,
+                                                            colIdx = nextRowCol,
+                                                            rowZeroColZeroRequester = null
+                                                        )
+                                                    )
+                                                } else {
+                                                    next
+                                                }
+                                                val upCellTarget: CatalogNavTarget? = if (prev != null && rowIdx > 0) {
+                                                    val prevRowKey = "genre_grid_row_${rowIdx - 1}"
+                                                    val prevRowCol = colIdx.coerceAtMost(genreRows[rowIdx - 1].lastIndex)
+                                                    val prevRowZeroColZero = if (rowIdx - 1 == 0) firstRowFocusRequester else null
+                                                    prev.copy(
+                                                        requester = gridCellRequester(
+                                                            rowKey = prevRowKey,
+                                                            colIdx = prevRowCol,
+                                                            rowZeroColZeroRequester = prevRowZeroColZero
+                                                        )
+                                                    )
+                                                } else {
+                                                    prev
                                                 }
                                                 MediaPosterCard(
                                                     item = item,
@@ -2633,16 +2763,42 @@ private fun CatalogFeedContent(
                                                     onClick = { onOpenDetails(item) },
                                                     onQuickPlay = { onPlayItem(item) },
                                                     onLongClick = { onTvLongPressPoster(item) },
-                                                    onFocused = { onRememberContentFocus(itemFocusRequester) },
+                                                    onFocused = {
+                                                        gridRowLastCol[rowKey] = colIdx
+                                                        onRememberContentFocus(itemFocusRequester)
+                                                    },
                                                     modifier = Modifier
                                                         .weight(1f)
                                                         .safeFocusRequester(itemFocusRequester)
                                                         .onPreviewKeyEvent { keyEvent ->
                                                             if (keyEvent.type == KeyEventType.KeyDown) {
                                                                 when (keyEvent.key) {
-                                                                    Key.DirectionDown -> if (next != null) navigateToTarget(next) else false
-                                                                    Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
-                                                                    Key.DirectionLeft -> if (colIdx == 0) navRailFocusRequester.safeRequestFocus() else false
+                                                                    Key.DirectionDown -> {
+                                                                        if (downCellTarget != null) {
+                                                                            if (rowIdx + 1 < genreRows.size) {
+                                                                                gridRowLastCol["genre_grid_row_${rowIdx + 1}"] =
+                                                                                    colIdx.coerceAtMost(genreRows[rowIdx + 1].lastIndex)
+                                                                            }
+                                                                            navigateToTarget(downCellTarget)
+                                                                        } else {
+                                                                            false
+                                                                        }
+                                                                    }
+                                                                    Key.DirectionUp -> {
+                                                                        if (rowIdx == 0 && colIdx == rowItems.lastIndex && colIdx > 0 && clearGenreFilterFocusRequester.safeRequestFocus()) {
+                                                                            true
+                                                                        } else if (upCellTarget != null) {
+                                                                            if (rowIdx > 0) {
+                                                                                gridRowLastCol["genre_grid_row_${rowIdx - 1}"] =
+                                                                                    colIdx.coerceAtMost(genreRows[rowIdx - 1].lastIndex)
+                                                                            }
+                                                                            navigateToTarget(upCellTarget)
+                                                                        } else {
+                                                                            handleTopBoundaryUp()
+                                                                        }
+                                                                    }
+                                                                    Key.DirectionLeft -> leftColRequester.safeRequestFocus()
+                                                                    Key.DirectionRight -> rightColRequester?.safeRequestFocus() ?: true
                                                                     else -> false
                                                                 }
                                                             } else {
@@ -2650,11 +2806,14 @@ private fun CatalogFeedContent(
                                                             }
                                                         }
                                                         .focusProperties {
-                                                            if (colIdx == 0) {
-                                                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                                            leftColRequester.takeIfAttached()?.let { left = it }
+                                                            rightColRequester?.takeIfAttached()?.let { right = it }
+                                                            if (rowIdx == 0 && colIdx == rowItems.lastIndex && colIdx > 0) {
+                                                                clearGenreFilterFocusRequester.takeIfAttached()?.let { up = it }
+                                                            } else {
+                                                                upCellTarget?.requester?.takeIfAttached()?.let { up = it }
                                                             }
-                                                            prev?.requester?.takeIfAttached()?.let { up = it }
-                                                            next?.requester?.takeIfAttached()?.let { down = it }
+                                                            downCellTarget?.requester?.takeIfAttached()?.let { down = it }
                                                         }
                                                 )
                                             } else {

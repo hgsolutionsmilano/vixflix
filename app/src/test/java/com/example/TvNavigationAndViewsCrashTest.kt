@@ -8,6 +8,7 @@ import android.view.KeyEvent
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -1184,6 +1185,149 @@ class TvNavigationAndViewsCrashTest {
             "Fire TV Stick poster must not move when returning to Play (initial=$initialPosterTop, after=$afterReturnPlayPosterTop)",
             kotlin.math.abs(afterReturnPlayPosterTop - initialPosterTop) < 0.5f
         )
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `tv dpad remembers row position preserves grid columns switches settings tabs instantly and uses two step detail back`() {
+        launchTvApp()
+
+        // 1. Memoria orizzontale per riga: nella sezione Serie TV scorri a destra nella prima riga, scendi alla seconda e risali
+        composeRule.onNodeWithTag("tv_rail_series").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        // Spostati a destra nella riga 0 (Serie TV di Tendenza: 500 -> 501)
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_501", useUnmergedTree = true).assertIsFocused()
+
+        // Scendi alla riga successiva (Serie TV Popolari: 600) e poi risali: deve ricordare poster_card_tv_501!
+        composeRule.onNodeWithTag("poster_card_tv_501", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_600", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("poster_card_tv_600", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_501", useUnmergedTree = true).assertIsFocused()
+
+        // 2. Scheda Dettaglio Serie: navigazione Episodi + Doppio Step sul tasto Indietro (1° torna in cima su Riproduci, 2° chiude)
+        composeRule.onNodeWithTag("poster_card_tv_501", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            val ds = viewModel.detailState.value
+            ds != null && !ds.isLoading && !ds.isLoadingEpisodes && ds.episodes.size >= 2
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+
+        // Scendi sotto la piega: Trailer -> Cast -> Stagione -> Episodio 1 -> Episodio 2
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("cast_card_11", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_season_chip_1", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("detail_season_chip_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("episode_card_1_1", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("episode_card_1_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("episode_card_1_2", useUnmergedTree = true).assertIsFocused()
+
+        // 1° Indietro mentre siamo sotto la piega su Episodio 2: NON chiude la scheda, ma torna in cima su detail_play_button
+        composeRule.onNodeWithTag("episode_card_1_2", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Back) }
+        composeRule.waitForIdle()
+        assertTrue("Detail state must still be open after first Back from below fold", viewModel.detailState.value != null)
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+
+        // 2° Indietro mentre siamo sul palco Hero in cima: chiude la scheda dettaglio
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Back) }
+        composeRule.waitForIdle()
+        assertTrue("Detail state must close on second Back from hero stage", viewModel.detailState.value == null)
+
+        // 3. Griglia Multi-Colonna Genere Film: preserva la colonna quando si scende/sale tra le righe della griglia
+        composeRule.onNodeWithTag("tv_rail_movies").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("genre_chip_28", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("poster_card_movie_2800", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        // Scendi con il D-Pad dal chip genere selezionato direttamente alla prima locandina della griglia genere (2800)
+        composeRule.onNodeWithTag("genre_chip_28", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("genre_chip_28", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_2800", useUnmergedTree = true).assertIsFocused()
+
+        // Spostati sulla 2ª colonna della 1ª riga (2801) e premi Giù: su 4 colonne (888dp disponibili) atterra sulla 2ª colonna della 2ª riga (2805)
+        composeRule.onNodeWithTag("poster_card_movie_2800", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_2801", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("poster_card_movie_2801", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_2805", useUnmergedTree = true).assertIsFocused()
+
+        // 4. Ricerca: da search_input_field Destra raggiunge top_bar_search_clear e Sinistra torna a search_input_field
+        composeRule.onNodeWithTag("search_toggle_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("search_input_field", useUnmergedTree = true).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("search_input_field", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("top_bar_search_clear", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("top_bar_search_clear", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("search_input_field", useUnmergedTree = true).assertIsFocused()
+
+        // 5. Impostazioni: spostarsi con Destra sui tab superiori cambia subito scheda e Giù entra nei controlli della scheda attiva
+        composeRule.onNodeWithTag("tv_rail_settings").performClick()
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("settings_tab_playback", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true).assertIsFocused()
+        assertTrue(
+            "Updates panel should become active immediately when focusing UPDATES tab",
+            composeRule.onAllNodesWithTag("settings_auto_update_switch", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true).assertIsFocused()
     }
 
     private class FullMockTmdbServer {

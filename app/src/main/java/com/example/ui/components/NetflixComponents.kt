@@ -356,91 +356,131 @@ fun NetflixTopBar(
             enter = fadeIn(tween(120, easing = LinearOutSlowInEasing)),
             exit = fadeOut(tween(90))
         ) {
-            TextField(
-                value = searchQuery,
-                onValueChange = onSearchQueryChange,
-                placeholder = {
-                    Text(
-                        text = "Cerca film, serie TV, attori in tempo reale su TMDB…",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = NetflixMutedGray
-                    )
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = null,
-                        tint = NetflixRed
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty() || isTvLayout) {
-                        IconButton(
-                            onClick = {
-                                if (searchQuery.isNotEmpty()) {
-                                    onSearchQueryChange("")
-                                } else {
-                                    onToggleSearch()
-                                }
-                            },
-                            modifier = Modifier.tvFocusableControl(shape = CircleShape)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Cancella o chiudi ricerca",
-                                tint = NetflixLightGray
-                            )
-                        }
-                    }
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(
-                    onSearch = {
-                        keyboardController?.hide()
-                        downToContentFocusRequester.safeRequestFocus()
-                    }
-                ),
-                shape = RoundedCornerShape(10.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = NetflixCardSurface,
-                    unfocusedContainerColor = NetflixCardSurface,
-                    focusedTextColor = NetflixWhite,
-                    unfocusedTextColor = NetflixWhite,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    cursorColor = NetflixRed
-                ),
+            val clearSearchFocusRequester = remember { FocusRequester() }
+            val hasClearButton = searchQuery.isNotEmpty() || isTvLayout
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = if (isTvLayout) 4.dp else 8.dp)
-                    .safeFocusRequester(searchFocusRequester)
-                    .focusProperties {
-                        navRailFocusRequester.takeIfAttached()?.let { left = it }
-                        downToContentFocusRequester.takeIfAttached()?.let { down = it }
-                    }
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown) {
-                            when (keyEvent.key) {
-                                Key.DirectionDown -> {
-                                    keyboardController?.hide()
-                                    downToContentFocusRequester.safeRequestFocus()
-                                }
-                                Key.DirectionLeft -> {
-                                    if (searchQuery.isEmpty()) {
-                                        navRailFocusRequester.safeRequestFocus()
-                                    } else {
-                                        false
-                                    }
-                                }
-                                else -> false
-                            }
-                        } else {
-                            false
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(NetflixCardSurface)
+            ) {
+                TextField(
+                    value = searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    placeholder = {
+                        Text(
+                            text = "Cerca film, serie TV, attori in tempo reale su TMDB…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = NetflixMutedGray
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            tint = NetflixRed
+                        )
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(
+                        onSearch = {
+                            keyboardController?.hide()
+                            downToContentFocusRequester.safeRequestFocus()
                         }
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedTextColor = NetflixWhite,
+                        unfocusedTextColor = NetflixWhite,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        cursorColor = NetflixRed
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .safeFocusRequester(searchFocusRequester)
+                        .focusProperties {
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            if (hasClearButton) {
+                                clearSearchFocusRequester.takeIfAttached()?.let { right = it }
+                            }
+                            downToContentFocusRequester.takeIfAttached()?.let { down = it }
+                        }
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionDown -> {
+                                        keyboardController?.hide()
+                                        downToContentFocusRequester.safeRequestFocus()
+                                    }
+                                    Key.DirectionLeft -> {
+                                        navRailFocusRequester.safeRequestFocus()
+                                    }
+                                    Key.DirectionRight -> {
+                                        if (hasClearButton) {
+                                            clearSearchFocusRequester.safeRequestFocus()
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        .testTag("search_input_field")
+                )
+
+                if (hasClearButton) {
+                    IconButton(
+                        onClick = {
+                            if (searchQuery.isNotEmpty()) {
+                                onSearchQueryChange("")
+                                searchFocusRequester.safeRequestFocus()
+                            } else {
+                                onToggleSearch()
+                            }
+                        },
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .safeFocusRequester(clearSearchFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionLeft -> searchFocusRequester.safeRequestFocus()
+                                        Key.DirectionRight -> true
+                                        Key.DirectionDown -> {
+                                            keyboardController?.hide()
+                                            downToContentFocusRequester.safeRequestFocus()
+                                        }
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                searchFocusRequester.takeIfAttached()?.let { left = it }
+                                downToContentFocusRequester.takeIfAttached()?.let { down = it }
+                            }
+                            .tvFocusableControl(shape = CircleShape)
+                            .testTag("top_bar_search_clear")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Cancella o chiudi ricerca",
+                            tint = NetflixLightGray
+                        )
                     }
-                    .testTag("search_input_field")
-            )
+                }
+            }
         }
 
         if (!isTvLayout) {
@@ -857,7 +897,17 @@ fun ContinueWatchingSection(
     if (safeEntries.isEmpty()) return
 
     val listState = rememberLazyListState()
+    var lastFocusedIndex by androidx.compose.runtime.saveable.rememberSaveable {
+        androidx.compose.runtime.mutableIntStateOf(0)
+    }
     val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeEntries.lastIndex)
+    val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
+    val rememberedIdx = lastFocusedIndex.coerceIn(0, safeEntries.lastIndex)
+    val targetFocusIdx = if (visibleIndices.isEmpty() || rememberedIdx in visibleIndices) {
+        rememberedIdx
+    } else {
+        firstVisibleIdx
+    }
 
     Column(
         modifier = modifier
@@ -904,7 +954,7 @@ fun ContinueWatchingSection(
                 key = { _, it -> it.id },
                 contentType = { _, _ -> "continue_watching_card" }
             ) { index, entry ->
-                val itemFocusRequester = if (index == firstVisibleIdx && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == targetFocusIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember(entry.id) { FocusRequester() }
@@ -918,7 +968,10 @@ fun ContinueWatchingSection(
                     onInfo = { onInfoClick(entry) },
                     onRemove = { onRemoveClick(entry) },
                     onLongPress = onTvLongPress?.let { handler -> { handler(entry) } },
-                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
+                    onFocused = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                    },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
                         .onPreviewKeyEvent { keyEvent ->
@@ -1140,7 +1193,17 @@ fun Top10Section(
     if (safeItems.isEmpty()) return
 
     val listState = rememberLazyListState()
+    var lastFocusedIndex by androidx.compose.runtime.saveable.rememberSaveable(title) {
+        androidx.compose.runtime.mutableIntStateOf(0)
+    }
     val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeItems.lastIndex)
+    val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
+    val rememberedIdx = lastFocusedIndex.coerceIn(0, safeItems.lastIndex)
+    val targetFocusIdx = if (visibleIndices.isEmpty() || rememberedIdx in visibleIndices) {
+        rememberedIdx
+    } else {
+        firstVisibleIdx
+    }
 
     Column(
         modifier = modifier
@@ -1164,7 +1227,7 @@ fun Top10Section(
                 key = { _, item -> "top10_${item.uniqueKey}" },
                 contentType = { _, _ -> "top10_card" }
             ) { index, item ->
-                val itemFocusRequester = if (index == firstVisibleIdx && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == targetFocusIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember(item.uniqueKey) { FocusRequester() }
@@ -1177,7 +1240,10 @@ fun Top10Section(
                     onClick = { onItemClick(item) },
                     onQuickPlay = onItemQuickPlay?.let { handler -> { handler(item) } },
                     onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
-                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
+                    onFocused = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                    },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
                         .onPreviewKeyEvent { keyEvent ->
@@ -1351,7 +1417,17 @@ fun MediaCatalogRow(
     if (safeItems.isEmpty()) return
 
     val listState = rememberLazyListState()
+    var lastFocusedIndex by androidx.compose.runtime.saveable.rememberSaveable(title) {
+        androidx.compose.runtime.mutableIntStateOf(0)
+    }
     val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeItems.lastIndex)
+    val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
+    val rememberedIdx = lastFocusedIndex.coerceIn(0, safeItems.lastIndex)
+    val targetFocusIdx = if (visibleIndices.isEmpty() || rememberedIdx in visibleIndices) {
+        rememberedIdx
+    } else {
+        firstVisibleIdx
+    }
 
     Column(
         modifier = modifier
@@ -1375,7 +1451,7 @@ fun MediaCatalogRow(
                 key = { _, item -> "${title}_${item.uniqueKey}" },
                 contentType = { _, _ -> "poster_card" }
             ) { index, item ->
-                val itemFocusRequester = if (index == firstVisibleIdx && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == targetFocusIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember("${title}_${item.uniqueKey}") { FocusRequester() }
@@ -1387,7 +1463,10 @@ fun MediaCatalogRow(
                     onClick = { onItemClick(item) },
                     onQuickPlay = onItemQuickPlay?.let { handler -> { handler(item) } },
                     onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
-                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
+                    onFocused = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                    },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
                         .onPreviewKeyEvent { keyEvent ->
@@ -1566,9 +1645,13 @@ fun MovieGenreChipBar(
         }
     }
 
-    LaunchedEffect(targetIndex) {
+    LaunchedEffect(targetIndex, selectedGenre?.id) {
         if (targetIndex >= 0) {
             runCatching { listState.animateScrollToItem(targetIndex) }
+            if (selectedGenre != null) {
+                androidx.compose.runtime.withFrameNanos { }
+                firstChipFocusRequester.safeRequestFocus()
+            }
         }
     }
 
@@ -1755,6 +1838,10 @@ fun StreamingPlatformsStrip(
     if (safeProviders.isEmpty()) return
 
     val listState = rememberLazyListState()
+    var lastFocusedProviderIdx by androidx.compose.runtime.saveable.rememberSaveable {
+        androidx.compose.runtime.mutableIntStateOf(0)
+    }
+    val resetBadgeFocusRequester = remember { FocusRequester() }
     val targetIndex = remember(safeProviders, selectedProvider) {
         if (selectedProvider == null) {
             0
@@ -1765,8 +1852,11 @@ fun StreamingPlatformsStrip(
     }
 
     LaunchedEffect(targetIndex, selectedProvider?.providerId) {
-        if (targetIndex >= 0) {
+        if (selectedProvider != null && targetIndex >= 0) {
+            lastFocusedProviderIdx = targetIndex
             runCatching { listState.animateScrollToItem(targetIndex) }
+            androidx.compose.runtime.withFrameNanos { }
+            firstItemFocusRequester.safeRequestFocus()
         }
     }
 
@@ -1774,7 +1864,13 @@ fun StreamingPlatformsStrip(
         if (keyEvent.type == KeyEventType.KeyDown) {
             when (keyEvent.key) {
                 Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                Key.DirectionUp -> {
+                    if (showHeader && selectedProvider != null && resetBadgeFocusRequester.safeRequestFocus()) {
+                        true
+                    } else {
+                        (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                    }
+                }
                 else -> false
             }
         } else {
@@ -1783,6 +1879,17 @@ fun StreamingPlatformsStrip(
     }
 
     val firstVisibleProviderIdx = listState.firstVisibleItemIndex.coerceIn(0, safeProviders.lastIndex)
+    val visibleProviderIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
+    val preferredProviderIdx = if (selectedProvider != null) {
+        targetIndex
+    } else {
+        lastFocusedProviderIdx.coerceIn(0, safeProviders.lastIndex)
+    }
+    val focusTargetProviderIdx = if (visibleProviderIndices.isEmpty() || preferredProviderIdx in visibleProviderIndices) {
+        preferredProviderIdx
+    } else {
+        firstVisibleProviderIdx
+    }
 
     Column(
         modifier = modifier
@@ -1816,10 +1923,23 @@ fun StreamingPlatformsStrip(
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(1.dp, NetflixRed),
                         modifier = Modifier
-                            .onPreviewKeyEvent(handlePlatformVerticalKey)
+                            .safeFocusRequester(resetBadgeFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown -> firstItemFocusRequester.safeRequestFocus() || (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                        Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                        Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
                                 upFocusRequester.takeIfAttached()?.let { up = it }
-                                downFocusRequester.takeIfAttached()?.let { down = it }
+                                (firstItemFocusRequester ?: downFocusRequester).takeIfAttached()?.let { down = it }
                             }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(50),
@@ -1867,7 +1987,7 @@ fun StreamingPlatformsStrip(
                 contentType = { _, _ -> "platform_card" }
             ) { index, provider ->
                 val isSelected = selectedProvider?.providerId == provider.providerId
-                val itemFocusRequester = if (index == firstVisibleProviderIdx && firstItemFocusRequester != null) {
+                val itemFocusRequester = if (index == focusTargetProviderIdx && firstItemFocusRequester != null) {
                     firstItemFocusRequester
                 } else {
                     remember(provider.providerId) { FocusRequester() }
@@ -1882,7 +2002,10 @@ fun StreamingPlatformsStrip(
                             onSelectProvider(provider)
                         }
                     },
-                    onFocused = { onItemFocused?.invoke(itemFocusRequester) },
+                    onFocused = {
+                        lastFocusedProviderIdx = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                    },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
                         .onPreviewKeyEvent { keyEvent ->

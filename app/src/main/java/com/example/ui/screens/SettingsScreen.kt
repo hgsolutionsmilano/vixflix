@@ -183,7 +183,10 @@ fun SettingsScreen(
     val categoryTabFocusRequesters = remember {
         SettingsCategory.entries.associateWith { FocusRequester() }
     }
-    val panelFirstControlFocusRequester = remember(selectedCategory) { FocusRequester() }
+    val panelFirstControlFocusRequesters = remember {
+        SettingsCategory.entries.associateWith { FocusRequester() }
+    }
+    val panelFirstControlFocusRequester = panelFirstControlFocusRequesters.getValue(selectedCategory)
 
     val resolveCategoryTabRequester: (SettingsCategory) -> FocusRequester = { category ->
         if (category == SettingsCategory.PLAYBACK && firstControlFocusRequester != null) {
@@ -195,16 +198,31 @@ fun SettingsScreen(
 
     val activeCategoryTabRequester = resolveCategoryTabRequester(selectedCategory)
 
+    LaunchedEffect(Unit) {
+        repeat(3) {
+            withFrameNanos { }
+            resolveCategoryTabRequester(selectedCategory).safeRequestFocus()
+        }
+    }
+
     LaunchedEffect(requestedCategoryNonce, requestedCategory) {
         if (requestedCategoryNonce > 0) {
             selectedCategory = requestedCategory
             runCatching { listState.scrollToItem(0, 0) }
+            repeat(3) {
+                withFrameNanos { }
+                resolveCategoryTabRequester(requestedCategory).safeRequestFocus()
+            }
         }
     }
 
     LaunchedEffect(tabScrollResetNonce) {
         if (tabScrollResetNonce > 0) {
             runCatching { listState.scrollToItem(0, 0) }
+            repeat(3) {
+                withFrameNanos { }
+                resolveCategoryTabRequester(selectedCategory).safeRequestFocus()
+            }
         }
     }
 
@@ -240,11 +258,14 @@ fun SettingsScreen(
             true
         } else {
             coroutineScope.launch {
-                for (attempt in 1..4) {
-                    runCatching { listState.scrollBy(scrollStepPx.toFloat()) }
-                    repeat(2) { withFrameNanos { } }
-                    if (targetRequester.safeRequestFocus()) {
-                        break
+                repeat(2) { withFrameNanos { } }
+                if (!targetRequester.safeRequestFocus()) {
+                    for (attempt in 1..4) {
+                        runCatching { listState.scrollBy(scrollStepPx.toFloat()) }
+                        repeat(2) { withFrameNanos { } }
+                        if (targetRequester.safeRequestFocus()) {
+                            break
+                        }
                     }
                 }
             }
@@ -286,7 +307,9 @@ fun SettingsScreen(
                 selectedCategory = selectedCategory,
                 hasUpdateAvailable = hasUpdateAvailable,
                 onSelectCategory = {
-                    selectedCategory = it
+                    if (selectedCategory != it) {
+                        selectedCategory = it
+                    }
                     scrollToTopOnly()
                 },
                 resolveTabFocusRequester = resolveCategoryTabRequester,
@@ -296,7 +319,7 @@ fun SettingsScreen(
                     scrollToTopOnly()
                     upFocusRequester.safeRequestFocus()
                 },
-                onDownToPanel = { scrollDownAndFocusPanel(panelFirstControlFocusRequester) },
+                onDownToPanel = { scrollDownAndFocusPanel(panelFirstControlFocusRequesters.getValue(selectedCategory)) },
                 navRailFocusRequester = navRailFocusRequester,
                 upFocusRequester = upFocusRequester,
                 modifier = Modifier
@@ -319,6 +342,13 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .widthIn(max = 920.dp)
             ) { category ->
+                val isCurrentCategory = category == selectedCategory
+                val categoryPanelFirstFocus = if (isCurrentCategory) {
+                    panelFirstControlFocusRequesters.getValue(category)
+                } else {
+                    remember { FocusRequester() }
+                }
+                val categoryTabRequester = resolveCategoryTabRequester(category)
                 when (category) {
                     SettingsCategory.PLAYBACK -> PlaybackSettingsPanel(
                         streamLang = streamLang,
@@ -328,8 +358,8 @@ fun SettingsScreen(
                         onSetPreferWebPlayer = onSetPreferWebPlayer,
                         onSelectBufferPreset = onSelectBufferPreset,
                         onRefreshCatalog = onRefreshCatalog,
-                        firstControlFocusRequester = panelFirstControlFocusRequester,
-                        upToCategoryFocusRequester = activeCategoryTabRequester,
+                        firstControlFocusRequester = categoryPanelFirstFocus,
+                        upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
                         navRailFocusRequester = navRailFocusRequester
                     )
@@ -341,8 +371,8 @@ fun SettingsScreen(
                         onRepoSlugChange = onRepoSlugChange,
                         onCheckUpdates = onCheckUpdates,
                         onTriggerUpdate = onTriggerUpdate,
-                        firstControlFocusRequester = panelFirstControlFocusRequester,
-                        upToCategoryFocusRequester = activeCategoryTabRequester,
+                        firstControlFocusRequester = categoryPanelFirstFocus,
+                        upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
                         navRailFocusRequester = navRailFocusRequester
                     )
@@ -351,8 +381,8 @@ fun SettingsScreen(
                         state = gitHubState,
                         onUpdateTmdbKey = onUpdateTmdbKey,
                         onResetTmdbKey = onResetTmdbKey,
-                        firstControlFocusRequester = panelFirstControlFocusRequester,
-                        upToCategoryFocusRequester = activeCategoryTabRequester,
+                        firstControlFocusRequester = categoryPanelFirstFocus,
+                        upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
                         navRailFocusRequester = navRailFocusRequester
                     )
@@ -369,8 +399,8 @@ fun SettingsScreen(
                         onRefreshCatalog = onRefreshCatalog,
                         onClearLocalCache = onClearLocalCache,
                         onClearContinueWatching = onClearContinueWatching,
-                        firstControlFocusRequester = panelFirstControlFocusRequester,
-                        upToCategoryFocusRequester = activeCategoryTabRequester,
+                        firstControlFocusRequester = categoryPanelFirstFocus,
+                        upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
                         navRailFocusRequester = navRailFocusRequester
                     )
@@ -521,6 +551,17 @@ private fun SettingsCategoryTabRow(
                 label = "settingsTabBorder"
             )
 
+            val prevTabRequester = if (index > 0) {
+                resolveTabFocusRequester(SettingsCategory.entries[index - 1])
+            } else {
+                navRailFocusRequester
+            }
+            val nextTabRequester = if (index + 1 < SettingsCategory.entries.size) {
+                resolveTabFocusRequester(SettingsCategory.entries[index + 1])
+            } else {
+                null
+            }
+
             Surface(
                 color = bgColor,
                 shape = RoundedCornerShape(12.dp),
@@ -533,7 +574,8 @@ private fun SettingsCategoryTabRow(
                             when (keyEvent.key) {
                                 Key.DirectionDown -> onDownToPanel()
                                 Key.DirectionUp -> onUpFromTab()
-                                Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
+                                Key.DirectionLeft -> prevTabRequester.safeRequestFocus()
+                                Key.DirectionRight -> nextTabRequester?.safeRequestFocus() ?: true
                                 else -> false
                             }
                         } else {
@@ -541,9 +583,8 @@ private fun SettingsCategoryTabRow(
                         }
                     }
                     .focusProperties {
-                        if (index == 0) {
-                            navRailFocusRequester.takeIfAttached()?.let { left = it }
-                        }
+                        prevTabRequester.takeIfAttached()?.let { left = it }
+                        nextTabRequester?.takeIfAttached()?.let { right = it }
                         upFocusRequester.takeIfAttached()?.let { up = it }
                         panelFirstControlFocusRequester.takeIfAttached()?.let { down = it }
                     }
@@ -553,6 +594,7 @@ private fun SettingsCategoryTabRow(
                         focusedScale = 1.04f,
                         onFocusChange = { focused ->
                             if (focused) {
+                                onSelectCategory(category)
                                 onTabFocused()
                             }
                         },

@@ -226,6 +226,15 @@ fun MediaDetailScreen(
             val firstSeasonFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstEpisodeFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val lastEpisodeFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            val episodeFocusRequesters = remember(currentItem.uniqueKey, episodesList) {
+                List(episodesList.size) { idx ->
+                    when {
+                        idx == 0 -> firstEpisodeFocus
+                        idx == episodesList.lastIndex -> lastEpisodeFocus
+                        else -> FocusRequester()
+                    }
+                }
+            }
             val firstSimilarFocus = remember(currentItem.uniqueKey) { FocusRequester() }
 
             // Tracciamento focus non-reattivo per evitare ricomposizioni dell'intera scheda
@@ -356,6 +365,25 @@ fun MediaDetailScreen(
                 }
             }
 
+            val handleDetailBack: () -> Unit = {
+                if (isTrailerOpen) {
+                    onCloseTrailer()
+                } else if (
+                    isTvDevice &&
+                    (!focusTracker.heroStageLockActive ||
+                        listState.firstVisibleItemIndex > 0 ||
+                        listState.firstVisibleItemScrollOffset > 0)
+                ) {
+                    returnToHeroStage()
+                } else {
+                    backAction()
+                }
+            }
+
+            BackHandler(enabled = isInteractive && isCurrentActive) {
+                handleDetailBack()
+            }
+
             val navigateBelowFold: (FocusRequester?, Boolean) -> Boolean = { targetRequester, isDown ->
                 if (targetRequester == null) {
                     false
@@ -435,6 +463,18 @@ fun MediaDetailScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .then(if (isTvDevice) Modifier else Modifier.navigationBarsPadding())
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (isInteractive &&
+                                isCurrentActive &&
+                                keyEvent.type == KeyEventType.KeyDown &&
+                                (keyEvent.key == Key.Back || keyEvent.key == Key.Escape)
+                            ) {
+                                handleDetailBack()
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         .testTag("media_detail_lazy_column"),
                     contentPadding = if (isTvDevice) PaddingValues(0.dp) else PaddingValues(bottom = 40.dp)
                 ) {
@@ -1317,6 +1357,9 @@ fun MediaDetailScreen(
 
                                 val seasons = details?.seasons.orEmpty()
                                 if (seasons.isNotEmpty()) {
+                                    val selectedSeasonIndex = seasons.indexOfFirst {
+                                        it.seasonNumber == currentState.selectedSeason
+                                    }.let { if (it >= 0) it else 0 }
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -1333,8 +1376,13 @@ fun MediaDetailScreen(
                                                 shape = RoundedCornerShape(8.dp),
                                                 border = BorderStroke(1.dp, seasonBorder),
                                                 modifier = Modifier
+                                                    .testTag("detail_season_chip_${season.seasonNumber}")
                                                     .then(
-                                                        if (sIndex == 0) Modifier.safeFocusRequester(firstSeasonFocus) else Modifier
+                                                        if (sIndex == selectedSeasonIndex) {
+                                                            Modifier.safeFocusRequester(firstSeasonFocus)
+                                                        } else {
+                                                            Modifier
+                                                        }
                                                     )
                                                     .onPreviewKeyEvent { keyEvent ->
                                                         if (keyEvent.type == KeyEventType.KeyDown) {
@@ -1405,6 +1453,9 @@ fun MediaDetailScreen(
                                     trailers.isNotEmpty() -> firstTrailerFocus
                                     else -> null
                                 }
+                                val currentEpRequester = episodeFocusRequesters.getOrNull(epIndex)
+                                val prevEpRequester = episodeFocusRequesters.getOrNull(epIndex - 1)
+                                val nextEpRequester = episodeFocusRequesters.getOrNull(epIndex + 1)
                                 EpisodeRowItem(
                                     episode = ep,
                                     savedEpProgress = currentState.episodeProgressMap[ep.episodeNumber],
@@ -1414,10 +1465,11 @@ fun MediaDetailScreen(
                                     },
                                     modifier = Modifier
                                         .then(
-                                            if (isFirstEp) Modifier.safeFocusRequester(firstEpisodeFocus) else Modifier
-                                        )
-                                        .then(
-                                            if (isLastEp) Modifier.safeFocusRequester(lastEpisodeFocus) else Modifier
+                                            if (currentEpRequester != null) {
+                                                Modifier.safeFocusRequester(currentEpRequester)
+                                            } else {
+                                                Modifier
+                                            }
                                         )
                                         .onPreviewKeyEvent { keyEvent ->
                                             if (keyEvent.type == KeyEventType.KeyDown) {
@@ -1428,6 +1480,12 @@ fun MediaDetailScreen(
                                                         } else {
                                                             returnToHeroStage()
                                                         }
+                                                    }
+                                                    !isFirstEp && keyEvent.key == Key.DirectionUp && prevEpRequester != null -> {
+                                                        navigateBelowFold(prevEpRequester, false)
+                                                    }
+                                                    !isLastEp && keyEvent.key == Key.DirectionDown && nextEpRequester != null -> {
+                                                        navigateBelowFold(nextEpRequester, true)
                                                     }
                                                     isLastEp && keyEvent.key == Key.DirectionDown && similarList.isNotEmpty() -> {
                                                         navigateBelowFold(firstSimilarFocus, true)
@@ -1441,9 +1499,13 @@ fun MediaDetailScreen(
                                         .focusProperties {
                                             if (isFirstEp) {
                                                 (upFromFirstEp ?: detailPlayFocusRequester).takeIfAttached()?.let { up = it }
+                                            } else {
+                                                prevEpRequester?.takeIfAttached()?.let { up = it }
                                             }
                                             if (isLastEp && similarList.isNotEmpty()) {
                                                 firstSimilarFocus.takeIfAttached()?.let { down = it }
+                                            } else if (!isLastEp) {
+                                                nextEpRequester?.takeIfAttached()?.let { down = it }
                                             }
                                         }
                                 )
@@ -1454,7 +1516,8 @@ fun MediaDetailScreen(
                     // Contenuti simili da TMDB
                     if (similarList.isNotEmpty()) {
                         val upToBeforeSimilar = when {
-                            currentItem.isSeries && !currentState.isLoadingEpisodes && episodesList.isNotEmpty() -> lastEpisodeFocus
+                            currentItem.isSeries && !currentState.isLoadingEpisodes && episodesList.isNotEmpty() ->
+                                episodeFocusRequesters.lastOrNull() ?: firstEpisodeFocus
                             currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
                             castList.isNotEmpty() -> firstCastFocus
                             trailers.isNotEmpty() -> firstTrailerFocus
