@@ -7,6 +7,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -38,6 +39,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -48,8 +50,10 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -98,6 +102,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -129,6 +134,8 @@ import com.example.ui.PlaybackSession
 import com.example.ui.StreamingPlatformUiState
 import com.example.ui.VixFlixViewModel
 import com.example.ui.components.ContinueWatchingSection
+import com.example.ui.components.DpadFocusObserverRegistry
+import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.MediaPosterCard
 import com.example.ui.components.MovieGenreChipBar
@@ -284,41 +291,13 @@ fun VixFlixAppScreen(
 
     LaunchedEffect(isSearchBarVisible) {
         if (isSearchBarVisible) {
+            for (frame in 1..3) {
+                androidx.compose.runtime.withFrameNanos { }
+                searchInputFocusRequester.safeRequestFocus()
+            }
             delay(80L)
             searchInputFocusRequester.safeRequestFocus()
         }
-    }
-
-    // Focus iniziale per cambio scheda / selezione da menu / caricamento completato / uscita dallo splash
-    LaunchedEffect(
-        isTvDevice,
-        isCatalogInteractive,
-        selectedTab,
-        tabScrollResetNonce,
-        catalogState is CatalogUiState.Success,
-        catalogState is CatalogUiState.Error
-    ) {
-        if (isTvDevice && isCatalogInteractive && !isSearchBarVisible) {
-            val target = tabContentEntryFocusRequester ?: return@LaunchedEffect
-            for (frame in 1..3) {
-                androidx.compose.runtime.withFrameNanos { }
-                target.safeRequestFocus()
-            }
-            delay(60L)
-            target.safeRequestFocus()
-        }
-    }
-
-    // Ripristino focus sull'ultima locandina alla chiusura di Dettagli / Player
-    LaunchedEffect(isCatalogInteractive, isTvDevice) {
-        if (wasOverlayActive && isCatalogInteractive && isTvDevice && !isSearchBarVisible) {
-            val target = lastFocusedContentRequester.takeIfAttached() ?: tabContentEntryFocusRequester
-            if (target != null) {
-                delay(120L)
-                target.safeRequestFocus()
-            }
-        }
-        wasOverlayActive = !isCatalogInteractive
     }
 
     // Popup automatico se GitHub Releases segnala una nuova versione (dopo lo splash)
@@ -360,9 +339,41 @@ fun VixFlixAppScreen(
     ) {
         val useTvNavigationRail = isTvDevice || maxWidth >= 600.dp || maxWidth > maxHeight
 
-        // Gestione tasto INDIETRO ottimale per Android TV / Google TV nel catalogo principale:
+        // Focus iniziale per cambio scheda / selezione da menu / caricamento completato / uscita dallo splash
+        LaunchedEffect(
+            useTvNavigationRail,
+            isCatalogInteractive,
+            selectedTab,
+            tabScrollResetNonce,
+            catalogState is CatalogUiState.Success,
+            catalogState is CatalogUiState.Error
+        ) {
+            if (useTvNavigationRail && isCatalogInteractive && !isSearchBarVisible) {
+                val target = tabContentEntryFocusRequester ?: return@LaunchedEffect
+                for (frame in 1..3) {
+                    androidx.compose.runtime.withFrameNanos { }
+                    target.safeRequestFocus()
+                }
+                delay(60L)
+                target.safeRequestFocus()
+            }
+        }
+
+        // Ripristino focus sull'ultima locandina alla chiusura di Dettagli / Player
+        LaunchedEffect(isCatalogInteractive, useTvNavigationRail) {
+            if (wasOverlayActive && isCatalogInteractive && useTvNavigationRail && !isSearchBarVisible) {
+                val target = lastFocusedContentRequester.takeIfAttached() ?: tabContentEntryFocusRequester
+                if (target != null) {
+                    delay(120L)
+                    target.safeRequestFocus()
+                }
+            }
+            wasOverlayActive = !isCatalogInteractive
+        }
+
+        // Gestione tasto INDIETRO ottimale per Android TV / Google TV / Layout Orizzontale nel catalogo principale:
         // 1. Chiude menu rapido o ricerca se aperti
-        // 2. Sposta prima il fuoco sulla barra laterale compatta se l'utente è sui contenuti
+        // 2. Sposta prima il fuoco sulla barra laterale compatta (sulla voce attiva) se l'utente è sui contenuti
         // 3. Su schede secondarie torna alla Home; sulla Home chiede doppia pressione entro 2.4s
         BackHandler(enabled = isCatalogInteractive) {
             when {
@@ -385,6 +396,8 @@ fun VixFlixAppScreen(
                     navRailSelectedFocusRequester.safeRequestFocus()
                 }
                 selectedTab != NavTab.HOME -> {
+                    lastFocusedContentRequester = null
+                    tabScrollResetNonce++
                     viewModel.selectTab(NavTab.HOME)
                 }
                 else -> {
@@ -557,6 +570,7 @@ fun VixFlixAppScreen(
                                 firstControlFocusRequester = sectionSettingsFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = activeTopBarFocusRequester,
+                                onRememberContentFocus = { requester -> if (isSectionActive) lastFocusedContentRequester = requester },
                                 tabScrollResetNonce = tabScrollResetNonce,
                                 contentPadding = PaddingValues(
                                     top = topBarOffset,
@@ -644,6 +658,15 @@ fun VixFlixAppScreen(
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
                                                     .safeFocusRequester(sectionRetryFocus)
+                                                    .onPreviewKeyEvent { keyEvent ->
+                                                        if (keyEvent.type == KeyEventType.KeyDown &&
+                                                            keyEvent.key == Key.DirectionLeft
+                                                        ) {
+                                                            navRailSelectedFocusRequester.safeRequestFocus()
+                                                        } else {
+                                                            false
+                                                        }
+                                                    }
                                                     .focusProperties {
                                                         navRailSelectedFocusRequester.takeIfAttached()?.let { left = it }
                                                         topBarBrandFocusRequester.takeIfAttached()?.let { up = it }
@@ -788,28 +811,49 @@ fun VixFlixAppScreen(
                         isSearchOpen = isSearchBarVisible,
                         isExpanded = isRailFocused,
                         selectedItemFocusRequester = navRailSelectedFocusRequester,
-                        rightToContentFocusRequester = if (isSearchBarVisible) searchInputFocusRequester else activeContentEntryFocusRequester,
+                        rightToContentFocusRequester = if (isSearchBarVisible) {
+                            (if (searchQuery.isNotBlank()) lastFocusedContentRequester.takeIfAttached() else null)
+                                ?: searchInputFocusRequester
+                        } else {
+                            activeContentEntryFocusRequester
+                        },
                         fallbackRightFocusRequester = activeTopBarFocusRequester,
                         onFocusChanged = { isRailFocused = it },
                         onToggleSearch = {
-                            isSearchBarVisible = !isSearchBarVisible
-                            if (!isSearchBarVisible) {
+                            val willOpen = !isSearchBarVisible
+                            isSearchBarVisible = willOpen
+                            lastFocusedContentRequester = null
+                            if (!willOpen) {
                                 viewModel.clearSearch()
+                                (tabContentEntryFocusRequester.takeIfAttached()
+                                    ?: heroPlayFocusRequester.takeIfAttached()
+                                    ?: firstRowFocusRequester.takeIfAttached()).safeRequestFocus()
                             }
                         },
                         onSelectTab = { tab ->
+                            val isSameTab = (selectedTab == tab && !isSearchBarVisible)
                             isSearchBarVisible = false
                             viewModel.clearSearch()
                             lastFocusedContentRequester = null
                             tabScrollResetNonce++
                             viewModel.selectTab(tab)
+                            if (isSameTab) {
+                                (tabContentEntryFocusRequester.takeIfAttached()
+                                    ?: heroPlayFocusRequester.takeIfAttached()
+                                    ?: firstRowFocusRequester.takeIfAttached()).safeRequestFocus()
+                            }
                         },
                         onMoveFocusRight = {
-                            (if (isSearchBarVisible) searchInputFocusRequester.safeRequestFocus() else false) ||
+                            if (isSearchBarVisible) {
+                                (if (searchQuery.isNotBlank()) lastFocusedContentRequester.safeRequestFocus() else false) ||
+                                    searchInputFocusRequester.safeRequestFocus() ||
+                                    searchFirstItemFocusRequester.safeRequestFocus()
+                            } else {
                                 lastFocusedContentRequester.safeRequestFocus() ||
-                                tabContentEntryFocusRequester.safeRequestFocus() ||
-                                heroPlayFocusRequester.safeRequestFocus() ||
-                                firstRowFocusRequester.safeRequestFocus()
+                                    tabContentEntryFocusRequester.safeRequestFocus() ||
+                                    heroPlayFocusRequester.safeRequestFocus() ||
+                                    firstRowFocusRequester.safeRequestFocus()
+                            }
                         },
                         modifier = Modifier
                             .align(Alignment.CenterStart)
@@ -1033,10 +1077,11 @@ private fun TvExpandableNavigationRail(
     modifier: Modifier = Modifier
 ) {
     val railWidth by animateDpAsState(
-        targetValue = if (isExpanded) 216.dp else 72.dp,
+        targetValue = if (isExpanded) 224.dp else 72.dp,
         animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
         label = "tvExpandableRailWidth"
     )
+    val railScrollState = rememberScrollState()
 
     Column(
         modifier = modifier
@@ -1044,7 +1089,8 @@ private fun TvExpandableNavigationRail(
             .fillMaxHeight()
             .background(if (isExpanded) NetflixCardSurface else NetflixDarkSurface)
             .statusBarsPadding()
-            .padding(top = 14.dp, bottom = 16.dp, start = 10.dp, end = 10.dp)
+            .navigationBarsPadding()
+            .padding(top = 12.dp, bottom = 12.dp, start = 10.dp, end = 10.dp)
             .onFocusChanged { onFocusChanged(it.hasFocus) }
             .focusGroup()
             .focusProperties {
@@ -1056,7 +1102,7 @@ private fun TvExpandableNavigationRail(
             }
             .testTag("tv_navigation_rail")
     ) {
-        // Mini badge brand in cima alla barra laterale: al click quando il menu non è selezionato porta subito sull'icona Home
+        // Mini badge brand in cima alla barra laterale: al click quando il menu non è selezionato porta subito sulla voce attiva
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
@@ -1104,11 +1150,14 @@ private fun TvExpandableNavigationRail(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(railScrollState)
         ) {
             val searchDedicatedRequester = remember { FocusRequester() }
             val tabDedicatedRequesters = remember(navItems) {
@@ -1116,10 +1165,10 @@ private fun TvExpandableNavigationRail(
             }
             val resolveRailRequester: (Int) -> FocusRequester = { railIndex ->
                 if (railIndex == 0) {
-                    searchDedicatedRequester
+                    if (isSearchOpen) selectedItemFocusRequester else searchDedicatedRequester
                 } else {
                     val tab = navItems[railIndex - 1].first
-                    if (tab == NavTab.HOME) {
+                    if (!isSearchOpen && tab == selectedTab) {
                         selectedItemFocusRequester
                     } else {
                         tabDedicatedRequesters.getValue(tab)
@@ -1130,6 +1179,21 @@ private fun TvExpandableNavigationRail(
 
             // Voce Cerca integrata nella barra laterale (solo visualizzazione orizzontale / TV)
             var searchFocused by remember { mutableStateOf(false) }
+            var searchPressed by remember { mutableStateOf(false) }
+            val searchScale by animateFloatAsState(
+                targetValue = when {
+                    searchPressed -> 0.97f
+                    searchFocused -> 1.03f
+                    else -> 1f
+                },
+                animationSpec = tween(durationMillis = 100),
+                label = "searchRailScale"
+            )
+            LaunchedEffect(searchFocused) {
+                if (searchFocused && railScrollState.value > 0) {
+                    runCatching { railScrollState.animateScrollTo(0) }
+                }
+            }
             val searchBgColor = when {
                 searchFocused -> NetflixRed
                 isSearchOpen -> NetflixElevatedSurface
@@ -1148,11 +1212,17 @@ private fun TvExpandableNavigationRail(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
+                    .graphicsLayer {
+                        scaleX = searchScale
+                        scaleY = searchScale
+                    }
                     .clip(RoundedCornerShape(12.dp))
                     .background(searchBgColor)
                     .then(
                         if (searchFocused) {
                             Modifier.border(2.dp, NetflixWhite, RoundedCornerShape(12.dp))
+                        } else if (isSearchOpen) {
+                            Modifier.border(1.dp, NetflixRed.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
                         } else {
                             Modifier
                         }
@@ -1165,31 +1235,61 @@ private fun TvExpandableNavigationRail(
                         firstTabRailRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown) {
-                            when (keyEvent.key) {
-                                Key.DirectionRight -> onMoveFocusRight()
-                                Key.DirectionDown -> firstTabRailRequester.safeRequestFocus()
-                                Key.DirectionUp, Key.DirectionLeft -> true
-                                else -> false
+                        val isCenterKey = keyEvent.key == Key.DirectionCenter ||
+                            keyEvent.key == Key.Enter ||
+                            keyEvent.key == Key.NumPadEnter
+                        when (keyEvent.type) {
+                            KeyEventType.KeyDown -> {
+                                when {
+                                    isCenterKey -> {
+                                        searchPressed = true
+                                        true
+                                    }
+                                    keyEvent.key == Key.DirectionRight || keyEvent.key == Key.Escape -> onMoveFocusRight()
+                                    keyEvent.key == Key.DirectionDown -> firstTabRailRequester.safeRequestFocus()
+                                    keyEvent.key == Key.DirectionUp || keyEvent.key == Key.DirectionLeft -> true
+                                    else -> false
+                                }
                             }
-                        } else if (keyEvent.type == KeyEventType.KeyUp &&
-                            (keyEvent.key == Key.DirectionCenter ||
-                                keyEvent.key == Key.Enter ||
-                                keyEvent.key == Key.NumPadEnter)
-                        ) {
-                            onToggleSearch()
-                            true
-                        } else {
-                            false
+                            KeyEventType.KeyUp -> {
+                                if (isCenterKey) {
+                                    searchPressed = false
+                                    onToggleSearch()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            else -> false
                         }
                     }
-                    .onFocusChanged { searchFocused = it.isFocused }
+                    .onFocusChanged { state ->
+                        if (!state.isFocused) searchPressed = false
+                        if (searchFocused != state.isFocused) {
+                            searchFocused = state.isFocused
+                            DpadFocusObserverRegistry.onNodeFocusChanged(
+                                scope = DpadFocusScope.MAIN_NAVIGATION,
+                                tag = "search_toggle_button",
+                                isFocused = state.isFocused
+                            )
+                        }
+                    }
                     .focusable()
                     .clickable { onToggleSearch() }
                     .padding(horizontal = 12.dp)
                     .testTag("search_toggle_button"),
                 contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
             ) {
+                if (isSearchOpen && !searchFocused) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .width(3.5.dp)
+                            .height(22.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(NetflixRed)
+                    )
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
@@ -1230,6 +1330,16 @@ private fun TvExpandableNavigationRail(
                 val railIdx = navIdx + 1
                 val isSelected = selectedTab == tab && !isSearchOpen
                 var itemFocused by remember { mutableStateOf(false) }
+                var itemPressed by remember { mutableStateOf(false) }
+                val itemScale by animateFloatAsState(
+                    targetValue = when {
+                        itemPressed -> 0.97f
+                        itemFocused -> 1.03f
+                        else -> 1f
+                    },
+                    animationSpec = tween(durationMillis = 100),
+                    label = "railTabScale_${tab.name}"
+                )
                 val itemRailRequester = resolveRailRequester(railIdx)
                 val upRailRequester = resolveRailRequester(railIdx - 1)
                 val downRailRequester = if (railIdx + 1 < totalRailCount) resolveRailRequester(railIdx + 1) else null
@@ -1253,11 +1363,17 @@ private fun TvExpandableNavigationRail(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
+                        .graphicsLayer {
+                            scaleX = itemScale
+                            scaleY = itemScale
+                        }
                         .clip(RoundedCornerShape(12.dp))
                         .background(bgColor)
                         .then(
                             if (itemFocused) {
                                 Modifier.border(2.dp, NetflixWhite, RoundedCornerShape(12.dp))
+                            } else if (isSelected) {
+                                Modifier.border(1.dp, NetflixRed.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
                             } else {
                                 Modifier
                             }
@@ -1271,32 +1387,62 @@ private fun TvExpandableNavigationRail(
                             downRailRequester.takeIfAttached()?.let { down = it }
                         }
                         .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionRight -> onMoveFocusRight()
-                                    Key.DirectionUp -> upRailRequester.safeRequestFocus()
-                                    Key.DirectionDown -> downRailRequester?.safeRequestFocus() ?: true
-                                    Key.DirectionLeft -> true
-                                    else -> false
+                            val isCenterKey = keyEvent.key == Key.DirectionCenter ||
+                                keyEvent.key == Key.Enter ||
+                                keyEvent.key == Key.NumPadEnter
+                            when (keyEvent.type) {
+                                KeyEventType.KeyDown -> {
+                                    when {
+                                        isCenterKey -> {
+                                            itemPressed = true
+                                            true
+                                        }
+                                        keyEvent.key == Key.DirectionRight || keyEvent.key == Key.Escape -> onMoveFocusRight()
+                                        keyEvent.key == Key.DirectionUp -> upRailRequester.safeRequestFocus()
+                                        keyEvent.key == Key.DirectionDown -> downRailRequester?.safeRequestFocus() ?: true
+                                        keyEvent.key == Key.DirectionLeft -> true
+                                        else -> false
+                                    }
                                 }
-                            } else if (keyEvent.type == KeyEventType.KeyUp &&
-                                (keyEvent.key == Key.DirectionCenter ||
-                                    keyEvent.key == Key.Enter ||
-                                    keyEvent.key == Key.NumPadEnter)
-                            ) {
-                                activateAndMoveRight()
-                                true
-                            } else {
-                                false
+                                KeyEventType.KeyUp -> {
+                                    if (isCenterKey) {
+                                        itemPressed = false
+                                        activateAndMoveRight()
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                else -> false
                             }
                         }
-                        .onFocusChanged { itemFocused = it.isFocused }
+                        .onFocusChanged { state ->
+                            if (!state.isFocused) itemPressed = false
+                            if (itemFocused != state.isFocused) {
+                                itemFocused = state.isFocused
+                                DpadFocusObserverRegistry.onNodeFocusChanged(
+                                    scope = DpadFocusScope.MAIN_NAVIGATION,
+                                    tag = "tv_rail_${tab.name.lowercase()}",
+                                    isFocused = state.isFocused
+                                )
+                            }
+                        }
                         .focusable()
                         .clickable { activateAndMoveRight() }
                         .padding(horizontal = 12.dp)
                         .testTag("tv_rail_${tab.name.lowercase()}"),
                     contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
                 ) {
+                    if (isSelected && !itemFocused) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .width(3.5.dp)
+                                .height(22.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(NetflixRed)
+                        )
+                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
@@ -2073,6 +2219,7 @@ private fun CatalogFeedContent(
                         onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                         onDownKey = { if (next != null) navigateToTarget(next) else false },
                         navRailFocusRequester = navRailFocusRequester,
+                        onItemFocused = onRememberContentFocus,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
@@ -2103,6 +2250,7 @@ private fun CatalogFeedContent(
                         firstRowFocusRequester = next?.requester,
                         onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                         onDownKey = { if (next != null) navigateToTarget(next) else false },
+                        onItemFocused = onRememberContentFocus,
                         isTvLayout = isTvLayout
                     )
                 }
@@ -2213,10 +2361,12 @@ private fun CatalogFeedContent(
                                                 modifier = Modifier
                                                     .safeFocusRequester(firstRowFocusRequester)
                                                     .onPreviewKeyEvent { keyEvent ->
-                                                        if (keyEvent.type == KeyEventType.KeyDown &&
-                                                            keyEvent.key == Key.DirectionUp
-                                                        ) {
-                                                            if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
+                                                                Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                                                else -> false
+                                                            }
                                                         } else {
                                                             false
                                                         }
@@ -2641,10 +2791,12 @@ private fun CatalogFeedContent(
                                                 modifier = Modifier
                                                     .safeFocusRequester(firstRowFocusRequester)
                                                     .onPreviewKeyEvent { keyEvent ->
-                                                        if (keyEvent.type == KeyEventType.KeyDown &&
-                                                            keyEvent.key == Key.DirectionUp
-                                                        ) {
-                                                            if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
+                                                                Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                                                else -> false
+                                                            }
                                                         } else {
                                                             false
                                                         }
@@ -3256,10 +3408,12 @@ private fun MyListScreen(
                             modifier = Modifier
                                 .safeFocusRequester(firstRowFocusRequester)
                                 .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown &&
-                                        keyEvent.key == Key.DirectionUp
-                                    ) {
-                                        handleTopBoundaryUp()
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp -> handleTopBoundaryUp()
+                                            Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                            else -> false
+                                        }
                                     } else {
                                         false
                                     }

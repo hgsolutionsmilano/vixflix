@@ -1330,6 +1330,121 @@ class TvNavigationAndViewsCrashTest {
         composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true).assertIsFocused()
     }
 
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `horizontal navigation rail dpad enters on active tab navigates up down and restores exact content focus on right`() {
+        launchTvApp()
+
+        // 1. All'avvio su Home il focus è su hero_play_button (al centro); Sinistra va su hero_watchlist_button e ancora Sinistra apre il menu laterale su tv_rail_home
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hero_watchlist_button", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("hero_watchlist_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_home", useUnmergedTree = true).assertIsFocused()
+
+        // 2. Su nel menu laterale va su search_toggle_button e si blocca in cima
+        composeRule.onNodeWithTag("tv_rail_home", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("search_toggle_button", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("search_toggle_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("search_toggle_button", useUnmergedTree = true).assertIsFocused()
+
+        // 3. Destra dal menu laterale collassa la barra e riporta il focus sull'ultimo bottone Hero focalizzato (hero_watchlist_button)
+        composeRule.onNodeWithTag("search_toggle_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hero_watchlist_button", useUnmergedTree = true).assertIsFocused()
+
+        // 4. Selezioniamo Serie TV dal menu laterale con Enter: il focus passa subito al contenuto di Serie TV
+        composeRule.onNodeWithTag("hero_watchlist_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_home", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("tv_rail_home", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_series", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("tv_rail_series", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Enter) }
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("poster_card_tv_500", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        // 5. In Serie TV, scendiamo sulla prima card della riga (poster_card_tv_500) e premiamo Sinistra:
+        // deve atterrare su tv_rail_series (NON su tv_rail_home!)
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_series", useUnmergedTree = true).assertIsFocused()
+
+        // 6. Scendiamo su Impostazioni nel menu laterale e attiviamola con Enter
+        repeat(4) {
+            val focusedRailTag = listOf(
+                "tv_rail_series",
+                "tv_rail_movies",
+                "tv_rail_new_popular",
+                "tv_rail_my_list"
+            )[it]
+            composeRule.onNodeWithTag(focusedRailTag, useUnmergedTree = true)
+                .performKeyInput { pressKey(Key.DirectionDown) }
+            composeRule.waitForIdle()
+        }
+        composeRule.onNodeWithTag("tv_rail_settings", useUnmergedTree = true).assertIsFocused()
+        // Giù sull'ultimo elemento resta bloccato su tv_rail_settings
+        composeRule.onNodeWithTag("tv_rail_settings", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_settings", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("tv_rail_settings", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Enter) }
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("settings_tab_playback", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true).assertIsFocused()
+
+        // 7. In Impostazioni ci spostiamo su Aggiornamenti (settings_tab_updates), poi torniamo a Sinistra fino al menu laterale:
+        // deve atterrare su tv_rail_settings, e premendo Destra deve tornare esattamente su settings_tab_updates
+        composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true).assertIsFocused()
+
+        // Scendiamo sul controllo nel pannello Aggiornamenti e premiamo Sinistra per aprire direttamente il menu laterale
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_settings", useUnmergedTree = true).assertIsFocused()
+
+        // Premendo Destra dal menu laterale torna esattamente a settings_auto_update_switch
+        composeRule.onNodeWithTag("tv_rail_settings", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true).assertIsFocused()
+    }
+
     private class FullMockTmdbServer {
         private var socket: ServerSocket? = null
         private val executor = Executors.newCachedThreadPool()

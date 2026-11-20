@@ -570,6 +570,7 @@ fun NetflixHeroBanner(
     firstRowFocusRequester: FocusRequester? = null,
     onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
+    onItemFocused: ((FocusRequester) -> Unit)? = null,
     isTvLayout: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -754,6 +755,9 @@ fun NetflixHeroBanner(
                         .onFocusChanged {
                             if (watchFocused != it.isFocused) {
                                 watchFocused = it.isFocused
+                                if (it.isFocused) {
+                                    onItemFocused?.invoke(watchFocusRequester)
+                                }
                                 DpadFocusObserverRegistry.onNodeFocusChanged(
                                     scope = DpadFocusScope.MAIN_NAVIGATION,
                                     tag = "hero_watchlist_button",
@@ -797,6 +801,9 @@ fun NetflixHeroBanner(
                         .onFocusChanged {
                             if (playFocused != it.isFocused) {
                                 playFocused = it.isFocused
+                                if (it.isFocused) {
+                                    onItemFocused?.invoke(resolvedPlayFocusRequester)
+                                }
                                 DpadFocusObserverRegistry.onNodeFocusChanged(
                                     scope = DpadFocusScope.MAIN_NAVIGATION,
                                     tag = "hero_play_button",
@@ -847,6 +854,9 @@ fun NetflixHeroBanner(
                         .onFocusChanged {
                             if (infoFocused != it.isFocused) {
                                 infoFocused = it.isFocused
+                                if (it.isFocused) {
+                                    onItemFocused?.invoke(infoFocusRequester)
+                                }
                                 DpadFocusObserverRegistry.onNodeFocusChanged(
                                     scope = DpadFocusScope.MAIN_NAVIGATION,
                                     tag = "hero_info_button",
@@ -1632,10 +1642,15 @@ fun MovieGenreChipBar(
     onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
+    onItemFocused: ((FocusRequester) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val safeGenres = remember(genres) { genres.distinctBy { it.id } }
     val listState = rememberLazyListState()
+    val allChipDedicatedRequester = remember { FocusRequester() }
+    val genreDedicatedRequesters = remember(safeGenres) {
+        safeGenres.associate { it.id to FocusRequester() }
+    }
     val targetIndex = remember(safeGenres, selectedGenre) {
         if (selectedGenre == null) {
             0
@@ -1687,18 +1702,18 @@ fun MovieGenreChipBar(
     ) {
         item(key = "genre_all", contentType = "genre_chip") {
             val isSelected = selectedGenre == null
+            val chipRequester = if (focusTargetChipIdx == 0 && firstChipFocusRequester != null) {
+                firstChipFocusRequester
+            } else {
+                allChipDedicatedRequester
+            }
             GenreFilterChipItem(
                 label = "Tutti",
                 isSelected = isSelected,
+                onFocused = { onItemFocused?.invoke(chipRequester) },
                 onClick = { onSelectGenre(null) },
                 modifier = Modifier
-                    .then(
-                        if (focusTargetChipIdx == 0) {
-                            Modifier.safeFocusRequester(firstChipFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
+                    .safeFocusRequester(chipRequester)
                     .onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
                             navRailFocusRequester.safeRequestFocus()
@@ -1722,18 +1737,18 @@ fun MovieGenreChipBar(
         ) { idx, genre ->
             val isSelected = selectedGenre?.id == genre.id
             val chipLazyIndex = idx + 1
+            val chipRequester = if (focusTargetChipIdx == chipLazyIndex && firstChipFocusRequester != null) {
+                firstChipFocusRequester
+            } else {
+                genreDedicatedRequesters[genre.id] ?: remember { FocusRequester() }
+            }
             GenreFilterChipItem(
                 label = genre.name,
                 isSelected = isSelected,
+                onFocused = { onItemFocused?.invoke(chipRequester) },
                 onClick = { onSelectGenre(genre) },
                 modifier = Modifier
-                    .then(
-                        if (focusTargetChipIdx == chipLazyIndex) {
-                            Modifier.safeFocusRequester(firstChipFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
+                    .safeFocusRequester(chipRequester)
                     .onPreviewKeyEvent(handleGenreVerticalKey)
                     .focusProperties {
                         upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1749,6 +1764,7 @@ fun MovieGenreChipBar(
 private fun GenreFilterChipItem(
     label: String,
     isSelected: Boolean,
+    onFocused: () -> Unit = {},
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1772,7 +1788,10 @@ private fun GenreFilterChipItem(
                 unfocusedBorderColor = if (isSelected) NetflixRed else NetflixElevatedSurface,
                 borderWidth = if (isFocused) 2.dp else 1.dp,
                 focusTag = "genre_chip_$label",
-                onFocusChange = { isFocused = it },
+                onFocusChange = { focused ->
+                    isFocused = focused
+                    if (focused) onFocused()
+                },
                 onClick = onClick
             )
     ) {

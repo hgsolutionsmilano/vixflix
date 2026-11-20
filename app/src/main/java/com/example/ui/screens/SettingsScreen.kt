@@ -171,6 +171,7 @@ fun SettingsScreen(
     firstControlFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     tabScrollResetNonce: Int = 0,
     contentPadding: PaddingValues = PaddingValues(0.dp)
 ) {
@@ -314,7 +315,10 @@ fun SettingsScreen(
                 },
                 resolveTabFocusRequester = resolveCategoryTabRequester,
                 panelFirstControlFocusRequester = panelFirstControlFocusRequester,
-                onTabFocused = scrollToTopOnly,
+                onTabFocused = { requester ->
+                    onRememberContentFocus(requester)
+                    scrollToTopOnly()
+                },
                 onUpFromTab = {
                     scrollToTopOnly()
                     upFocusRequester.safeRequestFocus()
@@ -361,6 +365,7 @@ fun SettingsScreen(
                         firstControlFocusRequester = categoryPanelFirstFocus,
                         upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                        onRememberContentFocus = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
 
@@ -374,6 +379,7 @@ fun SettingsScreen(
                         firstControlFocusRequester = categoryPanelFirstFocus,
                         upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                        onRememberContentFocus = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
 
@@ -384,6 +390,7 @@ fun SettingsScreen(
                         firstControlFocusRequester = categoryPanelFirstFocus,
                         upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                        onRememberContentFocus = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
 
@@ -402,6 +409,7 @@ fun SettingsScreen(
                         firstControlFocusRequester = categoryPanelFirstFocus,
                         upToCategoryFocusRequester = categoryTabRequester,
                         onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                        onRememberContentFocus = onRememberContentFocus,
                         navRailFocusRequester = navRailFocusRequester
                     )
                 }
@@ -523,7 +531,7 @@ private fun SettingsCategoryTabRow(
     onSelectCategory: (SettingsCategory) -> Unit,
     resolveTabFocusRequester: (SettingsCategory) -> FocusRequester,
     panelFirstControlFocusRequester: FocusRequester?,
-    onTabFocused: () -> Unit,
+    onTabFocused: (FocusRequester) -> Unit,
     onUpFromTab: () -> Boolean,
     onDownToPanel: () -> Boolean,
     navRailFocusRequester: FocusRequester?,
@@ -595,7 +603,7 @@ private fun SettingsCategoryTabRow(
                         onFocusChange = { focused ->
                             if (focused) {
                                 onSelectCategory(category)
-                                onTabFocused()
+                                onTabFocused(tabFocusRequester)
                             }
                         },
                         onClick = { onSelectCategory(category) }
@@ -645,9 +653,11 @@ private fun PlaybackSettingsPanel(
     firstControlFocusRequester: FocusRequester?,
     upToCategoryFocusRequester: FocusRequester?,
     onUpToCategoryBar: () -> Boolean,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     navRailFocusRequester: FocusRequester?
 ) {
     var catalogRefreshed by remember { mutableStateOf(false) }
+    val refreshCatalogFocusRequester = remember { FocusRequester() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SettingsSectionCard(
@@ -667,6 +677,7 @@ private fun PlaybackSettingsPanel(
                 firstOptionFocusRequester = firstControlFocusRequester,
                 upFocusRequester = upToCategoryFocusRequester,
                 onUpKey = onUpToCategoryBar,
+                onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 tagPrefix = "settings_lang"
             )
@@ -686,6 +697,7 @@ private fun PlaybackSettingsPanel(
                 ),
                 selectedKey = if (preferWebPlayer) "web" else "native",
                 onSelect = { key -> onSetPreferWebPlayer(key == "web") },
+                onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 tagPrefix = "settings_player"
             )
@@ -701,6 +713,7 @@ private fun PlaybackSettingsPanel(
             BufferPresetGrid(
                 selectedPreset = bufferPreset,
                 onSelectPreset = onSelectBufferPreset,
+                onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester
             )
         }
@@ -723,10 +736,24 @@ private fun PlaybackSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
+                    .safeFocusRequester(refreshCatalogFocusRequester)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                            navRailFocusRequester.safeRequestFocus()
+                        } else {
+                            false
+                        }
+                    }
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
-                    .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                    .tvFocusableControl(
+                        shape = RoundedCornerShape(10.dp),
+                        focusedScale = 1.02f,
+                        onFocusChange = { focused ->
+                            if (focused) onRememberContentFocus(refreshCatalogFocusRequester)
+                        }
+                    )
                     .testTag("settings_refresh_catalog_button")
             ) {
                 Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
@@ -751,11 +778,13 @@ private fun UpdatesSettingsPanel(
     firstControlFocusRequester: FocusRequester?,
     upToCategoryFocusRequester: FocusRequester?,
     onUpToCategoryBar: () -> Boolean,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     navRailFocusRequester: FocusRequester?
 ) {
     var inputRepo by remember(state.repoSlug) { mutableStateOf(state.repoSlug) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val checkUpdatesFocusRequester = remember { FocusRequester() }
+    val downloadUpdateFocusRequester = remember { FocusRequester() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SettingsSectionCard(
@@ -773,6 +802,7 @@ private fun UpdatesSettingsPanel(
                 focusRequester = firstControlFocusRequester,
                 upFocusRequester = upToCategoryFocusRequester,
                 onUpKey = onUpToCategoryBar,
+                onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 testTagName = "settings_auto_update_switch"
             )
@@ -816,9 +846,15 @@ private fun UpdatesSettingsPanel(
                         checkUpdatesFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-                            keyboardController?.hide()
-                            checkUpdatesFocusRequester.safeRequestFocus()
+                        if (event.type == KeyEventType.KeyDown) {
+                            when (event.key) {
+                                Key.DirectionDown -> {
+                                    keyboardController?.hide()
+                                    checkUpdatesFocusRequester.safeRequestFocus()
+                                }
+                                Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                else -> false
+                            }
                         } else {
                             false
                         }
@@ -840,10 +876,23 @@ private fun UpdatesSettingsPanel(
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
                     .safeFocusRequester(checkUpdatesFocusRequester)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                            navRailFocusRequester.safeRequestFocus()
+                        } else {
+                            false
+                        }
+                    }
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
-                    .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                    .tvFocusableControl(
+                        shape = RoundedCornerShape(10.dp),
+                        focusedScale = 1.02f,
+                        onFocusChange = { focused ->
+                            if (focused) onRememberContentFocus(checkUpdatesFocusRequester)
+                        }
+                    )
                     .testTag("check_github_updates_button")
             ) {
                 if (state.isChecking) {
@@ -982,10 +1031,24 @@ private fun UpdatesSettingsPanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 48.dp)
+                            .safeFocusRequester(downloadUpdateFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                    navRailFocusRequester.safeRequestFocus()
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
-                            .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.02f,
+                                onFocusChange = { focused ->
+                                    if (focused) onRememberContentFocus(downloadUpdateFocusRequester)
+                                }
+                            )
                             .testTag("download_update_apk_button")
                     ) {
                         Icon(imageVector = Icons.Default.CloudDownload, contentDescription = null)
@@ -1015,6 +1078,7 @@ private fun ApiSourcesSettingsPanel(
     firstControlFocusRequester: FocusRequester?,
     upToCategoryFocusRequester: FocusRequester?,
     onUpToCategoryBar: () -> Boolean,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     navRailFocusRequester: FocusRequester?
 ) {
     var inputTmdbKey by remember(state.tmdbApiKey) { mutableStateOf(state.tmdbApiKey) }
@@ -1100,6 +1164,7 @@ private fun ApiSourcesSettingsPanel(
                                     keyboardController?.hide()
                                     onUpToCategoryBar()
                                 }
+                                Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
                                 else -> false
                             }
                         } else {
@@ -1128,10 +1193,23 @@ private fun ApiSourcesSettingsPanel(
                         .weight(1f)
                         .heightIn(min = 48.dp)
                         .safeFocusRequester(saveKeyFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                navRailFocusRequester.safeRequestFocus()
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                         }
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.02f,
+                            onFocusChange = { focused ->
+                                if (focused) onRememberContentFocus(saveKeyFocusRequester)
+                            }
+                        )
                         .testTag("save_tmdb_key_button")
                 ) {
                     Text("Applica Chiave", style = MaterialTheme.typography.labelLarge)
@@ -1191,6 +1269,13 @@ private fun ApiSourcesSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                            navRailFocusRequester.safeRequestFocus()
+                        } else {
+                            false
+                        }
+                    }
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
@@ -1259,6 +1344,7 @@ private fun SystemSettingsPanel(
     firstControlFocusRequester: FocusRequester?,
     upToCategoryFocusRequester: FocusRequester?,
     onUpToCategoryBar: () -> Boolean,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     navRailFocusRequester: FocusRequester?
 ) {
     var clearedFeedback by remember { mutableStateOf(false) }
@@ -1326,6 +1412,7 @@ private fun SystemSettingsPanel(
                 focusRequester = firstControlFocusRequester,
                 upFocusRequester = upToCategoryFocusRequester,
                 onUpKey = onUpToCategoryBar,
+                onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 testTagName = "settings_prefetch_switch"
             )
@@ -1338,6 +1425,8 @@ private fun SystemSettingsPanel(
                     .fillMaxWidth()
                     .focusGroup()
             ) {
+                val refreshCacheFocusRequester = remember { FocusRequester() }
+                val clearCacheFocusRequester = remember { FocusRequester() }
                 OutlinedButton(
                     onClick = onRefreshCatalog,
                     enabled = !isBackgroundCatalogRefreshing,
@@ -1347,10 +1436,24 @@ private fun SystemSettingsPanel(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
+                        .safeFocusRequester(refreshCacheFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                navRailFocusRequester.safeRequestFocus()
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                         }
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.02f,
+                            onFocusChange = { focused ->
+                                if (focused) onRememberContentFocus(refreshCacheFocusRequester)
+                            }
+                        )
                         .testTag("settings_refresh_catalog_cache_button")
                 ) {
                     Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1369,7 +1472,14 @@ private fun SystemSettingsPanel(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                        .safeFocusRequester(clearCacheFocusRequester)
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.02f,
+                            onFocusChange = { focused ->
+                                if (focused) onRememberContentFocus(clearCacheFocusRequester)
+                            }
+                        )
                         .testTag("settings_clear_cache_button")
                 ) {
                     Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1409,6 +1519,7 @@ private fun SystemSettingsPanel(
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            val clearHistoryFocusRequester = remember { FocusRequester() }
             OutlinedButton(
                 onClick = {
                     onClearContinueWatching()
@@ -1423,10 +1534,24 @@ private fun SystemSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
+                    .safeFocusRequester(clearHistoryFocusRequester)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                            navRailFocusRequester.safeRequestFocus()
+                        } else {
+                            false
+                        }
+                    }
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
-                    .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                    .tvFocusableControl(
+                        shape = RoundedCornerShape(10.dp),
+                        focusedScale = 1.02f,
+                        onFocusChange = { focused ->
+                            if (focused) onRememberContentFocus(clearHistoryFocusRequester)
+                        }
+                    )
                     .testTag("settings_clear_history_button")
             ) {
                 Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null)
@@ -1551,9 +1676,13 @@ private fun SettingsChoiceRow(
     firstOptionFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     onUpKey: (() -> Boolean)? = null,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     navRailFocusRequester: FocusRequester?,
     tagPrefix: String
 ) {
+    val optionDedicatedRequesters = remember(options) {
+        options.associate { (key, _) -> key to FocusRequester() }
+    }
     Row(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier
@@ -1562,6 +1691,11 @@ private fun SettingsChoiceRow(
     ) {
         options.forEachIndexed { index, (key, label) ->
             val selected = key == selectedKey
+            val optionRequester = if (index == 0 && firstOptionFocusRequester != null) {
+                firstOptionFocusRequester
+            } else {
+                optionDedicatedRequesters[key] ?: remember { FocusRequester() }
+            }
             val containerColor by animateColorAsState(
                 targetValue = if (selected) NetflixRed else NetflixDarkSurface,
                 animationSpec = tween(180),
@@ -1577,13 +1711,7 @@ private fun SettingsChoiceRow(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = 48.dp)
-                    .then(
-                        if (index == 0 && firstOptionFocusRequester != null) {
-                            Modifier.safeFocusRequester(firstOptionFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
+                    .safeFocusRequester(optionRequester)
                     .onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown) {
                             when (keyEvent.key) {
@@ -1605,6 +1733,9 @@ private fun SettingsChoiceRow(
                         shape = RoundedCornerShape(10.dp),
                         focusedBorderColor = NetflixWhite,
                         focusedScale = 1.03f,
+                        onFocusChange = { focused ->
+                            if (focused) onRememberContentFocus(optionRequester)
+                        },
                         onClick = { onSelect(key) }
                     )
                     .testTag("${tagPrefix}_$key")
@@ -1638,9 +1769,11 @@ private fun SettingsSwitchRow(
     focusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
     onUpKey: (() -> Boolean)? = null,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     navRailFocusRequester: FocusRequester?,
     testTagName: String
 ) {
+    val resolvedFocusRequester = focusRequester ?: remember { FocusRequester() }
     Surface(
         color = NetflixDarkSurface,
         shape = RoundedCornerShape(10.dp),
@@ -1648,7 +1781,7 @@ private fun SettingsSwitchRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .safeFocusRequester(focusRequester)
+            .safeFocusRequester(resolvedFocusRequester)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
@@ -1668,6 +1801,9 @@ private fun SettingsSwitchRow(
                 shape = RoundedCornerShape(10.dp),
                 focusedBorderColor = NetflixWhite,
                 focusedScale = 1.01f,
+                onFocusChange = { focused ->
+                    if (focused) onRememberContentFocus(resolvedFocusRequester)
+                },
                 onClick = { onCheckedChange(!checked) }
             )
             .testTag(testTagName)
@@ -1770,9 +1906,13 @@ private fun SettingsInfoLine(
 private fun BufferPresetGrid(
     selectedPreset: StreamingBufferPreset,
     onSelectPreset: (StreamingBufferPreset) -> Unit,
+    onRememberContentFocus: (FocusRequester) -> Unit = {},
     navRailFocusRequester: FocusRequester?
 ) {
     val rows = remember { StreamingBufferPreset.entries.chunked(2) }
+    val presetRequesters = remember {
+        StreamingBufferPreset.entries.associateWith { FocusRequester() }
+    }
     Column(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier
@@ -1786,6 +1926,7 @@ private fun BufferPresetGrid(
             ) {
                 rowPresets.forEachIndexed { colIndex, preset ->
                     val isSelected = preset == selectedPreset
+                    val presetRequester = presetRequesters.getValue(preset)
                     val bgColor by animateColorAsState(
                         targetValue = if (isSelected) NetflixRed.copy(alpha = 0.22f) else NetflixDarkSurface,
                         animationSpec = tween(180),
@@ -1804,6 +1945,7 @@ private fun BufferPresetGrid(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 66.dp)
+                            .safeFocusRequester(presetRequester)
                             .onPreviewKeyEvent { keyEvent ->
                                 if (keyEvent.type == KeyEventType.KeyDown &&
                                     keyEvent.key == Key.DirectionLeft &&
@@ -1823,6 +1965,9 @@ private fun BufferPresetGrid(
                                 shape = RoundedCornerShape(12.dp),
                                 focusedBorderColor = NetflixWhite,
                                 focusedScale = 1.03f,
+                                onFocusChange = { focused ->
+                                    if (focused) onRememberContentFocus(presetRequester)
+                                },
                                 onClick = { onSelectPreset(preset) }
                             )
                             .testTag("settings_buffer_${preset.storageKey}")
