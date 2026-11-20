@@ -214,10 +214,15 @@ fun Modifier.tvFocusableControl(
     focusedBorderColor: Color = NetflixWhite,
     unfocusedBorderColor: Color = Color.Transparent,
     borderWidth: Dp = 2.dp,
+    focusTag: String? = null,
     onFocusChange: ((Boolean) -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onClick: (() -> Unit)? = null
 ): Modifier = composed {
+    val dpadFocusScope = LocalDpadFocusScope.current
+    val resolvedFocusTag = remember(focusTag, dpadFocusScope) {
+        focusTag ?: "tv_control_${dpadFocusScope.name.lowercase()}_${System.identityHashCode(Any())}"
+    }
     var isFocused by remember { mutableStateOf(false) }
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -225,6 +230,18 @@ fun Modifier.tvFocusableControl(
     var centerKeyHeld by remember { mutableStateOf(false) }
     var longPressTriggered by remember { mutableStateOf(false) }
     var longPressJob by remember { mutableStateOf<Job?>(null) }
+
+    androidx.compose.runtime.DisposableEffect(dpadFocusScope, resolvedFocusTag) {
+        onDispose {
+            if (isFocused) {
+                DpadFocusObserverRegistry.onNodeFocusChanged(
+                    scope = dpadFocusScope,
+                    tag = resolvedFocusTag,
+                    isFocused = false
+                )
+            }
+        }
+    }
 
     val scale by animateFloatAsState(
         targetValue = when {
@@ -259,7 +276,14 @@ fun Modifier.tvFocusableControl(
                 longPressTriggered = false
                 longPressJob?.cancel()
             }
-            isFocused = focusedNow
+            if (isFocused != focusedNow) {
+                isFocused = focusedNow
+                DpadFocusObserverRegistry.onNodeFocusChanged(
+                    scope = dpadFocusScope,
+                    tag = resolvedFocusTag,
+                    isFocused = focusedNow
+                )
+            }
             onFocusChange?.invoke(focusedNow)
         }
         .then(
@@ -335,20 +359,38 @@ fun Modifier.tvFocusableControl(
  */
 @OptIn(ExperimentalFoundationApi::class)
 fun Modifier.animatedPosterShowcase(
-    @Suppress("UNUSED_PARAMETER") itemIndex: Int,
+    itemIndex: Int,
     @Suppress("UNUSED_PARAMETER") listState: LazyListState?,
     isFocused: Boolean,
     shape: Shape = RoundedCornerShape(10.dp),
     focusedScale: Float = 1.07f,
+    focusTag: String? = null,
     onFocusedChanged: (Boolean) -> Unit,
     onLongClick: (() -> Unit)? = null,
     onQuickPlay: (() -> Unit)? = null,
     onClick: () -> Unit
 ): Modifier = composed {
+    val dpadFocusScope = LocalDpadFocusScope.current
+    val resolvedFocusTag = remember(focusTag, itemIndex, dpadFocusScope) {
+        focusTag ?: "poster_${dpadFocusScope.name.lowercase()}_idx_$itemIndex"
+    }
+    var lastReportedFocus by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var centerKeyHeld by remember { mutableStateOf(false) }
     var longPressTriggered by remember { mutableStateOf(false) }
     var longPressJob by remember { mutableStateOf<Job?>(null) }
+
+    androidx.compose.runtime.DisposableEffect(dpadFocusScope, resolvedFocusTag) {
+        onDispose {
+            if (lastReportedFocus) {
+                DpadFocusObserverRegistry.onNodeFocusChanged(
+                    scope = dpadFocusScope,
+                    tag = resolvedFocusTag,
+                    isFocused = false
+                )
+            }
+        }
+    }
 
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -388,6 +430,14 @@ fun Modifier.animatedPosterShowcase(
                 centerKeyHeld = false
                 longPressTriggered = false
                 longPressJob?.cancel()
+            }
+            if (lastReportedFocus != state.isFocused) {
+                lastReportedFocus = state.isFocused
+                DpadFocusObserverRegistry.onNodeFocusChanged(
+                    scope = dpadFocusScope,
+                    tag = resolvedFocusTag,
+                    isFocused = state.isFocused
+                )
             }
             onFocusedChanged(state.isFocused)
         }

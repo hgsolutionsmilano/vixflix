@@ -698,14 +698,29 @@ fun NetflixHeroBanner(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
                         .safeFocusRequester(watchFocusRequester)
-                        .onPreviewKeyEvent(handleHeroVerticalKey)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                navRailFocusRequester.safeRequestFocus()
+                            } else {
+                                handleHeroVerticalKey(keyEvent)
+                            }
+                        }
                         .focusProperties {
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                             resolvedPlayFocusRequester.takeIfAttached()?.let { right = it }
                             topBarFocusRequester.takeIfAttached()?.let { up = it }
                             firstRowFocusRequester.takeIfAttached()?.let { down = it }
                         }
-                        .onFocusChanged { watchFocused = it.isFocused }
+                        .onFocusChanged {
+                            if (watchFocused != it.isFocused) {
+                                watchFocused = it.isFocused
+                                DpadFocusObserverRegistry.onNodeFocusChanged(
+                                    scope = DpadFocusScope.MAIN_NAVIGATION,
+                                    tag = "hero_watchlist_button",
+                                    isFocused = it.isFocused
+                                )
+                            }
+                        }
                         .testTag("hero_watchlist_button")
                 ) {
                     Icon(
@@ -739,7 +754,16 @@ fun NetflixHeroBanner(
                             topBarFocusRequester.takeIfAttached()?.let { up = it }
                             firstRowFocusRequester.takeIfAttached()?.let { down = it }
                         }
-                        .onFocusChanged { playFocused = it.isFocused }
+                        .onFocusChanged {
+                            if (playFocused != it.isFocused) {
+                                playFocused = it.isFocused
+                                DpadFocusObserverRegistry.onNodeFocusChanged(
+                                    scope = DpadFocusScope.MAIN_NAVIGATION,
+                                    tag = "hero_play_button",
+                                    isFocused = it.isFocused
+                                )
+                            }
+                        }
                         .testTag("hero_play_button")
                 ) {
                     Icon(
@@ -780,7 +804,16 @@ fun NetflixHeroBanner(
                             topBarFocusRequester.takeIfAttached()?.let { up = it }
                             firstRowFocusRequester.takeIfAttached()?.let { down = it }
                         }
-                        .onFocusChanged { infoFocused = it.isFocused }
+                        .onFocusChanged {
+                            if (infoFocused != it.isFocused) {
+                                infoFocused = it.isFocused
+                                DpadFocusObserverRegistry.onNodeFocusChanged(
+                                    scope = DpadFocusScope.MAIN_NAVIGATION,
+                                    tag = "hero_info_button",
+                                    isFocused = it.isFocused
+                                )
+                            }
+                        }
                         .testTag("hero_info_button")
                 ) {
                     Icon(
@@ -893,6 +926,7 @@ fun ContinueWatchingSection(
                                 when (keyEvent.key) {
                                     Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
                                     Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
                                     else -> false
                                 }
                             } else {
@@ -940,6 +974,7 @@ private fun ContinueWatchingCard(
                 isFocused = isFocused,
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.07f,
+                focusTag = "continue_watching_card_${entry.id}",
                 onFocusedChanged = { focused ->
                     isFocused = focused
                     if (focused) onFocused()
@@ -1150,6 +1185,7 @@ fun Top10Section(
                                 when (keyEvent.key) {
                                     Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
                                     Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
                                     else -> false
                                 }
                             } else {
@@ -1193,6 +1229,7 @@ private fun Top10PosterCard(
                 isFocused = isFocused,
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.10f,
+                focusTag = "top10_card_$rank",
                 onFocusedChanged = { focused ->
                     isFocused = focused
                     if (focused) onFocused()
@@ -1358,6 +1395,7 @@ fun MediaCatalogRow(
                                 when (keyEvent.key) {
                                     Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
                                     Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
                                     else -> false
                                 }
                             } else {
@@ -1402,6 +1440,7 @@ fun MediaPosterCard(
                 isFocused = isFocused,
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.12f,
+                focusTag = "poster_card_${item.uniqueKey}",
                 onFocusedChanged = { focused ->
                     isFocused = focused
                     if (focused) onFocused()
@@ -1577,7 +1616,13 @@ fun MovieGenreChipBar(
                             Modifier
                         }
                     )
-                    .onPreviewKeyEvent(handleGenreVerticalKey)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                            navRailFocusRequester.safeRequestFocus()
+                        } else {
+                            handleGenreVerticalKey(keyEvent)
+                        }
+                    }
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                         upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1643,6 +1688,7 @@ private fun GenreFilterChipItem(
                 focusedBorderColor = NetflixWhite,
                 unfocusedBorderColor = if (isSelected) NetflixRed else NetflixElevatedSurface,
                 borderWidth = if (isFocused) 2.dp else 1.dp,
+                focusTag = "genre_chip_$label",
                 onFocusChange = { isFocused = it },
                 onClick = onClick
             )
@@ -1822,7 +1868,13 @@ fun StreamingPlatformsStrip(
                         isSelected = false,
                         onClick = { onSelectProvider(null) },
                         modifier = Modifier
-                            .onPreviewKeyEvent(handlePlatformVerticalKey)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                    navRailFocusRequester.safeRequestFocus()
+                                } else {
+                                    handlePlatformVerticalKey(keyEvent)
+                                }
+                            }
                             .focusProperties {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                                 upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1857,7 +1909,17 @@ fun StreamingPlatformsStrip(
                     onFocused = { onItemFocused?.invoke(itemFocusRequester) },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
-                        .onPreviewKeyEvent(handlePlatformVerticalKey)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown &&
+                                keyEvent.key == Key.DirectionLeft &&
+                                index == 0 &&
+                                selectedProvider == null
+                            ) {
+                                navRailFocusRequester.safeRequestFocus()
+                            } else {
+                                handlePlatformVerticalKey(keyEvent)
+                            }
+                        }
                         .focusProperties {
                             if (index == 0 && selectedProvider == null) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
@@ -1923,6 +1985,7 @@ private fun StreamingPlatformCard(
                 focusedBorderColor = NetflixWhite,
                 unfocusedBorderColor = borderColor,
                 borderWidth = if (isFocused || isSelected) 2.dp else 1.dp,
+                focusTag = "platform_card_${provider.providerId}",
                 onFocusChange = { focused ->
                     isFocused = focused
                     if (focused) onFocused()

@@ -533,6 +533,7 @@ private fun SettingsCategoryTabRow(
                             when (keyEvent.key) {
                                 Key.DirectionDown -> onDownToPanel()
                                 Key.DirectionUp -> onUpFromTab()
+                                Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
                                 else -> false
                             }
                         } else {
@@ -1542,8 +1543,12 @@ private fun SettingsChoiceRow(
                         }
                     )
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionUp) {
-                            (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
+                                else -> false
+                            }
                         } else {
                             false
                         }
@@ -1603,8 +1608,12 @@ private fun SettingsSwitchRow(
             .heightIn(min = 56.dp)
             .safeFocusRequester(focusRequester)
             .onPreviewKeyEvent { keyEvent ->
-                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionUp) {
-                    (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.key) {
+                        Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                        Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                        else -> false
+                    }
                 } else {
                     false
                 }
@@ -1753,6 +1762,16 @@ private fun BufferPresetGrid(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 66.dp)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown &&
+                                    keyEvent.key == Key.DirectionLeft &&
+                                    colIndex == 0
+                                ) {
+                                    navRailFocusRequester.safeRequestFocus()
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
                                 if (colIndex == 0) {
                                     navRailFocusRequester.takeIfAttached()?.let { left = it }

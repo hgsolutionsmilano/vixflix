@@ -177,9 +177,15 @@ fun MediaDetailScreen(
             with(density) { 220.dp.roundToPx().coerceAtLeast(1) }
         }
 
+        var snapshotsByKey by remember {
+            mutableStateOf(mapOf(state.mediaItem.uniqueKey to state))
+        }
+        if (snapshotsByKey[state.mediaItem.uniqueKey] != state) {
+            snapshotsByKey = snapshotsByKey + (state.mediaItem.uniqueKey to state)
+        }
+
         AnimatedContent(
-            targetState = state,
-            contentKey = { it.mediaItem.uniqueKey },
+            targetState = state.mediaItem.uniqueKey,
             transitionSpec = {
                 fadeIn(tween(130)).togetherWith(fadeOut(tween(90)))
             },
@@ -187,7 +193,12 @@ fun MediaDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .focusProperties { canFocus = isInteractive && state.activeTrailer == null }
-        ) { currentState ->
+        ) { currentKey ->
+            val currentState = if (currentKey == state.mediaItem.uniqueKey) {
+                state
+            } else {
+                snapshotsByKey[currentKey] ?: state
+            }
             val currentItem = currentState.mediaItem
             val details = currentState.details
             val trailers = remember(details?.trailers) {
@@ -218,15 +229,36 @@ fun MediaDetailScreen(
             val firstSimilarFocus = remember(currentItem.uniqueKey) { FocusRequester() }
 
             // Tracciamento focus non-reattivo per evitare ricomposizioni dell'intera scheda
-            // o snap-back anomali ad ogni pressione D-Pad sui bottoni.
+            // o micro-scroll BringIntoView (es. PivotBringIntoViewSpec su Fire TV Stick) ad ogni pressione D-Pad sui bottoni.
             val focusTracker = remember(currentItem.uniqueKey) {
                 object {
                     var playFocused: Boolean = false
                     var trailerFocused: Boolean = false
                     var userMovedFocus: Boolean = false
+                    var heroStageLockActive: Boolean = true
                     var wasTrailerOpen: Boolean = false
                     var lastTrailerTriggerRequester: FocusRequester? = null
                     var lastTrailerTriggerWasBelowFold: Boolean = false
+                }
+            }
+
+            @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+            val detailBringIntoViewSpec = remember(isTvDevice, focusTracker) {
+                object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+                    override fun calculateScrollDistance(
+                        offset: Float,
+                        size: Float,
+                        containerSize: Float
+                    ): Float {
+                        if (isTvDevice && focusTracker.heroStageLockActive) {
+                            return 0f
+                        }
+                        return super.calculateScrollDistance(
+                            offset = offset,
+                            size = size,
+                            containerSize = containerSize
+                        )
+                    }
                 }
             }
 
@@ -244,10 +276,12 @@ fun MediaDetailScreen(
                     focusTracker.wasTrailerOpen = false
                     focusTracker.userMovedFocus = false
                     if (!returnToTrailer) {
+                        focusTracker.heroStageLockActive = true
                         if (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0) {
                             runCatching { listState.scrollToItem(0, 0) }
                         }
                     } else {
+                        focusTracker.heroStageLockActive = !focusTracker.lastTrailerTriggerWasBelowFold
                         focusTracker.trailerFocused = false
                         focusTracker.playFocused = false
                     }
@@ -305,11 +339,16 @@ fun MediaDetailScreen(
 
             val returnToHeroStage: () -> Boolean = {
                 focusTracker.userMovedFocus = true
+                focusTracker.heroStageLockActive = true
                 if (isTvDevice) {
                     coroutineScope.launch {
                         runCatching { listState.scrollToItem(0, 0) }
                         repeat(2) { androidx.compose.runtime.withFrameNanos { } }
                         detailPlayFocusRequester.safeRequestFocus()
+                        androidx.compose.runtime.withFrameNanos { }
+                        if (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0) {
+                            runCatching { listState.scrollToItem(0, 0) }
+                        }
                     }
                     true
                 } else {
@@ -322,6 +361,7 @@ fun MediaDetailScreen(
                     false
                 } else {
                     focusTracker.userMovedFocus = true
+                    focusTracker.heroStageLockActive = false
                     if (targetRequester.safeRequestFocus()) {
                         true
                     } else {
@@ -345,6 +385,7 @@ fun MediaDetailScreen(
                     hasBelowFoldContent
                 ) {
                     focusTracker.userMovedFocus = true
+                    focusTracker.heroStageLockActive = false
                     coroutineScope.launch {
                         runCatching {
                             if (listState.firstVisibleItemIndex == 0 &&
@@ -385,6 +426,10 @@ fun MediaDetailScreen(
             val watchlistTint = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
 
             Box(modifier = Modifier.fillMaxSize()) {
+                @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides detailBringIntoViewSpec
+                ) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -668,6 +713,7 @@ fun MediaDetailScreen(
                                                 onDownKey = handleActionDownKey,
                                                 onFocusChange = { focused ->
                                                     focusTracker.playFocused = focused
+                                                    if (focused) focusTracker.heroStageLockActive = true
                                                 },
                                                 testTag = "detail_play_button",
                                                 onClick = { onPlayMain(false) }
@@ -689,7 +735,10 @@ fun MediaDetailScreen(
                                                 onDownKey = handleActionDownKey,
                                                 onFocusChange = { focused ->
                                                     focusTracker.trailerFocused = focused
-                                                    if (focused) focusTracker.userMovedFocus = true
+                                                    if (focused) {
+                                                        focusTracker.userMovedFocus = true
+                                                        focusTracker.heroStageLockActive = true
+                                                    }
                                                 },
                                                 testTag = "detail_watch_trailer_button",
                                                 onClick = {
@@ -715,7 +764,10 @@ fun MediaDetailScreen(
                                                 lockHorizontalRow = true,
                                                 onDownKey = handleActionDownKey,
                                                 onFocusChange = { focused ->
-                                                    if (focused) focusTracker.userMovedFocus = true
+                                                    if (focused) {
+                                                        focusTracker.userMovedFocus = true
+                                                        focusTracker.heroStageLockActive = true
+                                                    }
                                                 },
                                                 testTag = "detail_watchlist_button",
                                                 onClick = onToggleWatchlist
@@ -738,7 +790,10 @@ fun MediaDetailScreen(
                                                     lockHorizontalRow = true,
                                                     onDownKey = handleActionDownKey,
                                                     onFocusChange = { focused ->
-                                                        if (focused) focusTracker.userMovedFocus = true
+                                                        if (focused) {
+                                                            focusTracker.userMovedFocus = true
+                                                            focusTracker.heroStageLockActive = true
+                                                        }
                                                     },
                                                     testTag = "detail_restart_button",
                                                     onClick = { onPlayMain(true) }
@@ -1440,6 +1495,7 @@ fun MediaDetailScreen(
                         }
                     }
                 }
+                }
 
                 // Barra superiore fissa: Torna al titolo precedente (se stack > 1) e Chiudi scheda
                 Row(
@@ -1475,7 +1531,10 @@ fun MediaDetailScreen(
                                     focusedBorderColor = NetflixWhite,
                                     focusedScale = 1.08f,
                                     onFocusChange = { focused ->
-                                        if (focused) focusTracker.userMovedFocus = true
+                                        if (focused) {
+                                            focusTracker.userMovedFocus = true
+                                            focusTracker.heroStageLockActive = true
+                                        }
                                     },
                                     onClick = onBack
                                 )
@@ -1526,7 +1585,10 @@ fun MediaDetailScreen(
                                 shape = CircleShape,
                                 focusedScale = 1.12f,
                                 onFocusChange = { focused ->
-                                    if (focused) focusTracker.userMovedFocus = true
+                                    if (focused) {
+                                        focusTracker.userMovedFocus = true
+                                        focusTracker.heroStageLockActive = true
+                                    }
                                 }
                             )
                             .clip(CircleShape)

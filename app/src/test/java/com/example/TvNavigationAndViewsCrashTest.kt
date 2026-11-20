@@ -72,6 +72,8 @@ class TvNavigationAndViewsCrashTest {
         app = ApplicationProvider.getApplicationContext()
         val uiModeManager = app.getSystemService(Context.UI_MODE_SERVICE) as android.app.UiModeManager
         shadowOf(uiModeManager).currentModeType = Configuration.UI_MODE_TYPE_TELEVISION
+        shadowOf(app.packageManager).setSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK, true)
+        shadowOf(app.packageManager).setSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION, true)
 
         val db = VixFlixDatabase.getInstance(app)
         dao = db.vixFlixDao()
@@ -1102,6 +1104,85 @@ class TvNavigationAndViewsCrashTest {
         assertTrue(
             "Settings category tab bar must return to initial top ($settingsInitialTabTop), was $settingsRestoredTabTop",
             kotlin.math.abs(settingsRestoredTabTop - settingsInitialTabTop) < 2f
+        )
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `firestick leanback movie detail moving across play trailer and watchlist buttons never moves detail card`() {
+        launchTvApp()
+
+        // Apri la scheda dettaglio di un film come su Fire TV Stick (960x540dp con FEATURE_LEANBACK attivo)
+        composeRule.onNodeWithTag("hero_info_button", useUnmergedTree = true).performClick()
+        composeRule.waitForIdle()
+
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("detail_play_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        val initialHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        val initialPosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+
+        // Sposta il focus su Trailer (D-Pad Right)
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        val afterTrailerHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        val afterTrailerPosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Fire TV Stick hero stage must not move when focusing Trailer (initial=$initialHeroTop, after=$afterTrailerHeroTop)",
+            kotlin.math.abs(afterTrailerHeroTop - initialHeroTop) < 0.5f
+        )
+        assertTrue(
+            "Fire TV Stick poster must not move when focusing Trailer (initial=$initialPosterTop, after=$afterTrailerPosterTop)",
+            kotlin.math.abs(afterTrailerPosterTop - initialPosterTop) < 0.5f
+        )
+
+        // Sposta il focus su La mia lista (D-Pad Right)
+        composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+
+        val afterWatchlistHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        val afterWatchlistPosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Fire TV Stick hero stage must not move when focusing Watchlist (initial=$initialHeroTop, after=$afterWatchlistHeroTop)",
+            kotlin.math.abs(afterWatchlistHeroTop - initialHeroTop) < 0.5f
+        )
+        assertTrue(
+            "Fire TV Stick poster must not move when focusing Watchlist (initial=$initialPosterTop, after=$afterWatchlistPosterTop)",
+            kotlin.math.abs(afterWatchlistPosterTop - initialPosterTop) < 0.5f
+        )
+
+        // Torna indietro su Trailer e poi su Play (D-Pad Left x2)
+        composeRule.onNodeWithTag("detail_watchlist_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+
+        val afterReturnPlayHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        val afterReturnPlayPosterTop = composeRule.onNodeWithTag("detail_tv_poster", useUnmergedTree = true)
+            .fetchSemanticsNode().positionInRoot.y
+        assertTrue(
+            "Fire TV Stick hero stage must not move when returning to Play (initial=$initialHeroTop, after=$afterReturnPlayHeroTop)",
+            kotlin.math.abs(afterReturnPlayHeroTop - initialHeroTop) < 0.5f
+        )
+        assertTrue(
+            "Fire TV Stick poster must not move when returning to Play (initial=$initialPosterTop, after=$afterReturnPlayPosterTop)",
+            kotlin.math.abs(afterReturnPlayPosterTop - initialPosterTop) < 0.5f
         )
     }
 

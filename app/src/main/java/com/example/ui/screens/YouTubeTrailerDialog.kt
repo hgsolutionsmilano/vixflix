@@ -110,7 +110,12 @@ import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.ui.TrailerPlaybackState
+import com.example.ui.components.DpadFocusObserverRegistry
+import com.example.ui.components.DpadFocusScope
+import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.animatedPosterShowcase
+import com.example.ui.components.isDpadNavigationOrConfirmKey
+import com.example.ui.components.recoverFocusFromCandidates
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
@@ -389,6 +394,46 @@ fun YouTubeTrailerDialog(
         !activeVideoId.isNullOrBlank() &&
         !shouldMountWebView
 
+    val recoverTrailerModalFocus: () -> String? = {
+        val playlistVideoId = modalFocusTracker.focusedCardVideoId
+            ?: selectedVideo?.videoId
+            ?: uniqueTrailers.firstOrNull()?.videoId
+        val playlistRequester = playlistVideoId?.let { cardFocusRequesters[it] } ?: firstPlaylistFocusRequester
+        val playlistTag = if (playlistVideoId != null) {
+            "youtube_trailer_option_$playlistVideoId"
+        } else {
+            "youtube_trailer_playlist_first"
+        }
+        when {
+            modalFocusTracker.userNavigatedToPlaylist && uniqueTrailers.isNotEmpty() -> {
+                recoverFocusFromCandidates(
+                    playlistTag to playlistRequester,
+                    "close_trailer_overlay_button" to closeFocusRequester,
+                    "retry_trailer_button" to retryFocusRequester
+                )
+            }
+            !playbackError.isNullOrBlank() -> {
+                recoverFocusFromCandidates(
+                    "retry_trailer_button" to retryFocusRequester,
+                    "close_trailer_overlay_button" to closeFocusRequester,
+                    playlistTag to playlistRequester
+                )
+            }
+            else -> {
+                recoverFocusFromCandidates(
+                    "close_trailer_overlay_button" to closeFocusRequester,
+                    playlistTag to playlistRequester,
+                    "safe_preview_open_button" to safePreviewOpenFocusRequester,
+                    "retry_trailer_button" to retryFocusRequester
+                )
+            }
+        }
+    }
+
+    DpadFocusScopeProvider(
+        scope = DpadFocusScope.MODAL_TRAILER_POPUP,
+        onRecoverFocus = recoverTrailerModalFocus
+    ) {
     // Scrim scuro cinematografico in-window (SENZA clickable/focusable di Compose sul contenitore
     // esterno per non creare mai FocusTarget invisibili che rubano il D-Pad!)
     BoxWithConstraints(
@@ -402,6 +447,19 @@ fun YouTubeTrailerDialog(
             }
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown) {
+                    val hasModalInternalFocus = modalFocusTracker.isCloseFocused ||
+                        modalFocusTracker.isRetryFocused ||
+                        modalFocusTracker.isSafePreviewFocused ||
+                        modalFocusTracker.focusedCardVideoId != null
+                    if (!hasModalInternalFocus && isDpadNavigationOrConfirmKey(keyEvent.key)) {
+                        if (DpadFocusObserverRegistry.recoverFocusForScope(
+                                scope = DpadFocusScope.MODAL_TRAILER_POPUP,
+                                reason = "trailer_modal_dpad_rescue_${keyEvent.key}"
+                            )
+                        ) {
+                            return@onPreviewKeyEvent true
+                        }
+                    }
                     when (keyEvent.key) {
                         Key.Escape, Key.Back -> {
                             onClose()
@@ -607,6 +665,7 @@ fun YouTubeTrailerDialog(
                                     .tvFocusableControl(
                                         shape = CircleShape,
                                         focusedScale = 1.12f,
+                                        focusTag = "close_trailer_overlay_button",
                                         onFocusChange = { focused ->
                                             modalFocusTracker.isCloseFocused = focused
                                             if (focused) {
@@ -807,6 +866,7 @@ fun YouTubeTrailerDialog(
                                                     .tvFocusableControl(
                                                         shape = RoundedCornerShape(8.dp),
                                                         focusedScale = 1.06f,
+                                                        focusTag = "retry_trailer_button",
                                                         onFocusChange = { focused ->
                                                             modalFocusTracker.isRetryFocused = focused
                                                             if (focused) modalFocusTracker.userNavigatedToPlaylist = false
@@ -876,7 +936,8 @@ fun YouTubeTrailerDialog(
                                                         }
                                                         .tvFocusableControl(
                                                             shape = RoundedCornerShape(8.dp),
-                                                            focusedScale = 1.06f
+                                                            focusedScale = 1.06f,
+                                                            focusTag = "open_external_youtube_button"
                                                         )
                                                         .testTag("open_external_youtube_button")
                                                 ) {
@@ -926,7 +987,8 @@ fun YouTubeTrailerDialog(
                                                     }
                                                     .tvFocusableControl(
                                                         shape = RoundedCornerShape(8.dp),
-                                                        focusedScale = 1.06f
+                                                        focusedScale = 1.06f,
+                                                        focusTag = "error_close_trailer_button"
                                                     )
                                             ) {
                                                 Text("Chiudi")
@@ -1134,6 +1196,7 @@ fun YouTubeTrailerDialog(
             }
         }
     }
+    }
 }
 
 @Composable
@@ -1189,6 +1252,7 @@ private fun YouTubeModalTrailerCard(
                 isFocused = isFocused,
                 shape = cardShape,
                 focusedScale = 1.07f,
+                focusTag = "youtube_trailer_option_${candidate.videoId}",
                 onFocusedChanged = {
                     isFocused = it
                     onFocusChange(it)
