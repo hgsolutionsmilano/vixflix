@@ -1853,38 +1853,14 @@ fun StreamingPlatformsStrip(
 
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .focusGroup()
                 .testTag("streaming_platforms_strip")
         ) {
-            if (selectedProvider != null) {
-                item(key = "platform_all_reset", contentType = "platform_chip") {
-                    GenreFilterChipItem(
-                        label = "Tutte",
-                        isSelected = false,
-                        onClick = { onSelectProvider(null) },
-                        modifier = Modifier
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                    navRailFocusRequester.safeRequestFocus()
-                                } else {
-                                    handlePlatformVerticalKey(keyEvent)
-                                }
-                            }
-                            .focusProperties {
-                                navRailFocusRequester.takeIfAttached()?.let { left = it }
-                                upFocusRequester.takeIfAttached()?.let { up = it }
-                                downFocusRequester.takeIfAttached()?.let { down = it }
-                            }
-                            .testTag("platform_card_all")
-                    )
-                }
-            }
-
             itemsIndexed(
                 items = safeProviders,
                 key = { _, provider -> "platform_${provider.providerId}" },
@@ -1912,8 +1888,7 @@ fun StreamingPlatformsStrip(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown &&
                                 keyEvent.key == Key.DirectionLeft &&
-                                index == 0 &&
-                                selectedProvider == null
+                                index == 0
                             ) {
                                 navRailFocusRequester.safeRequestFocus()
                             } else {
@@ -1921,7 +1896,7 @@ fun StreamingPlatformsStrip(
                             }
                         }
                         .focusProperties {
-                            if (index == 0 && selectedProvider == null) {
+                            if (index == 0) {
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
                             upFocusRequester.takeIfAttached()?.let { up = it }
@@ -1944,28 +1919,29 @@ private fun StreamingPlatformCard(
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val brandColor = remember(provider.brandColorHex) { Color(provider.brandColorHex) }
+    val cardShape = RoundedCornerShape(16.dp)
 
     val borderColor = when {
         isFocused -> NetflixWhite
-        isSelected -> brandColor
+        isSelected -> NetflixMatchGreen
         else -> NetflixElevatedSurface
     }
 
     val containerBrush = remember(isSelected, isFocused, brandColor) {
         when {
-            isSelected -> Brush.horizontalGradient(
+            isSelected -> Brush.verticalGradient(
                 colors = listOf(
-                    brandColor.copy(alpha = 0.34f),
+                    brandColor.copy(alpha = 0.42f),
                     NetflixCardSurface
                 )
             )
-            isFocused -> Brush.horizontalGradient(
+            isFocused -> Brush.verticalGradient(
                 colors = listOf(
-                    brandColor.copy(alpha = 0.24f),
+                    brandColor.copy(alpha = 0.30f),
                     NetflixElevatedSurface
                 )
             )
-            else -> Brush.horizontalGradient(
+            else -> Brush.verticalGradient(
                 colors = listOf(
                     NetflixCardSurface,
                     NetflixDarkSurface
@@ -1976,15 +1952,16 @@ private fun StreamingPlatformCard(
 
     Surface(
         color = Color.Transparent,
-        shape = RoundedCornerShape(14.dp),
+        shape = cardShape,
         modifier = modifier
-            .heightIn(min = 62.dp)
+            .width(120.dp)
+            .height(84.dp)
             .tvFocusableControl(
-                shape = RoundedCornerShape(14.dp),
-                focusedScale = 1.06f,
+                shape = cardShape,
+                focusedScale = 1.08f,
                 focusedBorderColor = NetflixWhite,
                 unfocusedBorderColor = borderColor,
-                borderWidth = if (isFocused || isSelected) 2.dp else 1.dp,
+                borderWidth = if (isFocused || isSelected) 2.5.dp else 1.dp,
                 focusTag = "platform_card_${provider.providerId}",
                 onFocusChange = { focused ->
                     isFocused = focused
@@ -1993,48 +1970,34 @@ private fun StreamingPlatformCard(
                 onClick = onClick
             )
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        Box(
+            contentAlignment = Alignment.Center,
             modifier = Modifier
-                .background(containerBrush, RoundedCornerShape(14.dp))
-                .padding(horizontal = 14.dp, vertical = 9.dp)
+                .fillMaxSize()
+                .background(containerBrush, cardShape)
         ) {
             PlatformLogoBadge(
                 provider = provider,
-                size = 44.dp
+                size = 64.dp
             )
 
-            Column(
-                verticalArrangement = Arrangement.Center
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+            if (isSelected) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(NetflixMatchGreen)
                 ) {
-                    Text(
-                        text = provider.displayName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = NetflixWhite,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Selezionata",
+                        tint = NetflixBlack,
+                        modifier = Modifier.size(12.dp)
                     )
-                    if (isSelected) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            tint = NetflixMatchGreen,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
                 }
-                Text(
-                    text = if (isSelected) "Catalogo attivo" else "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (isSelected) NetflixMatchGreen else NetflixLightGray,
-                    maxLines = 1
-                )
             }
         }
     }
@@ -2043,11 +2006,12 @@ private fun StreamingPlatformCard(
 @Composable
 fun PlatformLogoBadge(
     provider: TmdbWatchProviderDto,
-    size: Dp = 44.dp,
+    size: Dp = 64.dp,
     modifier: Modifier = Modifier
 ) {
     val brandColor = remember(provider.brandColorHex) { Color(provider.brandColorHex) }
-    val shape = RoundedCornerShape(10.dp)
+    val cornerRadius = if (size >= 56.dp) 14.dp else 10.dp
+    val shape = RoundedCornerShape(cornerRadius)
 
     Box(
         contentAlignment = Alignment.Center,
