@@ -5,10 +5,15 @@ import androidx.compose.runtime.Immutable
 import com.example.BuildConfig
 import com.example.data.local.CacheStatsSummary
 import com.example.data.local.CatalogSnapshotEntity
+import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.MediaDetailsCacheEntity
+import com.example.data.local.ProfileAvatarPreset
+import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.ResolvedStreamCacheEntity
 import com.example.data.local.SeasonEpisodesCacheEntity
+import com.example.data.local.UserProfileEntity
 import com.example.data.local.VixFlixDao
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -36,6 +41,7 @@ import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -192,11 +198,146 @@ class VixFlixRepository(
     val trailerResolver = TmdbTrailerResolver(rawOkHttpClient, vixSrcResolver)
     val gitHubUpdateService = GitHubUpdateService(gitHubOkHttpClient)
 
-    val continueWatchingFlow: Flow<List<WatchProgressEntity>> = dao.observeContinueWatching()
-    val watchlistFlow: Flow<List<WatchlistEntity>> = dao.observeWatchlist()
+    val continueWatchingFlow: Flow<List<WatchProgressEntity>> = dao.observeContinueWatching(DEFAULT_PRIMARY_PROFILE_ID)
+    val watchlistFlow: Flow<List<WatchlistEntity>> = dao.observeWatchlist(DEFAULT_PRIMARY_PROFILE_ID)
 
-    fun observeSeasonProgress(tmdbId: Int, seasonNumber: Int): Flow<List<EpisodeProgressEntity>> =
-        dao.observeSeasonProgress(tmdbId, seasonNumber)
+    // --- User Profiles (Offline Local Persistence) ---
+    fun observeProfiles(): Flow<List<UserProfileEntity>> = dao.observeAllProfiles()
+
+    suspend fun getAllProfiles(): List<UserProfileEntity> = withContext(Dispatchers.IO) {
+        dao.getAllProfiles()
+    }
+
+    suspend fun getProfileById(profileId: String): UserProfileEntity? = withContext(Dispatchers.IO) {
+        dao.getProfileById(profileId)
+    }
+
+    suspend fun ensureDefaultPrimaryProfile(): UserProfileEntity = withContext(Dispatchers.IO) {
+        val existing = dao.getAllProfiles()
+        val primary = existing.firstOrNull { it.isPrimary }
+            ?: existing.firstOrNull { it.id == DEFAULT_PRIMARY_PROFILE_ID }
+        if (primary != null) {
+            if (!primary.isPrimary) {
+                val fixed = primary.copy(isPrimary = true)
+                dao.upsertProfile(fixed)
+                return@withContext fixed
+            }
+            return@withContext primary
+        }
+        if (existing.isNotEmpty()) {
+            val promoted = existing.first().copy(isPrimary = true)
+            dao.upsertProfile(promoted)
+            return@withContext promoted
+        }
+        val created = ProfileCatalogDefaults.defaultPrimaryProfile()
+        dao.upsertProfile(created)
+        created
+    }
+
+    suspend fun createProfile(
+        name: String,
+        avatarId: String,
+        accentColorHex: Long,
+        preferredLanguage: String = "it",
+        preferredAudioLanguage: String = preferredLanguage,
+        subtitlesEnabled: Boolean = false,
+        preferredSubtitleLanguage: String = preferredLanguage,
+        maxProfiles: Int = MAX_USER_PROFILES
+    ): Result<UserProfileEntity> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanedName = name.trim()
+            require(cleanedName.isNotEmpty()) { "Inserisci un nome valido per il profilo." }
+            val currentCount = dao.countProfiles()
+            check(currentCount < maxProfiles) {
+                "Hai raggiunto il limite massimo di $maxProfiles profili."
+            }
+            val now = System.currentTimeMillis()
+            val normalizedLang = if (preferredLanguage.equals("en", ignoreCase = true)) "en" else "it"
+            val normalizedAudio = when (preferredAudioLanguage.lowercase()) {
+                "en", "original" -> preferredAudioLanguage.lowercase()
+                else -> "it"
+            }
+            val normalizedSub = if (preferredSubtitleLanguage.equals("en", ignoreCase = true)) "en" else "it"
+            val profile = UserProfileEntity(
+                id = "profile_${UUID.randomUUID()}",
+                name = cleanedName.take(24),
+                avatarId = ProfileAvatarPreset.fromId(avatarId).id,
+                accentColorHex = accentColorHex,
+                isPrimary = currentCount == 0,
+                preferredLanguage = normalizedLang,
+                preferredAudioLanguage = normalizedAudio,
+                subtitlesEnabled = subtitlesEnabled,
+                preferredSubtitleLanguage = normalizedSub,
+                createdAtMs = now,
+                updatedAtMs = now
+            )
+            dao.upsertProfile(profile)
+            profile
+        }
+    }
+
+    suspend fun updateProfile(profile: UserProfileEntity): Result<UserProfileEntity> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanedName = profile.name.trim()
+            require(cleanedName.isNotEmpty()) { "Il nome del profilo non può essere vuoto." }
+            val existing = dao.getProfileById(profile.id)
+                ?: throw IllegalArgumentException("Profilo non trovato.")
+            val updated = existing.copy(
+                name = cleanedName.take(24),
+                avatarId = ProfileAvatarPreset.fromId(profile.avatarId).id,
+                accentColorHex = profile.accentColorHex,
+                preferredLanguage = if (profile.preferredLanguage.equals("en", ignoreCase = true)) "en" else "it",
+                preferredAudioLanguage = when (profile.preferredAudioLanguage.lowercase()) {
+                    "en", "original" -> profile.preferredAudioLanguage.lowercase()
+                    else -> "it"
+                },
+                subtitlesEnabled = profile.subtitlesEnabled,
+                preferredSubtitleLanguage = if (profile.preferredSubtitleLanguage.equals("en", ignoreCase = true)) "en" else "it",
+                updatedAtMs = System.currentTimeMillis()
+            )
+            dao.upsertProfile(updated)
+            updated
+        }
+    }
+
+    suspend fun deleteProfile(profileId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val target = dao.getProfileById(profileId)
+                ?: throw IllegalArgumentException("Profilo non trovato.")
+            check(!target.isPrimary) {
+                "Il profilo principale è protetto e non può essere eliminato."
+            }
+            val total = dao.countProfiles()
+            check(total > 1) {
+                "Deve rimanere almeno un profilo attivo."
+            }
+            dao.deleteProfileAndPersonalData(profileId)
+        }
+    }
+
+    // --- Profile-Scoped Personal Data ---
+    fun observeContinueWatching(profileId: String = DEFAULT_PRIMARY_PROFILE_ID): Flow<List<WatchProgressEntity>> =
+        dao.observeContinueWatching(profileId)
+
+    fun observeWatchlist(profileId: String = DEFAULT_PRIMARY_PROFILE_ID): Flow<List<WatchlistEntity>> =
+        dao.observeWatchlist(profileId)
+
+    fun observeSeasonProgress(
+        tmdbId: Int,
+        seasonNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<List<EpisodeProgressEntity>> =
+        dao.observeSeasonProgress(tmdbId, seasonNumber, profileId)
+
+    suspend fun getWatchProgress(
+        id: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): WatchProgressEntity? = dao.getWatchProgress(id, profileId)
+
+    suspend fun getEpisodeProgress(
+        episodeKey: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): EpisodeProgressEntity? = dao.getEpisodeProgress(episodeKey, profileId)
 
     /**
      * Legge immediatamente lo snapshot più recente del catalogo Home da Room per apertura istantanea.
@@ -660,17 +801,18 @@ class VixFlixRepository(
         tmdbId: Int,
         mediaType: String,
         season: Int? = null,
-        episode: Int? = null
+        episode: Int? = null,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     ): Long {
         if (mediaType == "tv" && season != null && episode != null) {
             val epKey = "tv_${tmdbId}_s${season}_e${episode}"
-            val epSaved = dao.getEpisodeProgress(epKey)
+            val epSaved = dao.getEpisodeProgress(epKey, profileId)
             if (epSaved != null && epSaved.positionMs > 0L) {
                 return epSaved.positionMs
             }
         }
         val mainKey = "${mediaType}_${tmdbId}"
-        val saved = dao.getWatchProgress(mainKey) ?: return 0L
+        val saved = dao.getWatchProgress(mainKey, profileId) ?: return 0L
         if (mediaType == "tv" && (saved.seasonNumber != season || saved.episodeNumber != episode)) {
             return 0L
         }
@@ -683,15 +825,24 @@ class VixFlixRepository(
         episodeNumber: Int?,
         episodeTitle: String?,
         positionMs: Long,
-        durationMs: Long
+        durationMs: Long,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     ) {
         if (positionMs < 3_000L) return
         val safeDuration = if (durationMs > 0L) durationMs else 5_400_000L // 90m stima se live HLS non espone durata iniziale
         val mainId = "${item.mediaType}_${item.id}"
+        val isCompleted = durationMs > 60_000L && positionMs >= (durationMs * 0.96).toLong()
 
-        // Se l'utente ha completato oltre il 96% di un film, rimuovilo da "Continua a guardare"
-        if (item.mediaType == "movie" && durationMs > 60_000L && positionMs >= (durationMs * 0.96).toLong()) {
-            dao.deleteWatchProgress(mainId)
+        // Quando un contenuto viene completato (>= 96%), rimuovilo da "Continua a guardare"
+        // (Continua a guardare mostra esclusivamente contenuti interrotti da riprendere, mai uno storico).
+        if (isCompleted) {
+            dao.deleteWatchProgress(mainId, profileId)
+            if (item.mediaType == "tv" && seasonNumber != null && episodeNumber != null) {
+                dao.deleteEpisodeProgress(
+                    episodeKey = "tv_${item.id}_s${seasonNumber}_e${episodeNumber}",
+                    profileId = profileId
+                )
+            }
             return
         }
 
@@ -710,7 +861,8 @@ class VixFlixRepository(
             episodeTitle = episodeTitle,
             positionMs = positionMs,
             durationMs = safeDuration,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            profileId = profileId
         )
         dao.upsertWatchProgress(entity)
 
@@ -723,24 +875,32 @@ class VixFlixRepository(
                     episodeNumber = episodeNumber,
                     positionMs = positionMs,
                     durationMs = safeDuration,
-                    updatedAt = System.currentTimeMillis()
+                    updatedAt = System.currentTimeMillis(),
+                    profileId = profileId
                 )
             )
         }
     }
 
-    suspend fun removeContinueWatching(id: String) {
-        dao.deleteWatchProgress(id)
+    suspend fun removeContinueWatching(
+        id: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ) {
+        dao.deleteWatchProgress(id, profileId)
     }
 
-    suspend fun clearAllContinueWatching() {
-        dao.clearAllWatchProgress()
+    suspend fun clearAllContinueWatching(profileId: String = DEFAULT_PRIMARY_PROFILE_ID) {
+        dao.clearAllWatchProgress(profileId)
     }
 
-    suspend fun toggleWatchlist(item: MediaItem, currentlyInList: Boolean) {
+    suspend fun toggleWatchlist(
+        item: MediaItem,
+        currentlyInList: Boolean,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ) {
         val key = item.uniqueKey
         if (currentlyInList) {
-            dao.removeFromWatchlist(key)
+            dao.removeFromWatchlist(key, profileId)
         } else {
             dao.addToWatchlist(
                 WatchlistEntity(
@@ -752,7 +912,8 @@ class VixFlixRepository(
                     posterPath = item.posterPath,
                     backdropPath = item.backdropPath,
                     voteAverage = item.voteAverage,
-                    releaseYear = item.releaseYear
+                    releaseYear = item.releaseYear,
+                    profileId = profileId
                 )
             )
         }

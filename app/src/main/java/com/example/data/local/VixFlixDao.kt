@@ -4,45 +4,109 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface VixFlixDao {
-    @Query("SELECT * FROM watch_progress ORDER BY updatedAt DESC")
-    fun observeContinueWatching(): Flow<List<WatchProgressEntity>>
+    // --- User Profiles ---
+    @Query("SELECT * FROM user_profiles ORDER BY isPrimary DESC, createdAtMs ASC")
+    fun observeAllProfiles(): Flow<List<UserProfileEntity>>
 
-    @Query("SELECT * FROM watch_progress WHERE id = :id LIMIT 1")
-    suspend fun getWatchProgress(id: String): WatchProgressEntity?
+    @Query("SELECT * FROM user_profiles ORDER BY isPrimary DESC, createdAtMs ASC")
+    suspend fun getAllProfiles(): List<UserProfileEntity>
+
+    @Query("SELECT * FROM user_profiles WHERE id = :profileId LIMIT 1")
+    suspend fun getProfileById(profileId: String): UserProfileEntity?
+
+    @Query("SELECT COUNT(*) FROM user_profiles")
+    suspend fun countProfiles(): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertProfile(profile: UserProfileEntity)
+
+    @Query("DELETE FROM user_profiles WHERE id = :profileId")
+    suspend fun deleteProfileById(profileId: String)
+
+    @Query("DELETE FROM watch_progress WHERE profileId = :profileId")
+    suspend fun deleteWatchProgressForProfile(profileId: String)
+
+    @Query("DELETE FROM episode_progress WHERE profileId = :profileId")
+    suspend fun deleteEpisodeProgressForProfile(profileId: String)
+
+    @Query("DELETE FROM my_list WHERE profileId = :profileId")
+    suspend fun deleteWatchlistForProfile(profileId: String)
+
+    @Transaction
+    suspend fun deleteProfileAndPersonalData(profileId: String) {
+        deleteWatchProgressForProfile(profileId)
+        deleteEpisodeProgressForProfile(profileId)
+        deleteWatchlistForProfile(profileId)
+        deleteProfileById(profileId)
+    }
+
+    // --- Profile-scoped Continue Watching & Playback Progress ---
+    @Query("SELECT * FROM watch_progress WHERE profileId = :profileId ORDER BY updatedAt DESC")
+    fun observeContinueWatching(profileId: String = DEFAULT_PRIMARY_PROFILE_ID): Flow<List<WatchProgressEntity>>
+
+    @Query("SELECT * FROM watch_progress WHERE profileId = :profileId AND id = :id LIMIT 1")
+    suspend fun getWatchProgress(
+        id: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): WatchProgressEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertWatchProgress(entity: WatchProgressEntity)
 
-    @Query("DELETE FROM watch_progress WHERE id = :id")
-    suspend fun deleteWatchProgress(id: String)
+    @Query("DELETE FROM watch_progress WHERE profileId = :profileId AND id = :id")
+    suspend fun deleteWatchProgress(
+        id: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    )
 
-    @Query("DELETE FROM watch_progress")
-    suspend fun clearAllWatchProgress()
+    @Query("DELETE FROM watch_progress WHERE profileId = :profileId")
+    suspend fun clearAllWatchProgress(profileId: String = DEFAULT_PRIMARY_PROFILE_ID)
 
-    @Query("SELECT * FROM episode_progress WHERE tmdbId = :tmdbId AND seasonNumber = :seasonNumber")
-    fun observeSeasonProgress(tmdbId: Int, seasonNumber: Int): Flow<List<EpisodeProgressEntity>>
+    @Query("SELECT * FROM episode_progress WHERE profileId = :profileId AND tmdbId = :tmdbId AND seasonNumber = :seasonNumber")
+    fun observeSeasonProgress(
+        tmdbId: Int,
+        seasonNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<List<EpisodeProgressEntity>>
 
-    @Query("SELECT * FROM episode_progress WHERE episodeKey = :episodeKey LIMIT 1")
-    suspend fun getEpisodeProgress(episodeKey: String): EpisodeProgressEntity?
+    @Query("SELECT * FROM episode_progress WHERE profileId = :profileId AND episodeKey = :episodeKey LIMIT 1")
+    suspend fun getEpisodeProgress(
+        episodeKey: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): EpisodeProgressEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertEpisodeProgress(entity: EpisodeProgressEntity)
 
-    @Query("SELECT * FROM my_list ORDER BY addedAt DESC")
-    fun observeWatchlist(): Flow<List<WatchlistEntity>>
+    @Query("DELETE FROM episode_progress WHERE profileId = :profileId AND episodeKey = :episodeKey")
+    suspend fun deleteEpisodeProgress(
+        episodeKey: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    )
+
+    // --- Profile-scoped Favorites / Watchlist ---
+    @Query("SELECT * FROM my_list WHERE profileId = :profileId ORDER BY addedAt DESC")
+    fun observeWatchlist(profileId: String = DEFAULT_PRIMARY_PROFILE_ID): Flow<List<WatchlistEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun addToWatchlist(entity: WatchlistEntity)
 
-    @Query("DELETE FROM my_list WHERE id = :id")
-    suspend fun removeFromWatchlist(id: String)
+    @Query("DELETE FROM my_list WHERE profileId = :profileId AND id = :id")
+    suspend fun removeFromWatchlist(
+        id: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    )
 
-    @Query("SELECT EXISTS(SELECT 1 FROM my_list WHERE id = :id)")
-    fun observeIsInWatchlist(id: String): Flow<Boolean>
+    @Query("SELECT EXISTS(SELECT 1 FROM my_list WHERE profileId = :profileId AND id = :id)")
+    fun observeIsInWatchlist(
+        id: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<Boolean>
 
     // --- Catalog Snapshot Cache ---
     @Query("SELECT * FROM catalog_snapshot_cache WHERE id = :id LIMIT 1")

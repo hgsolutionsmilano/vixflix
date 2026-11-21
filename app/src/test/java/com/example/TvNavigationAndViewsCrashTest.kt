@@ -125,7 +125,10 @@ class TvNavigationAndViewsCrashTest {
     private fun launchTvApp() {
         composeRule.setContent {
             MyApplicationTheme {
-                VixFlixAppScreen(viewModel = viewModel)
+                VixFlixAppScreen(
+                    viewModel = viewModel,
+                    respectStartupProfileGate = false
+                )
             }
         }
         composeRule.waitUntil(timeoutMillis = 6_000L) {
@@ -1354,7 +1357,7 @@ class TvNavigationAndViewsCrashTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("tv_rail_home", useUnmergedTree = true).assertIsFocused()
 
-        // 2. Su nel menu laterale va su search_toggle_button e si blocca in cima
+        // 2. Su nel menu laterale va su search_toggle_button, poi su tv_rail_profile_button e si blocca in cima
         composeRule.onNodeWithTag("tv_rail_home", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionUp) }
         composeRule.waitForIdle()
@@ -1362,10 +1365,14 @@ class TvNavigationAndViewsCrashTest {
         composeRule.onNodeWithTag("search_toggle_button", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionUp) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("search_toggle_button", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("tv_rail_profile_button", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("tv_rail_profile_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_profile_button", useUnmergedTree = true).assertIsFocused()
 
         // 3. Destra dal menu laterale collassa la barra e riporta il focus sull'ultimo bottone Hero focalizzato (hero_watchlist_button)
-        composeRule.onNodeWithTag("search_toggle_button", useUnmergedTree = true)
+        composeRule.onNodeWithTag("tv_rail_profile_button", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionRight) }
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("hero_watchlist_button", useUnmergedTree = true).assertIsFocused()

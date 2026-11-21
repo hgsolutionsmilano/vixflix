@@ -10,8 +10,13 @@ import com.example.VixFlixApplication
 import com.example.data.cache.BackgroundCachePrefetcher
 import com.example.data.local.AppPreferences
 import com.example.data.local.CacheStatsSummary
+import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.MAX_USER_PROFILES
+import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.local.UserProfileEntity
+import com.example.data.local.UserProfileUiState
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -32,6 +37,7 @@ import com.example.data.repository.VixFlixRepository
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -39,7 +45,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -184,14 +192,65 @@ class VixFlixViewModel @JvmOverloads constructor(
     private val _catalogState = MutableStateFlow<CatalogUiState>(CatalogUiState.Loading)
     val catalogState: StateFlow<CatalogUiState> = _catalogState.asStateFlow()
 
-    val continueWatching: StateFlow<List<WatchProgressEntity>> = repository.continueWatchingFlow
+    // --- Sistema Profili Utente ---
+    private val _activeProfileId = MutableStateFlow(DEFAULT_PRIMARY_PROFILE_ID)
+    val activeProfileId: StateFlow<String> = _activeProfileId.asStateFlow()
+
+    private val _showProfileSelector = MutableStateFlow(false)
+    private val _isProfileManageMode = MutableStateFlow(false)
+    private val _mustSelectProfile = MutableStateFlow(false)
+    private val _profileErrorMessage = MutableStateFlow<String?>(null)
+    private val _profilesInitialized = MutableStateFlow(false)
+
+    val profiles: StateFlow<List<UserProfileEntity>> = repository.observeProfiles()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, listOf(ProfileCatalogDefaults.defaultPrimaryProfile()))
+
+    val activeProfile: StateFlow<UserProfileEntity?> = combine(profiles, _activeProfileId) { list, activeId ->
+        list.firstOrNull { it.id == activeId } ?: list.firstOrNull { it.isPrimary } ?: list.firstOrNull()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ProfileCatalogDefaults.defaultPrimaryProfile())
+
+    val autoLoginProfile: StateFlow<Boolean> = preferences.autoLoginProfileFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val defaultProfileId: StateFlow<String?> = preferences.defaultProfileIdFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val profileUiState: StateFlow<UserProfileUiState> = combine(
+        combine(profiles, activeProfile, defaultProfileId, autoLoginProfile) { list, active, defId, autoLogin ->
+            arrayOf<Any?>(list, active, defId, autoLogin)
+        },
+        combine(_showProfileSelector, _isProfileManageMode, _mustSelectProfile, _profileErrorMessage, _profilesInitialized) { show, manage, mustSelect, err, init ->
+            arrayOf<Any?>(show, manage, mustSelect, err, init)
+        }
+    ) { core, ui ->
+        @Suppress("UNCHECKED_CAST")
+        UserProfileUiState(
+            profiles = core[0] as List<UserProfileEntity>,
+            activeProfile = core[1] as UserProfileEntity?,
+            defaultProfileId = core[2] as String?,
+            autoLoginEnabled = core[3] as Boolean,
+            showProfileSelector = ui[0] as Boolean,
+            isManageMode = ui[1] as Boolean,
+            mustSelectBeforeClosing = ui[2] as Boolean,
+            maxProfiles = MAX_USER_PROFILES,
+            errorMessage = ui[3] as String?,
+            isInitialized = ui[4] as Boolean
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, UserProfileUiState())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val continueWatching: StateFlow<List<WatchProgressEntity>> = _activeProfileId
+        .flatMapLatest { profileId -> repository.observeContinueWatching(profileId) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val watchlist: StateFlow<List<WatchlistEntity>> = repository.watchlistFlow
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val watchlist: StateFlow<List<WatchlistEntity>> = _activeProfileId
+        .flatMapLatest { profileId -> repository.observeWatchlist(profileId) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val streamLanguage: StateFlow<String> = preferences.streamLanguageFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, "it")
+    val streamLanguage: StateFlow<String> = combine(activeProfile, preferences.streamLanguageFlow) { profile, prefLang ->
+        profile?.preferredLanguage?.takeIf { it.isNotBlank() } ?: prefLang
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, "it")
 
     val preferWebPlayer: StateFlow<Boolean> = preferences.preferWebPlayerFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -276,8 +335,198 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     init {
         (application as? VixFlixApplication)?.registerMemoryTrimListener(memoryTrimCallback)
+        initUserProfiles()
         loadCatalog(forceRefresh = false)
         initGitHubUpdateChecker()
+    }
+
+    private fun initUserProfiles() {
+        viewModelScope.launch {
+            val primary = repository.ensureDefaultPrimaryProfile()
+            val allProfiles = repository.getAllProfiles()
+            val savedAutoLogin = preferences.autoLoginProfileFlow.first()
+            val savedDefaultId = preferences.defaultProfileIdFlow.first()
+            val savedLastActiveId = preferences.activeProfileIdFlow.first()
+            val hasSelectedOnce = preferences.hasSelectedProfileOnceFlow.first()
+
+            val resolvedId = when {
+                !savedDefaultId.isNullOrBlank() && allProfiles.any { it.id == savedDefaultId } -> savedDefaultId
+                allProfiles.any { it.id == savedLastActiveId } -> savedLastActiveId
+                else -> primary.id
+            }
+            _activeProfileId.value = resolvedId
+            allProfiles.firstOrNull { it.id == resolvedId }?.let { resolvedProfile ->
+                preferences.setStreamLanguage(resolvedProfile.preferredLanguage)
+            }
+
+            val shouldPromptSelection = !hasSelectedOnce || !savedAutoLogin
+            _mustSelectProfile.value = shouldPromptSelection
+            _showProfileSelector.value = shouldPromptSelection
+            _isProfileManageMode.value = false
+            _profilesInitialized.value = true
+        }
+    }
+
+    fun openProfileSelector(manageMode: Boolean = false) {
+        _profileErrorMessage.value = null
+        _isProfileManageMode.value = manageMode
+        _mustSelectProfile.value = false
+        _showProfileSelector.value = true
+    }
+
+    fun closeProfileSelector() {
+        if (_mustSelectProfile.value) return
+        _profileErrorMessage.value = null
+        _isProfileManageMode.value = false
+        _showProfileSelector.value = false
+    }
+
+    fun setProfileManageMode(manage: Boolean) {
+        _profileErrorMessage.value = null
+        _isProfileManageMode.value = manage
+    }
+
+    fun clearProfileError() {
+        _profileErrorMessage.value = null
+    }
+
+    /**
+     * Cambio profilo immediato in 8 passaggi senza riavvio dell'app:
+     * 1. Salva stato/progresso pendente del profilo precedente
+     * 2. Aggiorna l'identificativo dell'utente attivo su stato e DataStore
+     * 3-5. Ricarica automaticamente preferiti, Continua a guardare e progressi via flatMapLatest
+     * 6. Applica le preferenze personali (lingua/audio/sottotitoli)
+     * 7. Aggiorna la UI chiudendo il selettore
+     * 8. Pulisce dalla memoria temporanea i dati personali del precedente profilo (dettagli/ricerca/player)
+     */
+    fun selectProfile(profileId: String) {
+        viewModelScope.launch {
+            val targetProfile = repository.getProfileById(profileId) ?: return@launch
+            val previousProfileId = _activeProfileId.value
+
+            // 1. Salva eventuale progresso di riproduzione del profilo precedente
+            val activeSession = _playbackSession.value
+            val livePos = livePlaybackPositionMs.get()
+            if (activeSession != null && livePos >= 3_000L && previousProfileId != targetProfile.id) {
+                repository.saveWatchProgress(
+                    item = activeSession.mediaItem,
+                    seasonNumber = activeSession.seasonNumber,
+                    episodeNumber = activeSession.episodeNumber,
+                    episodeTitle = activeSession.episodeTitle,
+                    positionMs = livePos,
+                    durationMs = 5_400_000L,
+                    profileId = previousProfileId
+                )
+            }
+
+            // 8. Elimina dalla memoria temporanea lo stato transitorio del precedente profilo
+            if (previousProfileId != targetProfile.id) {
+                closePlayer()
+                closeDetails()
+                clearSearch()
+                lastPreResolvedEpisodeKey = null
+                livePlaybackPositionMs.set(0L)
+            }
+
+            // 2. Aggiorna profilo attivo e memorizza scelta
+            _activeProfileId.value = targetProfile.id
+            preferences.setActiveProfileId(targetProfile.id)
+            preferences.markProfileSelectedOnce()
+
+            // 6. Applica le preferenze personali del nuovo profilo
+            preferences.setStreamLanguage(targetProfile.preferredLanguage)
+
+            // 7. Aggiorna UI senza riavviare l'applicazione
+            _profileErrorMessage.value = null
+            _mustSelectProfile.value = false
+            _isProfileManageMode.value = false
+            _showProfileSelector.value = false
+        }
+    }
+
+    fun createProfile(
+        name: String,
+        avatarId: String,
+        accentColorHex: Long,
+        preferredLanguage: String = "it",
+        preferredAudioLanguage: String = preferredLanguage,
+        subtitlesEnabled: Boolean = false,
+        preferredSubtitleLanguage: String = preferredLanguage,
+        onResult: ((Result<UserProfileEntity>) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val result = repository.createProfile(
+                name = name,
+                avatarId = avatarId,
+                accentColorHex = accentColorHex,
+                preferredLanguage = preferredLanguage,
+                preferredAudioLanguage = preferredAudioLanguage,
+                subtitlesEnabled = subtitlesEnabled,
+                preferredSubtitleLanguage = preferredSubtitleLanguage
+            )
+            result.onSuccess {
+                _profileErrorMessage.value = null
+            }.onFailure { err ->
+                _profileErrorMessage.value = err.localizedMessage ?: "Impossibile creare il profilo."
+            }
+            onResult?.invoke(result)
+        }
+    }
+
+    fun updateProfile(
+        profile: UserProfileEntity,
+        onResult: ((Result<UserProfileEntity>) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val result = repository.updateProfile(profile)
+            result.onSuccess { updated ->
+                _profileErrorMessage.value = null
+                if (updated.id == _activeProfileId.value) {
+                    preferences.setStreamLanguage(updated.preferredLanguage)
+                }
+            }.onFailure { err ->
+                _profileErrorMessage.value = err.localizedMessage ?: "Impossibile aggiornare il profilo."
+            }
+            onResult?.invoke(result)
+        }
+    }
+
+    fun deleteProfile(
+        profileId: String,
+        onResult: ((Result<Unit>) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            if (profileId == _activeProfileId.value) {
+                val failure = Result.failure<Unit>(
+                    IllegalStateException("Questo profilo è attualmente attivo. Seleziona prima un altro profilo per poterlo eliminare.")
+                )
+                _profileErrorMessage.value = failure.exceptionOrNull()?.message
+                onResult?.invoke(failure)
+                return@launch
+            }
+            val result = repository.deleteProfile(profileId)
+            result.onSuccess {
+                _profileErrorMessage.value = null
+                if (defaultProfileId.value == profileId) {
+                    preferences.setDefaultProfileId(null)
+                }
+            }.onFailure { err ->
+                _profileErrorMessage.value = err.localizedMessage ?: "Impossibile eliminare il profilo."
+            }
+            onResult?.invoke(result)
+        }
+    }
+
+    fun setAutoLoginProfile(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setAutoLoginProfile(enabled)
+        }
+    }
+
+    fun setDefaultProfileId(profileId: String?) {
+        viewModelScope.launch {
+            preferences.setDefaultProfileId(profileId)
+        }
     }
 
     fun selectTab(tab: NavTab) {
@@ -620,8 +869,8 @@ class VixFlixViewModel @JvmOverloads constructor(
 
         detailLoadJob = viewModelScope.launch {
             launch { repository.vixSrcResolver.prewarmConnection() }
-            // Controlla se abbiamo una stagione salvata in "Continua a guardare"
-            val savedProgress = database.vixFlixDao().getWatchProgress(item.uniqueKey)
+            // Controlla se abbiamo una stagione salvata in "Continua a guardare" per il profilo attivo
+            val savedProgress = repository.getWatchProgress(item.uniqueKey, _activeProfileId.value)
             val initialSeason = savedProgress?.seasonNumber ?: 1
             val cachedEntry = repository.getCachedMediaDetails(item)
 
@@ -886,8 +1135,9 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     private fun observeSeasonProgressForTop(tvId: Int, seasonNumber: Int) {
         seasonProgressJob?.cancel()
+        val currentProfileId = _activeProfileId.value
         seasonProgressJob = viewModelScope.launch {
-            repository.observeSeasonProgress(tvId, seasonNumber).collect { progressList ->
+            repository.observeSeasonProgress(tvId, seasonNumber, currentProfileId).collect { progressList ->
                 val map = progressList.associateBy { it.episodeNumber }
                 if (_detailState.value?.mediaItem?.id == tvId) {
                     updateTopDetail { top -> top.copy(episodeProgressMap = map) }
@@ -1041,8 +1291,9 @@ class VixFlixViewModel @JvmOverloads constructor(
             var targetEpisode = episodeNumber
             var targetEpTitle = episodeTitle
 
+            val playbackProfileId = _activeProfileId.value
             if (item.isSeries && (targetSeason == null || targetEpisode == null)) {
-                val saved = database.vixFlixDao().getWatchProgress(item.uniqueKey)
+                val saved = repository.getWatchProgress(item.uniqueKey, playbackProfileId)
                 targetSeason = targetSeason ?: saved?.seasonNumber ?: 1
                 targetEpisode = targetEpisode ?: saved?.episodeNumber ?: 1
                 if (targetEpTitle.isNullOrBlank()) {
@@ -1064,7 +1315,8 @@ class VixFlixViewModel @JvmOverloads constructor(
                 tmdbId = item.id,
                 mediaType = item.mediaType,
                 season = targetSeason,
-                episode = targetEpisode
+                episode = targetEpisode,
+                profileId = playbackProfileId
             )
             livePlaybackPositionMs.set(startPosMs)
 
@@ -1099,7 +1351,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                 )
             )
 
-            // Salva subito l'ingresso in "Continua a guardare" se parte da un punto salvato
+            // Salva subito l'ingresso in "Continua a guardare" per il profilo attivo se parte da un punto salvato
             if (startPosMs > 0L) {
                 launch {
                     repository.saveWatchProgress(
@@ -1108,7 +1360,8 @@ class VixFlixViewModel @JvmOverloads constructor(
                         episodeNumber = targetEpisode,
                         episodeTitle = targetEpTitle,
                         positionMs = startPosMs,
-                        durationMs = 5_400_000L
+                        durationMs = 5_400_000L,
+                        profileId = playbackProfileId
                     )
                 }
             }
@@ -1264,6 +1517,7 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun onPlaybackProgressUpdate(positionMs: Long, durationMs: Long) {
         val session = _playbackSession.value ?: return
         if (positionMs <= 0L) return
+        val currentProfileId = _activeProfileId.value
         livePlaybackPositionMs.set(positionMs)
         viewModelScope.launch {
             repository.saveWatchProgress(
@@ -1272,7 +1526,8 @@ class VixFlixViewModel @JvmOverloads constructor(
                 episodeNumber = session.episodeNumber,
                 episodeTitle = session.episodeTitle,
                 positionMs = positionMs,
-                durationMs = durationMs
+                durationMs = durationMs,
+                profileId = currentProfileId
             )
         }
     }
@@ -1336,27 +1591,39 @@ class VixFlixViewModel @JvmOverloads constructor(
     }
 
     fun removeContinueWatching(id: String) {
+        val currentProfileId = _activeProfileId.value
         viewModelScope.launch {
-            repository.removeContinueWatching(id)
+            repository.removeContinueWatching(id, currentProfileId)
         }
     }
 
     fun clearAllContinueWatching() {
+        val currentProfileId = _activeProfileId.value
         viewModelScope.launch {
-            repository.clearAllContinueWatching()
+            repository.clearAllContinueWatching(currentProfileId)
         }
     }
 
     fun toggleWatchlist(item: MediaItem) {
+        val currentProfileId = _activeProfileId.value
         viewModelScope.launch {
             val isInList = watchlist.value.any { it.id == item.uniqueKey }
-            repository.toggleWatchlist(item, isInList)
+            repository.toggleWatchlist(item, isInList, currentProfileId)
         }
     }
 
     fun setStreamLanguage(lang: String) {
         viewModelScope.launch {
             preferences.setStreamLanguage(lang)
+            val currentProfile = activeProfile.value
+            if (currentProfile != null && currentProfile.preferredLanguage != lang) {
+                repository.updateProfile(
+                    currentProfile.copy(
+                        preferredLanguage = lang,
+                        preferredAudioLanguage = if (currentProfile.preferredAudioLanguage == "original") "original" else lang
+                    )
+                )
+            }
             val currentSession = _playbackSession.value
             if (currentSession != null) {
                 val resumePos = maxOf(currentSession.startPositionMs, livePlaybackPositionMs.get())

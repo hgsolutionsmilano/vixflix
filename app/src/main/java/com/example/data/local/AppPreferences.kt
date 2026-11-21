@@ -87,6 +87,10 @@ class AppPreferences(private val context: Context) {
         private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         private val KEY_BUFFER_PRESET = stringPreferencesKey("buffer_preset")
         private val KEY_BACKGROUND_PREFETCH = booleanPreferencesKey("background_image_prefetch")
+        private val KEY_ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
+        private val KEY_DEFAULT_PROFILE_ID = stringPreferencesKey("default_profile_id")
+        private val KEY_AUTO_LOGIN_PROFILE = booleanPreferencesKey("auto_login_profile")
+        private val KEY_HAS_SELECTED_PROFILE_ONCE = booleanPreferencesKey("has_selected_profile_once")
     }
 
     val githubRepoFlow: Flow<String> = context.dataStore.data.map { prefs ->
@@ -121,6 +125,22 @@ class AppPreferences(private val context: Context) {
 
     val lastUpdateCheckFlow: Flow<Long> = context.dataStore.data.map { prefs ->
         prefs[KEY_LAST_UPDATE_CHECK] ?: 0L
+    }
+
+    val activeProfileIdFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[KEY_ACTIVE_PROFILE_ID]?.takeIf { it.isNotBlank() } ?: DEFAULT_PRIMARY_PROFILE_ID
+    }
+
+    val defaultProfileIdFlow: Flow<String?> = context.dataStore.data.map { prefs ->
+        prefs[KEY_DEFAULT_PROFILE_ID]?.takeIf { it.isNotBlank() }
+    }
+
+    val autoLoginProfileFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[KEY_AUTO_LOGIN_PROFILE] ?: false
+    }
+
+    val hasSelectedProfileOnceFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[KEY_HAS_SELECTED_PROFILE_ONCE] ?: false
     }
 
     suspend fun setGithubRepo(ownerAndRepo: String) {
@@ -164,6 +184,34 @@ class AppPreferences(private val context: Context) {
     suspend fun setBackgroundPrefetch(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_BACKGROUND_PREFETCH] = enabled
+        }
+    }
+
+    suspend fun setActiveProfileId(profileId: String) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_ACTIVE_PROFILE_ID] = profileId.ifBlank { DEFAULT_PRIMARY_PROFILE_ID }
+        }
+    }
+
+    suspend fun setDefaultProfileId(profileId: String?) {
+        context.dataStore.edit { prefs ->
+            if (profileId.isNullOrBlank()) {
+                prefs.remove(KEY_DEFAULT_PROFILE_ID)
+            } else {
+                prefs[KEY_DEFAULT_PROFILE_ID] = profileId
+            }
+        }
+    }
+
+    suspend fun setAutoLoginProfile(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_AUTO_LOGIN_PROFILE] = enabled
+        }
+    }
+
+    suspend fun markProfileSelectedOnce() {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_HAS_SELECTED_PROFILE_ONCE] = true
         }
     }
 

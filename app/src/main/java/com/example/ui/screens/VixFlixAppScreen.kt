@@ -121,6 +121,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.local.UserProfileEntity
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
 import com.example.data.remote.MediaItem
@@ -146,6 +147,7 @@ import com.example.ui.components.MovieGenreChipBar
 import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
 import com.example.ui.components.PlatformLogoBadge
+import com.example.ui.components.ProfileAvatarArtwork
 import com.example.ui.components.StreamingPlatformsStrip
 import com.example.ui.components.Top10Section
 import com.example.ui.components.VixFlixSplashScreen
@@ -172,12 +174,14 @@ import kotlinx.coroutines.launch
 @Composable
 fun VixFlixAppScreen(
     viewModel: VixFlixViewModel,
-    splashMinDurationMs: Long = 1_150L
+    splashMinDurationMs: Long = 1_150L,
+    respectStartupProfileGate: Boolean = true
 ) {
     val context = LocalContext.current
     val isTvDevice = rememberIsTvDevice()
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val catalogState by viewModel.catalogState.collectAsStateWithLifecycle()
+    val profileUiState by viewModel.profileUiState.collectAsStateWithLifecycle()
     val continueWatching by viewModel.continueWatching.collectAsStateWithLifecycle()
     val watchlist by viewModel.watchlist.collectAsStateWithLifecycle()
     val streamLang by viewModel.streamLanguage.collectAsStateWithLifecycle()
@@ -270,14 +274,18 @@ fun VixFlixAppScreen(
         isSplashVisible = false
     }
 
+    val isProfileSelectorVisible = !isSplashVisible &&
+        profileUiState.showProfileSelector &&
+        (respectStartupProfileGate || !profileUiState.mustSelectBeforeClosing)
     val isDetailVisible = detailState != null
     val isPlayerVisible = playbackSession != null
     val isOverlayActive = isDetailVisible || isPlayerVisible
-    val isUpdateDialogVisible = !isSplashVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
+    val isUpdateDialogVisible = !isSplashVisible && !isProfileSelectorVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
     val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible
-    val isCatalogInteractive = !isSplashVisible && !isDetailVisible && !isPlayerVisible
+    val isCatalogInteractive = !isSplashVisible && !isProfileSelectorVisible && !isDetailVisible && !isPlayerVisible
     val activeDpadScope = when {
         isSplashVisible -> DpadFocusScope.SPLASH
+        isProfileSelectorVisible -> DpadFocusScope.PROFILE_SELECTOR
         isPlayerVisible -> DpadFocusScope.VIDEO_PLAYER
         isDetailVisible && detailState?.activeTrailer != null -> DpadFocusScope.MODAL_TRAILER_POPUP
         isDetailVisible -> DpadFocusScope.DETAIL_SHEET
@@ -285,6 +293,20 @@ fun VixFlixAppScreen(
         else -> DpadFocusScope.MAIN_NAVIGATION
     }
     var wasQuickModalActive by remember { mutableStateOf(false) }
+    var wasProfileSelectorVisible by remember { mutableStateOf(false) }
+
+    // Pulisce gli stati UI temporanei in memoria al cambio profilo attivo
+    val activeProfileId = profileUiState.activeProfile?.id
+    LaunchedEffect(activeProfileId) {
+        if (activeProfileId != null) {
+            tvQuickActionEntry = null
+            tvQuickActionItem = null
+            isSearchBarVisible = false
+            lastFocusedContentRequester = null
+            detailOriginFocusRequester = null
+            tabScrollResetNonce++
+        }
+    }
 
     val tabContentEntryFocusRequester: FocusRequester? = when (selectedTab) {
         NavTab.SETTINGS -> settingsFirstControlFocusRequester
@@ -460,6 +482,25 @@ fun VixFlixAppScreen(
                 }
             }
             wasQuickModalActive = isQuickModalVisible
+        }
+
+        // Ripristino deterministico del focus dopo la chiusura della schermata selezione/gestione profili
+        LaunchedEffect(isProfileSelectorVisible, isCatalogInteractive, useTvNavigationRail) {
+            if (wasProfileSelectorVisible && !isProfileSelectorVisible && isCatalogInteractive && useTvNavigationRail) {
+                val target = tabContentEntryFocusRequester.takeIfAttached()
+                    ?: heroPlayFocusRequester.takeIfAttached()
+                    ?: firstRowFocusRequester.takeIfAttached()
+                    ?: navRailSelectedFocusRequester.takeIfAttached()
+                if (target != null) {
+                    for (attempt in 1..6) {
+                        androidx.compose.runtime.withFrameNanos { }
+                        if (target.safeRequestFocus()) break
+                    }
+                    delay(60L)
+                    target.safeRequestFocus()
+                }
+            }
+            wasProfileSelectorVisible = isProfileSelectorVisible
         }
 
         // Gestione tasto INDIETRO ottimale per Android TV / Google TV / Layout Orizzontale nel catalogo principale:
@@ -720,6 +761,12 @@ fun VixFlixAppScreen(
                                 cacheClearedFeedbackNonce = cacheClearedFeedbackNonce,
                                 onSetBackgroundPrefetch = viewModel::setBackgroundPrefetchEnabled,
                                 onClearLocalCache = viewModel::clearLocalCache,
+                                profileUiState = profileUiState,
+                                onOpenProfileSelector = { manageMode ->
+                                    viewModel.openProfileSelector(manageMode = manageMode)
+                                },
+                                onSetAutoLoginProfile = viewModel::setAutoLoginProfile,
+                                onSetDefaultProfileId = viewModel::setDefaultProfileId,
                                 firstControlFocusRequester = sectionSettingsFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = activeTopBarFocusRequester,
@@ -732,6 +779,7 @@ fun VixFlixAppScreen(
                             )
                         } else if (currentSection.tab == NavTab.MY_LIST) {
                             MyListScreen(
+                                activeProfile = profileUiState.activeProfile,
                                 watchlist = watchlist,
                                 continueWatching = continueWatching,
                                 isTvLayout = useTvNavigationRail,
@@ -943,6 +991,8 @@ fun VixFlixAppScreen(
                             }
                         },
                         isTvLayout = useTvNavigationRail,
+                        activeProfile = profileUiState.activeProfile,
+                        onOpenProfileSelector = { viewModel.openProfileSelector(manageMode = false) },
                         searchFocusRequester = searchInputFocusRequester,
                         brandLogoFocusRequester = topBarBrandFocusRequester,
                         navRailFocusRequester = navRailSelectedFocusRequester,
@@ -976,6 +1026,8 @@ fun VixFlixAppScreen(
                     TvExpandableNavigationRail(
                         navItems = navItems,
                         selectedTab = selectedTab,
+                        activeProfile = profileUiState.activeProfile,
+                        onOpenProfileSelector = { viewModel.openProfileSelector(manageMode = false) },
                         isSearchOpen = isSearchBarVisible,
                         isExpanded = isRailFocused,
                         selectedItemFocusRequester = navRailSelectedFocusRequester,
@@ -1214,6 +1266,43 @@ fun VixFlixAppScreen(
             }
         }
 
+        // 3B. SCHERMATA SELEZIONE & GESTIONE PROFILI UTENTE ("Chi sta guardando?")
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isProfileSelectorVisible,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(90f)
+        ) {
+            ProfileSelectionScreen(
+                state = profileUiState,
+                isTvLayout = useTvNavigationRail,
+                onSelectProfile = viewModel::selectProfile,
+                onToggleManageMode = viewModel::setProfileManageMode,
+                onCreateProfile = { name, avatarId, accentHex, prefLang, audioLang, subsEnabled, subLang, onDone ->
+                    viewModel.createProfile(
+                        name = name,
+                        avatarId = avatarId,
+                        accentColorHex = accentHex,
+                        preferredLanguage = prefLang,
+                        preferredAudioLanguage = audioLang,
+                        subtitlesEnabled = subsEnabled,
+                        preferredSubtitleLanguage = subLang,
+                        onResult = { result -> onDone(result.isSuccess) }
+                    )
+                },
+                onUpdateProfile = viewModel::updateProfile,
+                onDeleteProfile = { profileId, onDone ->
+                    viewModel.deleteProfile(profileId) { result -> onDone(result.isSuccess) }
+                },
+                onSetAutoLogin = viewModel::setAutoLoginProfile,
+                onSetDefaultProfile = viewModel::setDefaultProfileId,
+                onClearError = viewModel::clearProfileError,
+                onClose = viewModel::closeProfileSelector
+            )
+        }
+
         // 4. SPLASH SCREEN ANIMATO IN FASE DI AVVIO (sincronizzato con Theme.VixFlix.Splash)
         androidx.compose.animation.AnimatedVisibility(
             visible = isSplashVisible,
@@ -1238,6 +1327,8 @@ fun VixFlixAppScreen(
 private fun TvExpandableNavigationRail(
     navItems: List<Triple<NavTab, String, ImageVector>>,
     selectedTab: NavTab,
+    activeProfile: UserProfileEntity?,
+    onOpenProfileSelector: () -> Unit,
     isSearchOpen: Boolean,
     isExpanded: Boolean,
     selectedItemFocusRequester: FocusRequester,
@@ -1333,23 +1424,154 @@ private fun TvExpandableNavigationRail(
                 .weight(1f, fill = false)
                 .verticalScroll(railScrollState)
         ) {
+            val profileDedicatedRequester = remember { FocusRequester() }
             val searchDedicatedRequester = remember { FocusRequester() }
             val tabDedicatedRequesters = remember(navItems) {
                 navItems.associate { (tab, _, _) -> tab to FocusRequester() }
             }
             val resolveRailRequester: (Int) -> FocusRequester = { railIndex ->
-                if (railIndex == 0) {
-                    if (isSearchOpen) selectedItemFocusRequester else searchDedicatedRequester
-                } else {
-                    val tab = navItems[railIndex - 1].first
-                    if (!isSearchOpen && tab == selectedTab) {
-                        selectedItemFocusRequester
-                    } else {
-                        tabDedicatedRequesters.getValue(tab)
+                when (railIndex) {
+                    0 -> profileDedicatedRequester
+                    1 -> if (isSearchOpen) selectedItemFocusRequester else searchDedicatedRequester
+                    else -> {
+                        val tab = navItems[railIndex - 2].first
+                        if (!isSearchOpen && tab == selectedTab) {
+                            selectedItemFocusRequester
+                        } else {
+                            tabDedicatedRequesters.getValue(tab)
+                        }
                     }
                 }
             }
-            val totalRailCount = navItems.size + 1
+            val totalRailCount = navItems.size + 2
+
+            // Voce Profilo Attivo / Cambio Rapido Profilo in cima al rail TV
+            var profileFocused by remember { mutableStateOf(false) }
+            var profilePressed by remember { mutableStateOf(false) }
+            val profileScale by animateFloatAsState(
+                targetValue = when {
+                    profilePressed -> 0.97f
+                    profileFocused -> 1.03f
+                    else -> 1f
+                },
+                animationSpec = tween(durationMillis = 100),
+                label = "profileRailScale"
+            )
+            LaunchedEffect(profileFocused) {
+                if (profileFocused && railScrollState.value > 0) {
+                    runCatching { railScrollState.animateScrollTo(0) }
+                }
+            }
+            val profileAccent = Color(activeProfile?.accentColorHex ?: 0xFFE50914L)
+            val profileRailRequester = resolveRailRequester(0)
+            val searchRailRequester = resolveRailRequester(1)
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .graphicsLayer {
+                        scaleX = profileScale
+                        scaleY = profileScale
+                    }
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (profileFocused) profileAccent.copy(alpha = 0.28f) else NetflixElevatedSurface.copy(alpha = 0.65f))
+                    .border(
+                        width = if (profileFocused) 2.dp else 1.dp,
+                        color = if (profileFocused) NetflixWhite else profileAccent.copy(alpha = 0.65f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .safeFocusRequester(profileRailRequester)
+                    .focusProperties {
+                        (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
+                            right = it
+                        }
+                        searchRailRequester.takeIfAttached()?.let { down = it }
+                    }
+                    .onPreviewKeyEvent { keyEvent ->
+                        val isCenterKey = keyEvent.key == Key.DirectionCenter ||
+                            keyEvent.key == Key.Enter ||
+                            keyEvent.key == Key.NumPadEnter
+                        when (keyEvent.type) {
+                            KeyEventType.KeyDown -> {
+                                when {
+                                    isCenterKey -> {
+                                        profilePressed = true
+                                        true
+                                    }
+                                    keyEvent.key == Key.DirectionRight || keyEvent.key == Key.Escape -> onMoveFocusRight()
+                                    keyEvent.key == Key.DirectionDown -> searchRailRequester.safeRequestFocus()
+                                    keyEvent.key == Key.DirectionUp || keyEvent.key == Key.DirectionLeft -> true
+                                    else -> false
+                                }
+                            }
+                            KeyEventType.KeyUp -> {
+                                if (isCenterKey) {
+                                    profilePressed = false
+                                    onOpenProfileSelector()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            else -> false
+                        }
+                    }
+                    .onFocusChanged { state ->
+                        if (!state.isFocused) profilePressed = false
+                        if (profileFocused != state.isFocused) {
+                            profileFocused = state.isFocused
+                            DpadFocusObserverRegistry.onNodeFocusChanged(
+                                scope = DpadFocusScope.MAIN_NAVIGATION,
+                                tag = "tv_rail_profile_button",
+                                isFocused = state.isFocused
+                            )
+                        }
+                    }
+                    .focusable()
+                    .clickable { onOpenProfileSelector() }
+                    .padding(horizontal = 10.dp)
+                    .testTag("tv_rail_profile_button"),
+                contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ProfileAvatarArtwork(
+                        avatarId = activeProfile?.avatarId ?: "cinema_crimson",
+                        accentColorHex = activeProfile?.accentColorHex ?: 0xFFE50914L,
+                        size = 30.dp,
+                        cornerRadius = 7.dp
+                    )
+                    AnimatedVisibility(
+                        visible = isExpanded,
+                        enter = fadeIn(tween(100)) + expandHorizontally(tween(110)),
+                        exit = fadeOut(tween(80)) + shrinkHorizontally(tween(90))
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = activeProfile?.name ?: "Profilo",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NetflixWhite,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Cambia profilo",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (profileFocused) NetflixWhite else NetflixLightGray,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
             // Voce Cerca integrata nella barra laterale (solo visualizzazione orizzontale / TV)
             var searchFocused by remember { mutableStateOf(false) }
@@ -1379,8 +1601,7 @@ private fun TvExpandableNavigationRail(
                 else -> NetflixMutedGray
             }
             val searchLabel = if (isSearchOpen) "Chiudi Ricerca" else "Cerca"
-            val searchRailRequester = resolveRailRequester(0)
-            val firstTabRailRequester = if (totalRailCount > 1) resolveRailRequester(1) else null
+            val firstTabRailRequester = if (totalRailCount > 2) resolveRailRequester(2) else null
 
             Box(
                 modifier = Modifier
@@ -1406,6 +1627,7 @@ private fun TvExpandableNavigationRail(
                         (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
                             right = it
                         }
+                        profileRailRequester.takeIfAttached()?.let { up = it }
                         firstTabRailRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { keyEvent ->
@@ -1420,8 +1642,9 @@ private fun TvExpandableNavigationRail(
                                         true
                                     }
                                     keyEvent.key == Key.DirectionRight || keyEvent.key == Key.Escape -> onMoveFocusRight()
+                                    keyEvent.key == Key.DirectionUp -> profileRailRequester.safeRequestFocus()
                                     keyEvent.key == Key.DirectionDown -> firstTabRailRequester.safeRequestFocus()
-                                    keyEvent.key == Key.DirectionUp || keyEvent.key == Key.DirectionLeft -> true
+                                    keyEvent.key == Key.DirectionLeft -> true
                                     else -> false
                                 }
                             }
@@ -1501,7 +1724,7 @@ private fun TvExpandableNavigationRail(
             }
 
             navItems.forEachIndexed { navIdx, (tab, label, icon) ->
-                val railIdx = navIdx + 1
+                val railIdx = navIdx + 2
                 val isSelected = selectedTab == tab && !isSearchOpen
                 var itemFocused by remember { mutableStateOf(false) }
                 var itemPressed by remember { mutableStateOf(false) }
@@ -3404,6 +3627,7 @@ private fun SearchResultsGrid(
 
 @Composable
 private fun MyListScreen(
+    activeProfile: UserProfileEntity?,
     watchlist: List<WatchlistEntity>,
     continueWatching: List<WatchProgressEntity>,
     isTvLayout: Boolean,
@@ -3436,12 +3660,16 @@ private fun MyListScreen(
             )
         }
     }
+    val favoriteMovies = remember(mappedItems) { mappedItems.filter { !it.isSeries } }
+    val favoriteSeries = remember(mappedItems) { mappedItems.filter { it.isSeries } }
 
     val myListState = rememberLazyListState()
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
-    val watchlistSecondRowRequester = remember { FocusRequester() }
+    val favoriteMoviesRowRequester = remember { FocusRequester() }
+    val favoriteSeriesRowRequester = remember { FocusRequester() }
     val hasContinueWatching = continueWatching.isNotEmpty()
-    val hasWatchlist = mappedItems.isNotEmpty()
+    val hasMovies = favoriteMovies.isNotEmpty()
+    val hasSeries = favoriteSeries.isNotEmpty()
 
     LaunchedEffect(tabScrollResetNonce) {
         if (tabScrollResetNonce > 0) {
@@ -3494,6 +3722,17 @@ private fun MyListScreen(
         topBarFocusRequester.safeRequestFocus()
     }
 
+    val headerOffset = if (activeProfile != null) 1 else 0
+    val continueIdx = headerOffset
+    val moviesIdx = headerOffset + (if (hasContinueWatching) 1 else 0)
+    val seriesIdx = moviesIdx + (if (hasMovies) 1 else 0)
+
+    val moviesRequester = if (!hasContinueWatching) firstRowFocusRequester else favoriteMoviesRowRequester
+    val seriesRequester = when {
+        !hasContinueWatching && !hasMovies -> firstRowFocusRequester
+        else -> favoriteSeriesRowRequester
+    }
+
     LazyColumn(
         state = myListState,
         modifier = Modifier
@@ -3501,7 +3740,45 @@ private fun MyListScreen(
             .testTag("my_list_screen"),
         contentPadding = contentPadding
     ) {
+        if (activeProfile != null) {
+            item(key = "my_list_profile_header", contentType = "profile_header") {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (isTvLayout) 28.dp else 16.dp, vertical = 10.dp)
+                ) {
+                    ProfileAvatarArtwork(
+                        avatarId = activeProfile.avatarId,
+                        accentColorHex = activeProfile.accentColorHex,
+                        size = 40.dp,
+                        cornerRadius = 10.dp
+                    )
+                    Column {
+                        Text(
+                            text = "La Lista di ${activeProfile.name}",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite
+                        )
+                        Text(
+                            text = "${favoriteMovies.size} film preferiti • ${favoriteSeries.size} serie TV preferite",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NetflixLightGray
+                        )
+                    }
+                }
+            }
+        }
+
         if (hasContinueWatching) {
+            val nextDownRequester = when {
+                hasMovies -> moviesRequester
+                hasSeries -> seriesRequester
+                else -> null
+            }
+            val nextDownIdx = if (hasMovies) moviesIdx else seriesIdx
             item(key = "my_list_continue_watching", contentType = "continue_watching") {
                 ContinueWatchingSection(
                     entries = continueWatching,
@@ -3526,11 +3803,11 @@ private fun MyListScreen(
                     isTvLayout = isTvLayout,
                     firstItemFocusRequester = firstRowFocusRequester,
                     upFocusRequester = topBarFocusRequester,
-                    downFocusRequester = if (hasWatchlist) watchlistSecondRowRequester else null,
+                    downFocusRequester = nextDownRequester,
                     onUpKey = handleTopBoundaryUp,
                     onDownKey = {
-                        if (hasWatchlist) {
-                            navigateMyListSection(1, watchlistSecondRowRequester, false)
+                        if (nextDownRequester != null) {
+                            navigateMyListSection(nextDownIdx, nextDownRequester, false)
                         } else {
                             false
                         }
@@ -3564,7 +3841,7 @@ private fun MyListScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Aggiungi film e serie TV dal catalogo live di TMDB o inizia a guardare un titolo per salvarne il minuto in Room.",
+                            text = "Aggiungi film e serie TV ai preferiti del profilo attivo o inizia a guardare un titolo per riprenderlo qui.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = NetflixLightGray,
                             textAlign = TextAlign.Center
@@ -3613,28 +3890,68 @@ private fun MyListScreen(
                     }
                 }
             }
-        } else if (hasWatchlist) {
-            val watchlistIsFirstRow = !hasContinueWatching
-            val watchlistRequester = if (watchlistIsFirstRow) firstRowFocusRequester else watchlistSecondRowRequester
-            item(key = "my_list_watchlist", contentType = "media_row") {
-                MediaCatalogRow(
-                    title = "Salvati nella Mia Lista (${mappedItems.size})",
-                    items = mappedItems,
-                    onItemClick = onOpenItem,
-                    onItemQuickPlay = onPlayItem,
-                    onItemLongClick = onTvLongPressPoster,
-                    onItemFocused = onRememberContentFocus,
-                    firstItemFocusRequester = watchlistRequester,
-                    upFocusRequester = if (watchlistIsFirstRow) topBarFocusRequester else firstRowFocusRequester,
-                    onUpKey = {
-                        if (watchlistIsFirstRow) {
-                            handleTopBoundaryUp()
-                        } else {
-                            navigateMyListSection(0, firstRowFocusRequester, true)
-                        }
-                    },
-                    navRailFocusRequester = navRailFocusRequester
-                )
+        } else {
+            if (hasMovies) {
+                val moviesIsFirstRow = !hasContinueWatching
+                item(key = "my_list_favorite_movies", contentType = "media_row") {
+                    MediaCatalogRow(
+                        title = "Film preferiti (${favoriteMovies.size})",
+                        items = favoriteMovies,
+                        onItemClick = onOpenItem,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
+                        firstItemFocusRequester = moviesRequester,
+                        upFocusRequester = if (moviesIsFirstRow) topBarFocusRequester else firstRowFocusRequester,
+                        downFocusRequester = if (hasSeries) seriesRequester else null,
+                        onUpKey = {
+                            if (moviesIsFirstRow) {
+                                handleTopBoundaryUp()
+                            } else {
+                                navigateMyListSection(continueIdx, firstRowFocusRequester, true)
+                            }
+                        },
+                        onDownKey = {
+                            if (hasSeries) {
+                                navigateMyListSection(seriesIdx, seriesRequester, false)
+                            } else {
+                                false
+                            }
+                        },
+                        navRailFocusRequester = navRailFocusRequester
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
+
+            if (hasSeries) {
+                val seriesIsFirstRow = !hasContinueWatching && !hasMovies
+                val seriesUpRequester = when {
+                    hasMovies -> moviesRequester
+                    hasContinueWatching -> firstRowFocusRequester
+                    else -> topBarFocusRequester
+                }
+                val seriesUpIdx = if (hasMovies) moviesIdx else continueIdx
+                item(key = "my_list_favorite_series", contentType = "media_row") {
+                    MediaCatalogRow(
+                        title = "Serie TV preferite (${favoriteSeries.size})",
+                        items = favoriteSeries,
+                        onItemClick = onOpenItem,
+                        onItemQuickPlay = onPlayItem,
+                        onItemLongClick = onTvLongPressPoster,
+                        onItemFocused = onRememberContentFocus,
+                        firstItemFocusRequester = seriesRequester,
+                        upFocusRequester = seriesUpRequester,
+                        onUpKey = {
+                            if (seriesIsFirstRow) {
+                                handleTopBoundaryUp()
+                            } else {
+                                navigateMyListSection(seriesUpIdx, seriesUpRequester ?: firstRowFocusRequester, seriesUpIdx == continueIdx)
+                            }
+                        },
+                        navRailFocusRequester = navRailFocusRequester
+                    )
+                }
             }
         }
     }

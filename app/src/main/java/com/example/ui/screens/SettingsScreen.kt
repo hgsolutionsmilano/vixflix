@@ -12,6 +12,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -109,10 +110,12 @@ import kotlinx.coroutines.launch
 import com.example.BuildConfig
 import com.example.data.local.CacheStatsSummary
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.local.UserProfileUiState
 import com.example.data.remote.TmdbApiConfig
 import com.example.ui.GitHubUpdateUiState
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
+import com.example.ui.components.ProfileAvatarArtwork
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
@@ -139,7 +142,7 @@ enum class SettingsCategory(
     PLAYBACK("Riproduzione", "Lingua audio, player e catalogo", Icons.Default.Tune),
     UPDATES("Aggiornamenti", "Release GitHub e auto-check", Icons.Default.SystemUpdate),
     API_SOURCES("API & Sorgenti", "Chiave TMDB e config", Icons.Default.Key),
-    SYSTEM("Sistema & Dati", "Cronologia locale e info app", Icons.Default.Info)
+    SYSTEM("Sistema & Dati", "Profili, ripresa e info app", Icons.Default.Info)
 }
 
 @Composable
@@ -171,6 +174,10 @@ fun SettingsScreen(
     cacheClearedFeedbackNonce: Int = 0,
     onSetBackgroundPrefetch: (Boolean) -> Unit = {},
     onClearLocalCache: () -> Unit = {},
+    profileUiState: UserProfileUiState = UserProfileUiState(),
+    onOpenProfileSelector: (Boolean) -> Unit = {},
+    onSetAutoLoginProfile: (Boolean) -> Unit = {},
+    onSetDefaultProfileId: (String?) -> Unit = {},
     firstControlFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
@@ -405,6 +412,10 @@ fun SettingsScreen(
                         cacheStats = cacheStats,
                         isBackgroundCatalogRefreshing = isBackgroundCatalogRefreshing,
                         cacheClearedFeedbackNonce = cacheClearedFeedbackNonce,
+                        profileUiState = profileUiState,
+                        onOpenProfileSelector = onOpenProfileSelector,
+                        onSetAutoLoginProfile = onSetAutoLoginProfile,
+                        onSetDefaultProfileId = onSetDefaultProfileId,
                         onSetBackgroundPrefetch = onSetBackgroundPrefetch,
                         onRefreshCatalog = onRefreshCatalog,
                         onClearLocalCache = onClearLocalCache,
@@ -1492,6 +1503,10 @@ private fun SystemSettingsPanel(
     cacheStats: CacheStatsSummary,
     isBackgroundCatalogRefreshing: Boolean,
     cacheClearedFeedbackNonce: Int,
+    profileUiState: UserProfileUiState,
+    onOpenProfileSelector: (Boolean) -> Unit,
+    onSetAutoLoginProfile: (Boolean) -> Unit,
+    onSetDefaultProfileId: (String?) -> Unit,
     onSetBackgroundPrefetch: (Boolean) -> Unit,
     onRefreshCatalog: () -> Unit,
     onClearLocalCache: () -> Unit,
@@ -1503,11 +1518,266 @@ private fun SystemSettingsPanel(
     navRailFocusRequester: FocusRequester?
 ) {
     var clearedFeedback by remember { mutableStateOf(false) }
+    val switchProfileFocusRequester = firstControlFocusRequester ?: remember { FocusRequester() }
+    val manageProfilesFocusRequester = remember { FocusRequester() }
+    val autoLoginFocusRequester = remember { FocusRequester() }
+    val prefetchFocusRequester = remember { FocusRequester() }
     val refreshCacheFocusRequester = remember { FocusRequester() }
     val clearCacheFocusRequester = remember { FocusRequester() }
-    val clearHistoryFocusRequester = remember { FocusRequester() }
+    val clearContinueWatchingFocusRequester = remember { FocusRequester() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        // Sezione Profili Utente & Avvio (100% locale e navigabile con D-Pad)
+        val activeProfile = profileUiState.activeProfile
+        SettingsSectionCard(
+            title = "Profili Utente & Avvio",
+            subtitle = "Preferiti, Continua a guardare, avanzamento e lingua separati per ogni profilo",
+            icon = Icons.Default.Settings,
+            badgeText = "${profileUiState.profiles.size}/${profileUiState.maxProfiles} PROFILI",
+            badgeColor = Color(activeProfile?.accentColorHex ?: 0xFFE50914L)
+        ) {
+            if (activeProfile != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(NetflixDarkSurface)
+                        .border(
+                            1.dp,
+                            Color(activeProfile.accentColorHex).copy(alpha = 0.45f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .padding(12.dp)
+                ) {
+                    ProfileAvatarArtwork(
+                        avatarId = activeProfile.avatarId,
+                        accentColorHex = activeProfile.accentColorHex,
+                        size = 48.dp,
+                        cornerRadius = 10.dp
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Profilo attivo: ${activeProfile.name}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite
+                        )
+                        Text(
+                            text = "Lingua ${activeProfile.preferredLanguage.uppercase()} • Audio ${activeProfile.preferredAudioLanguage.uppercase()} • Sottotitoli ${if (activeProfile.subtitlesEnabled) activeProfile.preferredSubtitleLanguage.uppercase() else "OFF"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NetflixLightGray
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+            ) {
+                Button(
+                    onClick = { onOpenProfileSelector(false) },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NetflixRed,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .safeFocusRequester(switchProfileFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> onUpToCategoryBar()
+                                    Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                    Key.DirectionRight -> manageProfilesFocusRequester.safeRequestFocus()
+                                    Key.DirectionDown -> autoLoginFocusRequester.safeRequestFocus()
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        .focusProperties {
+                            upToCategoryFocusRequester.takeIfAttached()?.let { up = it }
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            manageProfilesFocusRequester.takeIfAttached()?.let { right = it }
+                            autoLoginFocusRequester.takeIfAttached()?.let { down = it }
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.02f,
+                            focusTag = "settings_switch_profile_button",
+                            onFocusChange = { focused ->
+                                if (focused) onRememberContentFocus(switchProfileFocusRequester)
+                            }
+                        )
+                        .testTag("settings_switch_profile_button")
+                ) {
+                    Text(
+                        text = "Cambia profilo",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = { onOpenProfileSelector(true) },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .safeFocusRequester(manageProfilesFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> onUpToCategoryBar()
+                                    Key.DirectionLeft -> switchProfileFocusRequester.safeRequestFocus()
+                                    Key.DirectionRight -> true
+                                    Key.DirectionDown -> autoLoginFocusRequester.safeRequestFocus()
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        .focusProperties {
+                            upToCategoryFocusRequester.takeIfAttached()?.let { up = it }
+                            switchProfileFocusRequester.takeIfAttached()?.let { left = it }
+                            autoLoginFocusRequester.takeIfAttached()?.let { down = it }
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.02f,
+                            focusTag = "settings_manage_profiles_button",
+                            onFocusChange = { focused ->
+                                if (focused) onRememberContentFocus(manageProfilesFocusRequester)
+                            }
+                        )
+                        .testTag("settings_manage_profiles_button")
+                ) {
+                    Text(
+                        text = "Gestisci profili",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SettingsSwitchRow(
+                label = "Accesso automatico all'avvio",
+                description = if (profileUiState.autoLoginEnabled) {
+                    "Avvia direttamente il profilo predefinito o l'ultimo usato senza mostrare la schermata profili"
+                } else {
+                    "Mostra sempre \"Chi sta guardando?\" all'avvio dell'app"
+                },
+                checked = profileUiState.autoLoginEnabled,
+                onCheckedChange = onSetAutoLoginProfile,
+                focusRequester = autoLoginFocusRequester,
+                upFocusRequester = switchProfileFocusRequester,
+                onUpKey = { switchProfileFocusRequester.safeRequestFocus() },
+                onRememberContentFocus = onRememberContentFocus,
+                navRailFocusRequester = navRailFocusRequester,
+                testTagName = "settings_autologin_profile_toggle"
+            )
+
+            if (profileUiState.profiles.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Profilo predefinito all'avvio",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NetflixLightGray
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                ) {
+                    val isLastUsedSelected = profileUiState.defaultProfileId == null
+                    Surface(
+                        color = if (isLastUsedSelected) NetflixRed.copy(alpha = 0.24f) else NetflixDarkSurface,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (isLastUsedSelected) NetflixRed else NetflixElevatedSurface
+                        ),
+                        modifier = Modifier
+                            .heightIn(min = 42.dp)
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedBorderColor = NetflixWhite,
+                                focusTag = "settings_default_profile_last_used",
+                                onClick = { onSetDefaultProfileId(null) }
+                            )
+                            .testTag("settings_default_profile_last_used")
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "Ultimo usato",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isLastUsedSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = NetflixWhite
+                            )
+                        }
+                    }
+
+                    profileUiState.profiles.forEach { profile ->
+                        val selected = profileUiState.defaultProfileId == profile.id
+                        val accent = Color(profile.accentColorHex)
+                        Surface(
+                            color = if (selected) accent.copy(alpha = 0.24f) else NetflixDarkSurface,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (selected) accent else NetflixElevatedSurface
+                            ),
+                            modifier = Modifier
+                                .heightIn(min = 42.dp)
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedBorderColor = NetflixWhite,
+                                    focusTag = "settings_default_profile_${profile.id}",
+                                    onClick = { onSetDefaultProfileId(profile.id) }
+                                )
+                                .testTag("settings_default_profile_${profile.id}")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                ProfileAvatarArtwork(
+                                    avatarId = profile.avatarId,
+                                    accentColorHex = profile.accentColorHex,
+                                    size = 22.dp,
+                                    cornerRadius = 5.dp
+                                )
+                                Text(
+                                    text = profile.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    color = NetflixWhite
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         SettingsSectionCard(
             title = "Cache & Prestazioni",
             subtitle = "Avvio immediato da Room, link stream validi e precaricamento locandine Coil",
@@ -1567,9 +1837,9 @@ private fun SystemSettingsPanel(
                 description = "Precarica in background Hero e locandine principali senza rallentare UI o streaming",
                 checked = backgroundPrefetchEnabled,
                 onCheckedChange = onSetBackgroundPrefetch,
-                focusRequester = firstControlFocusRequester,
-                upFocusRequester = upToCategoryFocusRequester,
-                onUpKey = onUpToCategoryBar,
+                focusRequester = prefetchFocusRequester,
+                upFocusRequester = autoLoginFocusRequester,
+                onUpKey = { autoLoginFocusRequester.safeRequestFocus() },
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 testTagName = "settings_prefetch_switch"
@@ -1600,7 +1870,7 @@ private fun SystemSettingsPanel(
                                     Key.DirectionRight -> clearCacheFocusRequester.safeRequestFocus()
                                     Key.DirectionDown -> {
                                         if (continueWatchingCount > 0) {
-                                            clearHistoryFocusRequester.safeRequestFocus()
+                                            clearContinueWatchingFocusRequester.safeRequestFocus()
                                         } else {
                                             true
                                         }
@@ -1615,7 +1885,7 @@ private fun SystemSettingsPanel(
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                             clearCacheFocusRequester.takeIfAttached()?.let { right = it }
                             if (continueWatchingCount > 0) {
-                                clearHistoryFocusRequester.takeIfAttached()?.let { down = it }
+                                clearContinueWatchingFocusRequester.takeIfAttached()?.let { down = it }
                             }
                         }
                         .tvFocusableControl(
@@ -1658,7 +1928,7 @@ private fun SystemSettingsPanel(
                                     Key.DirectionRight -> true
                                     Key.DirectionDown -> {
                                         if (continueWatchingCount > 0) {
-                                            clearHistoryFocusRequester.safeRequestFocus()
+                                            clearContinueWatchingFocusRequester.safeRequestFocus()
                                         } else {
                                             true
                                         }
@@ -1676,7 +1946,7 @@ private fun SystemSettingsPanel(
                                 navRailFocusRequester.takeIfAttached()?.let { left = it }
                             }
                             if (continueWatchingCount > 0) {
-                                clearHistoryFocusRequester.takeIfAttached()?.let { down = it }
+                                clearContinueWatchingFocusRequester.takeIfAttached()?.let { down = it }
                             }
                         }
                         .tvFocusableControl(
@@ -1704,8 +1974,8 @@ private fun SystemSettingsPanel(
         }
 
         SettingsSectionCard(
-            title = "Archivio & Cronologia Locale",
-            subtitle = "Dati utente persistenti (non rimossi dallo svuotamento cache)",
+            title = "Continua a Guardare & Dati Profilo",
+            subtitle = "Dati locali del profilo attivo (non rimossi dallo svuotamento cache)",
             icon = Icons.Default.Storage
         ) {
             Row(
@@ -1740,7 +2010,7 @@ private fun SystemSettingsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
-                    .safeFocusRequester(clearHistoryFocusRequester)
+                    .safeFocusRequester(clearContinueWatchingFocusRequester)
                     .onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown) {
                             when (keyEvent.key) {
@@ -1764,7 +2034,7 @@ private fun SystemSettingsPanel(
                         focusedScale = 1.02f,
                         focusTag = "settings_clear_history_button",
                         onFocusChange = { focused ->
-                            if (focused) onRememberContentFocus(clearHistoryFocusRequester)
+                            if (focused) onRememberContentFocus(clearContinueWatchingFocusRequester)
                         }
                     )
                     .testTag("settings_clear_history_button")
@@ -1773,8 +2043,8 @@ private fun SystemSettingsPanel(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = when {
-                        clearedFeedback && continueWatchingCount == 0 -> "Cronologia Svuotata"
-                        continueWatchingCount == 0 -> "Nessuna Cronologia da Rimuovere"
+                        clearedFeedback && continueWatchingCount == 0 -> "Continua a guardare svuotato"
+                        continueWatchingCount == 0 -> "Nessun contenuto in corso"
                         else -> "Svuota Continua a Guardare ($continueWatchingCount)"
                     },
                     style = MaterialTheme.typography.labelLarge

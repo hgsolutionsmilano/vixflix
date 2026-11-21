@@ -7,11 +7,34 @@ import androidx.room.PrimaryKey
 
 @Immutable
 @Entity(
+    tableName = "user_profiles",
+    indices = [Index(value = ["createdAtMs"])]
+)
+data class UserProfileEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val avatarId: String,
+    val accentColorHex: Long,
+    val isPrimary: Boolean = false,
+    val preferredLanguage: String = "it",
+    val preferredAudioLanguage: String = "it",
+    val subtitlesEnabled: Boolean = false,
+    val preferredSubtitleLanguage: String = "it",
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+@Immutable
+@Entity(
     tableName = "watch_progress",
-    indices = [Index(value = ["updatedAt"])]
+    primaryKeys = ["profileId", "id"],
+    indices = [
+        Index(value = ["profileId", "updatedAt"]),
+        Index(value = ["updatedAt"])
+    ]
 )
 data class WatchProgressEntity(
-    @PrimaryKey val id: String, // "movie_{tmdbId}" or "tv_{tmdbId}"
+    val id: String, // "movie_{tmdbId}" or "tv_{tmdbId}"
     val tmdbId: Int,
     val mediaType: String, // "movie" or "tv"
     val title: String,
@@ -25,7 +48,8 @@ data class WatchProgressEntity(
     val episodeTitle: String? = null,
     val positionMs: Long,
     val durationMs: Long,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val profileId: String = DEFAULT_PRIMARY_PROFILE_ID
 ) {
     val startSeconds: Long
         get() = (positionMs / 1000L).coerceAtLeast(0L)
@@ -40,6 +64,9 @@ data class WatchProgressEntity(
             0.1f
         }
 
+    val completionPercent: Int
+        get() = (progressFraction * 100f).toInt().coerceIn(1, 99)
+
     val remainingMinutes: Int
         get() = if (durationMs > positionMs) {
             (((durationMs - positionMs) / 1000L) / 60L).toInt().coerceAtLeast(1)
@@ -51,16 +78,21 @@ data class WatchProgressEntity(
 @Immutable
 @Entity(
     tableName = "episode_progress",
-    indices = [Index(value = ["tmdbId", "seasonNumber"])]
+    primaryKeys = ["profileId", "episodeKey"],
+    indices = [
+        Index(value = ["profileId", "tmdbId", "seasonNumber"]),
+        Index(value = ["tmdbId", "seasonNumber"])
+    ]
 )
 data class EpisodeProgressEntity(
-    @PrimaryKey val episodeKey: String, // "tv_{tmdbId}_s{season}_e{episode}"
+    val episodeKey: String, // "tv_{tmdbId}_s{season}_e{episode}"
     val tmdbId: Int,
     val seasonNumber: Int,
     val episodeNumber: Int,
     val positionMs: Long,
     val durationMs: Long,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val profileId: String = DEFAULT_PRIMARY_PROFILE_ID
 ) {
     val progressFraction: Float
         get() = if (durationMs > 0L) {
@@ -74,10 +106,14 @@ data class EpisodeProgressEntity(
 @Immutable
 @Entity(
     tableName = "my_list",
-    indices = [Index(value = ["addedAt"])]
+    primaryKeys = ["profileId", "id"],
+    indices = [
+        Index(value = ["profileId", "addedAt"]),
+        Index(value = ["addedAt"])
+    ]
 )
 data class WatchlistEntity(
-    @PrimaryKey val id: String, // "{mediaType}_{tmdbId}"
+    val id: String, // "{mediaType}_{tmdbId}"
     val tmdbId: Int,
     val mediaType: String,
     val title: String,
@@ -86,7 +122,8 @@ data class WatchlistEntity(
     val backdropPath: String?,
     val voteAverage: Double,
     val releaseYear: String,
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    val profileId: String = DEFAULT_PRIMARY_PROFILE_ID
 )
 
 @Immutable

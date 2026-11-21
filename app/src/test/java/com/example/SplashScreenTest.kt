@@ -103,7 +103,8 @@ class SplashScreenTest {
             MyApplicationTheme {
                 VixFlixAppScreen(
                     viewModel = viewModel,
-                    splashMinDurationMs = 900L
+                    splashMinDurationMs = 900L,
+                    respectStartupProfileGate = false
                 )
             }
         }

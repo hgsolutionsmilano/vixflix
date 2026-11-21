@@ -32,6 +32,7 @@ import kotlinx.coroutines.delay
  */
 enum class DpadFocusScope {
     SPLASH,
+    PROFILE_SELECTOR,
     MAIN_NAVIGATION,
     MODAL_QUICK_ACTION,
     DETAIL_SHEET,

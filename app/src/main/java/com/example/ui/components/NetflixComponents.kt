@@ -107,6 +107,7 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Scale
 import com.example.BuildConfig
+import com.example.data.local.UserProfileEntity
 import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
@@ -137,6 +138,8 @@ fun NetflixTopBar(
     onToggleLang: () -> Unit,
     hasUpdateAvailable: Boolean,
     onClickUpdateIcon: () -> Unit,
+    activeProfile: UserProfileEntity? = null,
+    onOpenProfileSelector: (() -> Unit)? = null,
     isTvLayout: Boolean = false,
     searchFocusRequester: FocusRequester? = null,
     brandLogoFocusRequester: FocusRequester? = null,
@@ -349,6 +352,44 @@ fun NetflixTopBar(
                             contentDescription = "Cerca su TMDB",
                             tint = NetflixWhite
                         )
+                    }
+
+                    // Selettore rapido Profilo attivo (Mobile / Verticale)
+                    if (onOpenProfileSelector != null) {
+                        val accentColor = Color(activeProfile?.accentColorHex ?: 0xFFE50914L)
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .border(1.5.dp, accentColor.copy(alpha = 0.85f), RoundedCornerShape(10.dp))
+                                .focusProperties {
+                                    resolvedDownTarget.takeIfAttached()?.let { down = it }
+                                }
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown &&
+                                        keyEvent.key == Key.DirectionDown
+                                    ) {
+                                        resolvedDownTarget.safeRequestFocus()
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedBorderColor = NetflixWhite,
+                                    focusTag = "top_bar_profile_button",
+                                    onClick = onOpenProfileSelector
+                                )
+                                .testTag("top_bar_profile_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            ProfileAvatarArtwork(
+                                avatarId = activeProfile?.avatarId ?: "cinema_crimson",
+                                accentColorHex = activeProfile?.accentColorHex ?: 0xFFE50914L,
+                                size = 34.dp,
+                                cornerRadius = 8.dp
+                            )
+                        }
                     }
                 }
             }
@@ -1266,9 +1307,9 @@ private fun ContinueWatchingCard(
                     )
                     Text(
                         text = when {
-                            isTvLayout && isFocused -> "OK Riprendi • Tieni premuto Opzioni"
-                            entry.remainingMinutes > 0 -> "-${entry.remainingMinutes} min • dal ${entry.startMinutes}°m"
-                            else -> "Riprendi da ${formatSecondsToMmSs(entry.startSeconds)}"
+                            isTvLayout && isFocused -> "OK Riprendi (${entry.completionPercent}%) • Tieni premuto Opzioni"
+                            entry.remainingMinutes > 0 -> "${entry.completionPercent}% • -${entry.remainingMinutes} min • dal ${entry.startMinutes}°m"
+                            else -> "${entry.completionPercent}% • Riprendi da ${formatSecondsToMmSs(entry.startSeconds)}"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isTvLayout && isFocused) NetflixMatchGreen else NetflixLightGray,
