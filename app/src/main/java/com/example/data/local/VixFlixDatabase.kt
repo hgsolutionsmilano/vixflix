@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SeasonEpisodesCacheEntity::class,
         ResolvedStreamCacheEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class VixFlixDatabase : RoomDatabase() {
@@ -92,6 +92,18 @@ abstract class VixFlixDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_watch_progress_updatedAt` ON `watch_progress` (`updatedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_episode_progress_tmdbId_seasonNumber` ON `episode_progress` (`tmdbId`, `seasonNumber`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_my_list_addedAt` ON `my_list` (`addedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_details_cache_lastAccessedAtMs` ON `media_details_cache` (`lastAccessedAtMs`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_season_episodes_cache_lastAccessedAtMs` ON `season_episodes_cache` (`lastAccessedAtMs`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_stream_link_cache_expiresAtMs` ON `stream_link_cache` (`expiresAtMs`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_stream_link_cache_lastUsedAtMs` ON `stream_link_cache` (`lastUsedAtMs`)")
+            }
+        }
+
         fun getInstance(context: Context): VixFlixDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -99,7 +111,8 @@ abstract class VixFlixDatabase : RoomDatabase() {
                     VixFlixDatabase::class.java,
                     "vixflix_stream.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

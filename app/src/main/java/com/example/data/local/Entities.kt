@@ -2,10 +2,14 @@ package com.example.data.local
 
 import androidx.compose.runtime.Immutable
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Immutable
-@Entity(tableName = "watch_progress")
+@Entity(
+    tableName = "watch_progress",
+    indices = [Index(value = ["updatedAt"])]
+)
 data class WatchProgressEntity(
     @PrimaryKey val id: String, // "movie_{tmdbId}" or "tv_{tmdbId}"
     val tmdbId: Int,
@@ -45,7 +49,10 @@ data class WatchProgressEntity(
 }
 
 @Immutable
-@Entity(tableName = "episode_progress")
+@Entity(
+    tableName = "episode_progress",
+    indices = [Index(value = ["tmdbId", "seasonNumber"])]
+)
 data class EpisodeProgressEntity(
     @PrimaryKey val episodeKey: String, // "tv_{tmdbId}_s{season}_e{episode}"
     val tmdbId: Int,
@@ -65,7 +72,10 @@ data class EpisodeProgressEntity(
 }
 
 @Immutable
-@Entity(tableName = "my_list")
+@Entity(
+    tableName = "my_list",
+    indices = [Index(value = ["addedAt"])]
+)
 data class WatchlistEntity(
     @PrimaryKey val id: String, // "{mediaType}_{tmdbId}"
     val tmdbId: Int,
@@ -89,7 +99,10 @@ data class CatalogSnapshotEntity(
 )
 
 @Immutable
-@Entity(tableName = "media_details_cache")
+@Entity(
+    tableName = "media_details_cache",
+    indices = [Index(value = ["lastAccessedAtMs"])]
+)
 data class MediaDetailsCacheEntity(
     @PrimaryKey val cacheKey: String, // "{mediaType}_{tmdbId}"
     val mediaType: String,
@@ -100,7 +113,10 @@ data class MediaDetailsCacheEntity(
 )
 
 @Immutable
-@Entity(tableName = "season_episodes_cache")
+@Entity(
+    tableName = "season_episodes_cache",
+    indices = [Index(value = ["lastAccessedAtMs"])]
+)
 data class SeasonEpisodesCacheEntity(
     @PrimaryKey val cacheKey: String, // "tv_{tvId}_s{seasonNumber}"
     val tvId: Int,
@@ -111,7 +127,13 @@ data class SeasonEpisodesCacheEntity(
 )
 
 @Immutable
-@Entity(tableName = "stream_link_cache")
+@Entity(
+    tableName = "stream_link_cache",
+    indices = [
+        Index(value = ["expiresAtMs"]),
+        Index(value = ["lastUsedAtMs"])
+    ]
+)
 data class ResolvedStreamCacheEntity(
     @PrimaryKey val cacheKey: String, // "{mediaType}_{tmdbId}_{seasonOr0}_{episodeOr0}_{lang}"
     val tmdbId: Int,

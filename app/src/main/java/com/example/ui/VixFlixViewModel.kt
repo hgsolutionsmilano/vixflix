@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.VixFlixApplication
 import com.example.data.cache.BackgroundCachePrefetcher
 import com.example.data.local.AppPreferences
 import com.example.data.local.CacheStatsSummary
@@ -27,9 +28,9 @@ import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
-import com.example.data.repository.PlatformCatalogContent
 import com.example.data.repository.VixFlixRepository
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -154,11 +155,28 @@ data class GitHubUpdateUiState(
 
 class VixFlixViewModel @JvmOverloads constructor(
     application: Application,
-    val repository: VixFlixRepository = VixFlixRepository(VixFlixDatabase.getInstance(application).vixFlixDao())
+    val repository: VixFlixRepository = buildDefaultRepository(application)
 ) : AndroidViewModel(application) {
+    companion object {
+        private fun buildDefaultRepository(application: Application): VixFlixRepository {
+            val vixApp = application as? VixFlixApplication
+            val dao = VixFlixDatabase.getInstance(application).vixFlixDao()
+            return if (vixApp != null) {
+                VixFlixRepository(
+                    dao = dao,
+                    baseHttpClient = vixApp.sharedBaseOkHttpClient,
+                    httpCacheDir = application.cacheDir
+                )
+            } else {
+                VixFlixRepository(dao = dao, httpCacheDir = application.cacheDir)
+            }
+        }
+    }
+
     private val database = VixFlixDatabase.getInstance(application)
     private val preferences = AppPreferences(application)
     private val imagePrefetcher = BackgroundCachePrefetcher(application)
+    private val memoryTrimCallback: (Int) -> Unit = { level -> repository.trimMemoryCaches(level) }
 
     private val _selectedTab = MutableStateFlow(NavTab.HOME)
     val selectedTab: StateFlow<NavTab> = _selectedTab.asStateFlow()
@@ -228,9 +246,6 @@ class VixFlixViewModel @JvmOverloads constructor(
     private val _platformState = MutableStateFlow(StreamingPlatformUiState())
     val platformState: StateFlow<StreamingPlatformUiState> = _platformState.asStateFlow()
 
-    private val movieGenreCache = mutableMapOf<Int, List<MediaItem>>()
-    private val platformCatalogCache = mutableMapOf<Int, PlatformCatalogContent>()
-
     private var catalogLoadJob: Job? = null
     private var imagePrefetchJob: Job? = null
     private var searchJob: Job? = null
@@ -241,6 +256,9 @@ class VixFlixViewModel @JvmOverloads constructor(
     private var trailerJob: Job? = null
     private var detailLoadJob: Job? = null
     private var playbackResolveJob: Job? = null
+    private var nextEpisodePreResolveJob: Job? = null
+    private var lastPreResolvedEpisodeKey: String? = null
+    private val livePlaybackPositionMs = AtomicLong(0L)
 
     private fun updateDetailStack(newStack: List<DetailUiState>) {
         _detailBackStack.value = newStack
@@ -257,9 +275,9 @@ class VixFlixViewModel @JvmOverloads constructor(
     }
 
     init {
+        (application as? VixFlixApplication)?.registerMemoryTrimListener(memoryTrimCallback)
         loadCatalog(forceRefresh = false)
         initGitHubUpdateChecker()
-        refreshCacheStats()
     }
 
     fun selectTab(tab: NavTab) {
@@ -290,7 +308,9 @@ class VixFlixViewModel @JvmOverloads constructor(
                     backgroundPrefetchEnabled.value && _playbackSession.value == null
                 }
             )
-            refreshCacheStats()
+            if (_selectedTab.value == NavTab.SETTINGS) {
+                refreshCacheStats()
+            }
         }
     }
 
@@ -322,7 +342,6 @@ class VixFlixViewModel @JvmOverloads constructor(
                     _platformState.value = _platformState.value.copy(providers = providers)
                 }
                 scheduleCatalogImagePrefetch(cached.feed)
-                refreshCacheStats()
 
                 if (!cached.isStale) {
                     return@launch
@@ -330,17 +349,20 @@ class VixFlixViewModel @JvmOverloads constructor(
                 // Stale-While-Revalidate silenzioso in background senza mostrare spinner né bloccare la UI
                 _isBackgroundCatalogRefreshing.value = true
                 try {
-                    val genres = repository.fetchMovieGenres()
-                    val providers = repository.fetchWatchProviders()
+                    val genresDef = async { repository.fetchMovieGenres() }
+                    val providersDef = async { repository.fetchWatchProviders() }
+                    val liveFeedDef = async { repository.fetchLiveCatalogFeed() }
+
+                    val genres = genresDef.await()
+                    val providers = providersDef.await()
                     _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
                     _platformState.value = _platformState.value.copy(providers = providers)
-                    repository.fetchLiveCatalogFeed(genresToPersist = genres).onSuccess { freshFeed ->
+                    liveFeedDef.await().onSuccess { freshFeed ->
                         val currentSuccess = (_catalogState.value as? CatalogUiState.Success)?.feed
                         if (currentSuccess != freshFeed) {
                             _catalogState.value = CatalogUiState.Success(freshFeed)
                         }
                         scheduleCatalogImagePrefetch(freshFeed)
-                        refreshCacheStats()
                     }
                 } finally {
                     _isBackgroundCatalogRefreshing.value = false
@@ -355,19 +377,35 @@ class VixFlixViewModel @JvmOverloads constructor(
             }
 
             try {
+                // Avvio a freddo 100% parallelo: generi, piattaforme e catalogo (in due stadi progressivi)
+                // partono simultaneamente senza aggiungere un RTT extra prima del primo contenuto.
                 val genresDef = async { repository.fetchMovieGenres() }
                 val providersDef = async { repository.fetchWatchProviders() }
-                val genres = genresDef.await()
-                val providers = providersDef.await()
-                _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
-                _platformState.value = _platformState.value.copy(providers = providers)
-                val result = repository.fetchLiveCatalogFeed(genresToPersist = genres)
+                val liveFeedDef = async {
+                    repository.fetchLiveCatalogFeed(
+                        onPrimaryFeedReady = { primaryFeed ->
+                            if (_catalogState.value !is CatalogUiState.Success) {
+                                _catalogState.value = CatalogUiState.Success(primaryFeed)
+                            }
+                        }
+                    )
+                }
+
+                launch {
+                    val genres = genresDef.await()
+                    _movieGenreState.value = _movieGenreState.value.copy(genres = genres)
+                }
+                launch {
+                    val providers = providersDef.await()
+                    _platformState.value = _platformState.value.copy(providers = providers)
+                }
+
+                val result = liveFeedDef.await()
                 result.fold(
                     onSuccess = { feed ->
                         _catalogState.value = CatalogUiState.Success(feed)
                         launch { repository.vixSrcResolver.prewarmConnection() }
                         scheduleCatalogImagePrefetch(feed)
-                        refreshCacheStats()
                     },
                     onFailure = { error ->
                         if (_catalogState.value !is CatalogUiState.Success) {
@@ -395,7 +433,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             return
         }
 
-        val cached = movieGenreCache[genre.id]
+        val cached = repository.getCachedMoviesByGenre(genre.id)
         if (!cached.isNullOrEmpty()) {
             _movieGenreState.value = _movieGenreState.value.copy(
                 selectedGenre = genre,
@@ -416,7 +454,6 @@ class VixFlixViewModel @JvmOverloads constructor(
         movieGenreJob = viewModelScope.launch {
             repository.fetchMoviesByGenre(genre.id).fold(
                 onSuccess = { items ->
-                    movieGenreCache[genre.id] = items
                     if (_movieGenreState.value.selectedGenre?.id == genre.id) {
                         _movieGenreState.value = _movieGenreState.value.copy(
                             movies = items,
@@ -439,7 +476,7 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun retrySelectedMovieGenre() {
         val current = _movieGenreState.value.selectedGenre ?: return
-        movieGenreCache.remove(current.id)
+        repository.invalidateMovieGenreCache(current.id)
         selectMovieGenre(current)
     }
 
@@ -458,7 +495,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             return
         }
 
-        val cached = platformCatalogCache[provider.providerId]
+        val cached = repository.getCachedPlatformCatalog(provider.providerId)
         if (cached != null && cached.allCombined.isNotEmpty()) {
             _platformState.value = _platformState.value.copy(
                 selectedProvider = provider,
@@ -485,7 +522,6 @@ class VixFlixViewModel @JvmOverloads constructor(
         platformLoadJob = viewModelScope.launch {
             repository.fetchTitlesByWatchProvider(provider).fold(
                 onSuccess = { content ->
-                    platformCatalogCache[provider.providerId] = content
                     if (_platformState.value.selectedProvider?.providerId == provider.providerId) {
                         _platformState.value = _platformState.value.copy(
                             movies = content.movies,
@@ -515,7 +551,7 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun retrySelectedStreamingPlatform() {
         val current = _platformState.value.selectedProvider ?: return
-        platformCatalogCache.remove(current.providerId)
+        repository.invalidatePlatformCatalogCache(current.providerId)
         platformLoadJob?.cancel()
         _platformState.value = _platformState.value.copy(
             isLoading = true,
@@ -524,7 +560,6 @@ class VixFlixViewModel @JvmOverloads constructor(
         platformLoadJob = viewModelScope.launch {
             repository.fetchTitlesByWatchProvider(current, forceRefresh = true).fold(
                 onSuccess = { content ->
-                    platformCatalogCache[current.providerId] = content
                     if (_platformState.value.selectedProvider?.providerId == current.providerId) {
                         _platformState.value = _platformState.value.copy(
                             movies = content.movies,
@@ -659,7 +694,6 @@ class VixFlixViewModel @JvmOverloads constructor(
                         } else if (!details.item.isSeries) {
                             scheduleDetailImagePrefetch(details, emptyList())
                         }
-                        refreshCacheStats()
                     }
                 },
                 onFailure = { err ->
@@ -907,7 +941,6 @@ class VixFlixViewModel @JvmOverloads constructor(
                         currentTop.details?.let { d ->
                             scheduleDetailImagePrefetch(d, episodes)
                         }
-                        refreshCacheStats()
                     }
                 },
                 onFailure = {
@@ -947,6 +980,8 @@ class VixFlixViewModel @JvmOverloads constructor(
         forceStreamRefresh: Boolean = false
     ) {
         playbackResolveJob?.cancel()
+        nextEpisodePreResolveJob?.cancel()
+        lastPreResolvedEpisodeKey = null
         // Sospende subito eventuali prefetch locandine per dedicare il 100% della banda allo streaming video
         imagePrefetchJob?.cancel()
 
@@ -966,6 +1001,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             episodeNumber = initialEpisode
         )
         val initialStartPosMs = explicitStartPositionMs ?: 0L
+        livePlaybackPositionMs.set(initialStartPosMs)
         val placeholderEmbedUrl = repository.vixSrcResolver.buildVixSrcApiUrl(
             tmdbId = item.id,
             mediaType = item.mediaType,
@@ -998,8 +1034,9 @@ class VixFlixViewModel @JvmOverloads constructor(
         )
 
         playbackResolveJob = viewModelScope.launch {
-            val resolvedLang = runCatching { preferences.streamLanguageFlow.first() }.getOrDefault(lang)
-            val resolvedWebPlayer = runCatching { preferences.preferWebPlayerFlow.first() }.getOrDefault(useWebPlayer)
+            launch { repository.vixSrcResolver.prewarmConnection() }
+            val resolvedLang = streamLanguage.value
+            val resolvedWebPlayer = preferWebPlayer.value
             var targetSeason = seasonNumber
             var targetEpisode = episodeNumber
             var targetEpTitle = episodeTitle
@@ -1029,6 +1066,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                 season = targetSeason,
                 episode = targetEpisode
             )
+            livePlaybackPositionMs.set(startPosMs)
 
             val initialEmbedUrl = repository.vixSrcResolver.buildVixSrcApiUrl(
                 tmdbId = item.id,
@@ -1185,7 +1223,6 @@ class VixFlixViewModel @JvmOverloads constructor(
                 lang = streamLanguage.value,
                 stream = updatedStream
             )
-            refreshCacheStats()
         }
     }
 
@@ -1196,6 +1233,7 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun invalidateAndRetryCurrentStream() {
         val current = _playbackSession.value ?: return
         val lang = streamLanguage.value
+        val resumePos = maxOf(current.startPositionMs, livePlaybackPositionMs.get())
         viewModelScope.launch {
             repository.invalidateCachedStream(
                 item = current.mediaItem,
@@ -1208,7 +1246,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                 seasonNumber = current.seasonNumber,
                 episodeNumber = current.episodeNumber,
                 episodeTitle = current.episodeTitle,
-                explicitStartPositionMs = current.startPositionMs,
+                explicitStartPositionMs = resumePos,
                 forceStreamRefresh = true
             )
         }
@@ -1219,10 +1257,14 @@ class VixFlixViewModel @JvmOverloads constructor(
         _playbackSession.value = current.copy(forceWebPlayer = forceWeb)
     }
 
+    /**
+     * Persiste la posizione di visione su Room senza ri-emettere `_playbackSession`
+     * ad ogni tick periodico, evitando ricomposizioni della root UI durante lo streaming.
+     */
     fun onPlaybackProgressUpdate(positionMs: Long, durationMs: Long) {
         val session = _playbackSession.value ?: return
         if (positionMs <= 0L) return
-        _playbackSession.value = session.copy(startPositionMs = positionMs)
+        livePlaybackPositionMs.set(positionMs)
         viewModelScope.launch {
             repository.saveWatchProgress(
                 item = session.mediaItem,
@@ -1232,6 +1274,38 @@ class VixFlixViewModel @JvmOverloads constructor(
                 positionMs = positionMs,
                 durationMs = durationMs
             )
+        }
+    }
+
+    /**
+     * Pre-risolve silenziosamente lo stream HLS del prossimo episodio negli ultimi 90 secondi di visione,
+     * popolando la cache stream in memoria/Room per un cambio episodio quasi istantaneo.
+     */
+    fun preResolveNextEpisode() {
+        val session = _playbackSession.value ?: return
+        if (!session.mediaItem.isSeries) return
+        val currentSeason = session.seasonNumber ?: 1
+        val currentEp = session.episodeNumber ?: 1
+        val nextEpDto = session.seasonEpisodes.firstOrNull { it.episodeNumber == currentEp + 1 }
+        if (nextEpDto == null && session.seasonEpisodes.isNotEmpty()) return
+        val nextEpisodeNumber = nextEpDto?.episodeNumber ?: (currentEp + 1)
+        val lang = streamLanguage.value
+        val key = "${session.mediaItem.id}_${currentSeason}_${nextEpisodeNumber}_$lang"
+        if (lastPreResolvedEpisodeKey == key) return
+        lastPreResolvedEpisodeKey = key
+
+        nextEpisodePreResolveJob?.cancel()
+        nextEpisodePreResolveJob = viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                repository.resolveVixSrcStream(
+                    item = session.mediaItem,
+                    season = currentSeason,
+                    episode = nextEpisodeNumber,
+                    startPositionMs = 0L,
+                    lang = lang,
+                    forceRefresh = false
+                )
+            }
         }
     }
 
@@ -1255,6 +1329,9 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun closePlayer() {
         playbackResolveJob?.cancel()
+        nextEpisodePreResolveJob?.cancel()
+        lastPreResolvedEpisodeKey = null
+        livePlaybackPositionMs.set(0L)
         _playbackSession.value = null
     }
 
@@ -1282,12 +1359,13 @@ class VixFlixViewModel @JvmOverloads constructor(
             preferences.setStreamLanguage(lang)
             val currentSession = _playbackSession.value
             if (currentSession != null) {
+                val resumePos = maxOf(currentSession.startPositionMs, livePlaybackPositionMs.get())
                 startPlayback(
                     item = currentSession.mediaItem,
                     seasonNumber = currentSession.seasonNumber,
                     episodeNumber = currentSession.episodeNumber,
                     episodeTitle = currentSession.episodeTitle,
-                    explicitStartPositionMs = currentSession.startPositionMs
+                    explicitStartPositionMs = resumePos
                 )
             }
         }
@@ -1335,8 +1413,6 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun clearLocalCache() {
         imagePrefetchJob?.cancel()
-        movieGenreCache.clear()
-        platformCatalogCache.clear()
         viewModelScope.launch {
             repository.clearAllLocalCaches {
                 imagePrefetcher.clearCoilCaches()

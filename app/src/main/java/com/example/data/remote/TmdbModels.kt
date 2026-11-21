@@ -2,33 +2,37 @@ package com.example.data.remote
 
 import androidx.compose.runtime.Immutable
 import com.squareup.moshi.Json
+import com.squareup.moshi.JsonClass
 
+@JsonClass(generateAdapter = true)
 data class TmdbPagedResponse<T>(
-    @Json(name = "page") val page: Int = 1,
-    @Json(name = "results") val results: List<T> = emptyList(),
-    @Json(name = "total_pages") val totalPages: Int = 1,
-    @Json(name = "total_results") val totalResults: Int = 0
+    @param:Json(name = "page") val page: Int = 1,
+    @param:Json(name = "results") val results: List<T> = emptyList(),
+    @param:Json(name = "total_pages") val totalPages: Int = 1,
+    @param:Json(name = "total_results") val totalResults: Int = 0
 )
 
+@JsonClass(generateAdapter = true)
 data class TmdbMediaItemDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "media_type") val mediaType: String? = null,
-    @Json(name = "title") val title: String? = null,
-    @Json(name = "name") val name: String? = null,
-    @Json(name = "original_title") val originalTitle: String? = null,
-    @Json(name = "original_name") val originalName: String? = null,
-    @Json(name = "overview") val overview: String? = null,
-    @Json(name = "poster_path") val posterPath: String? = null,
-    @Json(name = "backdrop_path") val backdropPath: String? = null,
-    @Json(name = "vote_average") val voteAverage: Double? = null,
-    @Json(name = "vote_count") val voteCount: Int? = null,
-    @Json(name = "release_date") val releaseDate: String? = null,
-    @Json(name = "first_air_date") val firstAirDate: String? = null,
-    @Json(name = "genre_ids") val genreIds: List<Int>? = null,
-    @Json(name = "popularity") val popularity: Double? = null
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "media_type") val mediaType: String? = null,
+    @param:Json(name = "title") val title: String? = null,
+    @param:Json(name = "name") val name: String? = null,
+    @param:Json(name = "original_title") val originalTitle: String? = null,
+    @param:Json(name = "original_name") val originalName: String? = null,
+    @param:Json(name = "overview") val overview: String? = null,
+    @param:Json(name = "poster_path") val posterPath: String? = null,
+    @param:Json(name = "backdrop_path") val backdropPath: String? = null,
+    @param:Json(name = "vote_average") val voteAverage: Double? = null,
+    @param:Json(name = "vote_count") val voteCount: Int? = null,
+    @param:Json(name = "release_date") val releaseDate: String? = null,
+    @param:Json(name = "first_air_date") val firstAirDate: String? = null,
+    @param:Json(name = "genre_ids") val genreIds: List<Int>? = null,
+    @param:Json(name = "popularity") val popularity: Double? = null
 )
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class MediaItem(
     val id: Int,
     val mediaType: String, // "movie" or "tv"
@@ -81,49 +85,55 @@ fun TmdbMediaItemDto.toDomain(defaultMediaType: String = "movie"): MediaItem? {
 }
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class TmdbGenreDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "name") val name: String
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String
 )
 
+@JsonClass(generateAdapter = true)
 data class TmdbGenresResponse(
-    @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList()
+    @param:Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList()
 )
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class TmdbCastMemberDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "name") val name: String,
-    @Json(name = "character") val character: String? = null,
-    @Json(name = "profile_path") val profilePath: String? = null
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String,
+    @param:Json(name = "character") val character: String? = null,
+    @param:Json(name = "profile_path") val profilePath: String? = null
 ) {
     val profileUrl: String?
         get() = profilePath?.let { "https://image.tmdb.org/t/p/w300$it" }
 }
 
+@JsonClass(generateAdapter = true)
 data class TmdbCreditsDto(
-    @Json(name = "cast") val cast: List<TmdbCastMemberDto> = emptyList()
+    @param:Json(name = "cast") val cast: List<TmdbCastMemberDto> = emptyList()
 )
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class TmdbSeasonSummaryDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "season_number") val seasonNumber: Int,
-    @Json(name = "name") val name: String,
-    @Json(name = "episode_count") val episodeCount: Int = 0,
-    @Json(name = "poster_path") val posterPath: String? = null,
-    @Json(name = "air_date") val airDate: String? = null
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "season_number") val seasonNumber: Int,
+    @param:Json(name = "name") val name: String,
+    @param:Json(name = "episode_count") val episodeCount: Int = 0,
+    @param:Json(name = "poster_path") val posterPath: String? = null,
+    @param:Json(name = "air_date") val airDate: String? = null
 )
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class TmdbVideoDto(
-    @Json(name = "id") val id: String,
-    @Json(name = "key") val key: String,
-    @Json(name = "name") val name: String,
-    @Json(name = "site") val site: String = "YouTube",
-    @Json(name = "type") val type: String = "Trailer",
-    @Json(name = "official") val official: Boolean = false,
-    @Json(name = "iso_639_1") val languageCode: String? = null
+    @param:Json(name = "id") val id: String,
+    @param:Json(name = "key") val key: String,
+    @param:Json(name = "name") val name: String,
+    @param:Json(name = "site") val site: String = "YouTube",
+    @param:Json(name = "type") val type: String = "Trailer",
+    @param:Json(name = "official") val official: Boolean = false,
+    @param:Json(name = "iso_639_1") val languageCode: String? = null
 ) {
     val isYouTube: Boolean
         get() = site.equals("YouTube", ignoreCase = true) && key.isNotBlank()
@@ -142,69 +152,75 @@ data class TmdbVideoDto(
         }
 }
 
+@JsonClass(generateAdapter = true)
 data class TmdbVideosResponse(
-    @Json(name = "id") val id: Int? = null,
-    @Json(name = "results") val results: List<TmdbVideoDto> = emptyList()
+    @param:Json(name = "id") val id: Int? = null,
+    @param:Json(name = "results") val results: List<TmdbVideoDto> = emptyList()
 )
 
+@JsonClass(generateAdapter = true)
 data class TmdbMovieDetailsDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "title") val title: String? = null,
-    @Json(name = "overview") val overview: String? = null,
-    @Json(name = "poster_path") val posterPath: String? = null,
-    @Json(name = "backdrop_path") val backdropPath: String? = null,
-    @Json(name = "vote_average") val voteAverage: Double? = null,
-    @Json(name = "release_date") val releaseDate: String? = null,
-    @Json(name = "runtime") val runtime: Int? = null,
-    @Json(name = "tagline") val tagline: String? = null,
-    @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
-    @Json(name = "credits") val credits: TmdbCreditsDto? = null,
-    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null,
-    @Json(name = "videos") val videos: TmdbVideosResponse? = null
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "title") val title: String? = null,
+    @param:Json(name = "overview") val overview: String? = null,
+    @param:Json(name = "poster_path") val posterPath: String? = null,
+    @param:Json(name = "backdrop_path") val backdropPath: String? = null,
+    @param:Json(name = "vote_average") val voteAverage: Double? = null,
+    @param:Json(name = "release_date") val releaseDate: String? = null,
+    @param:Json(name = "runtime") val runtime: Int? = null,
+    @param:Json(name = "tagline") val tagline: String? = null,
+    @param:Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
+    @param:Json(name = "credits") val credits: TmdbCreditsDto? = null,
+    @param:Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null,
+    @param:Json(name = "videos") val videos: TmdbVideosResponse? = null
 )
 
+@JsonClass(generateAdapter = true)
 data class TmdbTvDetailsDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "name") val name: String? = null,
-    @Json(name = "overview") val overview: String? = null,
-    @Json(name = "poster_path") val posterPath: String? = null,
-    @Json(name = "backdrop_path") val backdropPath: String? = null,
-    @Json(name = "vote_average") val voteAverage: Double? = null,
-    @Json(name = "first_air_date") val firstAirDate: String? = null,
-    @Json(name = "number_of_seasons") val numberOfSeasons: Int? = null,
-    @Json(name = "number_of_episodes") val numberOfEpisodes: Int? = null,
-    @Json(name = "tagline") val tagline: String? = null,
-    @Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
-    @Json(name = "seasons") val seasons: List<TmdbSeasonSummaryDto> = emptyList(),
-    @Json(name = "credits") val credits: TmdbCreditsDto? = null,
-    @Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null,
-    @Json(name = "videos") val videos: TmdbVideosResponse? = null
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String? = null,
+    @param:Json(name = "overview") val overview: String? = null,
+    @param:Json(name = "poster_path") val posterPath: String? = null,
+    @param:Json(name = "backdrop_path") val backdropPath: String? = null,
+    @param:Json(name = "vote_average") val voteAverage: Double? = null,
+    @param:Json(name = "first_air_date") val firstAirDate: String? = null,
+    @param:Json(name = "number_of_seasons") val numberOfSeasons: Int? = null,
+    @param:Json(name = "number_of_episodes") val numberOfEpisodes: Int? = null,
+    @param:Json(name = "tagline") val tagline: String? = null,
+    @param:Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
+    @param:Json(name = "seasons") val seasons: List<TmdbSeasonSummaryDto> = emptyList(),
+    @param:Json(name = "credits") val credits: TmdbCreditsDto? = null,
+    @param:Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null,
+    @param:Json(name = "videos") val videos: TmdbVideosResponse? = null
 )
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class TmdbEpisodeDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "episode_number") val episodeNumber: Int,
-    @Json(name = "season_number") val seasonNumber: Int,
-    @Json(name = "name") val name: String? = null,
-    @Json(name = "overview") val overview: String? = null,
-    @Json(name = "still_path") val stillPath: String? = null,
-    @Json(name = "runtime") val runtime: Int? = null,
-    @Json(name = "air_date") val airDate: String? = null,
-    @Json(name = "vote_average") val voteAverage: Double? = null
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "episode_number") val episodeNumber: Int,
+    @param:Json(name = "season_number") val seasonNumber: Int,
+    @param:Json(name = "name") val name: String? = null,
+    @param:Json(name = "overview") val overview: String? = null,
+    @param:Json(name = "still_path") val stillPath: String? = null,
+    @param:Json(name = "runtime") val runtime: Int? = null,
+    @param:Json(name = "air_date") val airDate: String? = null,
+    @param:Json(name = "vote_average") val voteAverage: Double? = null
 ) {
     val stillUrl: String?
         get() = stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
 }
 
+@JsonClass(generateAdapter = true)
 data class TmdbSeasonDetailsDto(
-    @Json(name = "id") val id: Int,
-    @Json(name = "season_number") val seasonNumber: Int,
-    @Json(name = "name") val name: String? = null,
-    @Json(name = "episodes") val episodes: List<TmdbEpisodeDto> = emptyList()
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "season_number") val seasonNumber: Int,
+    @param:Json(name = "name") val name: String? = null,
+    @param:Json(name = "episodes") val episodes: List<TmdbEpisodeDto> = emptyList()
 )
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class MediaDetails(
     val item: MediaItem,
     val tagline: String,
@@ -249,11 +265,12 @@ object TmdbGenreMap {
 }
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class TmdbWatchProviderDto(
-    @Json(name = "provider_id") val providerId: Int,
-    @Json(name = "provider_name") val providerName: String,
-    @Json(name = "logo_path") val logoPath: String? = null,
-    @Json(name = "display_priority") val displayPriority: Int = 999
+    @param:Json(name = "provider_id") val providerId: Int,
+    @param:Json(name = "provider_name") val providerName: String,
+    @param:Json(name = "logo_path") val logoPath: String? = null,
+    @param:Json(name = "display_priority") val displayPriority: Int = 999
 ) {
     val logoUrl: String?
         get() = logoPath?.takeIf { it.isNotBlank() }?.let { path ->
@@ -270,8 +287,9 @@ data class TmdbWatchProviderDto(
         get() = TmdbWatchProviderMap.brandColorFor(providerId)
 }
 
+@JsonClass(generateAdapter = true)
 data class TmdbWatchProvidersResponse(
-    @Json(name = "results") val results: List<TmdbWatchProviderDto> = emptyList()
+    @param:Json(name = "results") val results: List<TmdbWatchProviderDto> = emptyList()
 )
 
 object TmdbWatchProviderMap {

@@ -32,9 +32,10 @@ import com.example.data.remote.TmdbWatchProviderMap
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.remote.toDomain
+import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -42,8 +43,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
-import okhttp3.ConnectionPool
-import okhttp3.Dispatcher
+import okhttp3.Cache
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
@@ -72,6 +72,7 @@ data class PlatformCatalogContent(
 )
 
 @Immutable
+@JsonClass(generateAdapter = true)
 data class CatalogFeed(
     val heroBanner: MediaItem,
     val top10Today: List<MediaItem>,
@@ -89,7 +90,8 @@ class VixFlixRepository(
     private val dao: VixFlixDao,
     baseHttpClient: OkHttpClient = defaultRawOkHttpClient(),
     private val tmdbBaseUrl: String = BuildConfig.TMDB_BASE_URL,
-    vixBaseUrl: String = BuildConfig.VIXSRC_BASE_URL
+    vixBaseUrl: String = BuildConfig.VIXSRC_BASE_URL,
+    httpCacheDir: File? = null
 ) {
     companion object {
         private const val CATALOG_SNAPSHOT_ID = "home_feed_v1"
@@ -120,14 +122,16 @@ class VixFlixRepository(
 
     private val rawOkHttpClient: OkHttpClient = baseHttpClient
 
-    private val tmdbDispatcher = Dispatcher().apply {
-        maxRequests = 32
-        maxRequestsPerHost = 6
+    private val tmdbHttpCache: Cache? = httpCacheDir?.let { dir ->
+        runCatching { Cache(File(dir, "tmdb_http_cache"), 10L * 1024L * 1024L) }.getOrNull()
     }
 
+    /**
+     * Deriva dal `baseHttpClient` condiviso riutilizzando ConnectionPool e Dispatcher
+     * senza moltiplicare thread pool su Fire TV Stick e dispositivi Android TV low-RAM.
+     */
     private val tmdbOkHttpClient: OkHttpClient = rawOkHttpClient.newBuilder()
-        .dispatcher(tmdbDispatcher)
-        .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
+        .apply { tmdbHttpCache?.let { cache(it) } }
         .addInterceptor { chain ->
             val original = chain.request()
             val apiKey = TmdbApiConfig.currentApiKey.trim().ifBlank { TmdbApiConfig.INTEGRATED_TMDB_API_KEY }
@@ -142,19 +146,13 @@ class VixFlixRepository(
         }
         .build()
 
-    private val gitHubDispatcher = Dispatcher().apply {
-        maxRequests = 6
-        maxRequestsPerHost = 2
-    }
-
     private val gitHubOkHttpClient: OkHttpClient = rawOkHttpClient.newBuilder()
-        .dispatcher(gitHubDispatcher)
-        .connectionPool(ConnectionPool(2, 3, TimeUnit.MINUTES))
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    private val moshi: Moshi = Moshi.Builder()
-        .addLast(KotlinJsonAdapterFactory())
-        .build()
+    // Zero-reflection Moshi: tutti i DTO/modelli usano adapter generati da KSP (@JsonClass(generateAdapter = true))
+    internal val moshi: Moshi = Moshi.Builder().build()
 
     private val catalogFeedAdapter = moshi.adapter(CatalogFeed::class.java)
     private val mediaDetailsAdapter = moshi.adapter(MediaDetails::class.java)
@@ -173,9 +171,10 @@ class VixFlixRepository(
         val updatedAtMs: Long
     )
 
-    private val detailsMemoryCache = LruCache<String, TimedMemoryEntry<MediaDetails>>(30)
-    private val episodesMemoryCache = LruCache<String, TimedMemoryEntry<List<TmdbEpisodeDto>>>(24)
-    private val platformCatalogMemoryCache = LruCache<Int, TimedMemoryEntry<PlatformCatalogContent>>(16)
+    private val detailsMemoryCache = LruCache<String, TimedMemoryEntry<MediaDetails>>(24)
+    private val episodesMemoryCache = LruCache<String, TimedMemoryEntry<List<TmdbEpisodeDto>>>(20)
+    private val platformCatalogMemoryCache = LruCache<Int, TimedMemoryEntry<PlatformCatalogContent>>(12)
+    private val movieGenreMemoryCache = LruCache<Int, TimedMemoryEntry<List<MediaItem>>>(20)
     private val streamMemoryCache = ConcurrentHashMap<String, ResolvedStream>()
     @Volatile
     private var cachedGenresInMemory: TimedMemoryEntry<List<TmdbGenreDto>>? = null
@@ -224,10 +223,14 @@ class VixFlixRepository(
     }
 
     /**
-     * Carica l'intero catalogo iniziale in parallelo direttamente dalle API live di TMDB
-     * e aggiorna lo snapshot persistente su Room per gli avvii successivi.
+     * Carica il catalogo dalle API live di TMDB con priorità in due stadi:
+     * - Stadio 1 (above-the-fold): Hero, Top 10, Trending Film e Trending Serie TV -> emesso subito tramite `onPrimaryFeedReady`.
+     * - Stadio 2 (below-the-fold): Popolari, Al Cinema, Più Votati, Azione e Sci-Fi -> completa il feed e salva lo snapshot su Room.
      */
-    suspend fun fetchLiveCatalogFeed(genresToPersist: List<TmdbGenreDto>? = null): Result<CatalogFeed> = runCatching {
+    suspend fun fetchLiveCatalogFeed(
+        genresToPersist: List<TmdbGenreDto>? = null,
+        onPrimaryFeedReady: ((CatalogFeed) -> Unit)? = null
+    ): Result<CatalogFeed> = runCatching {
         val apiKey = TmdbApiConfig.currentApiKey.trim().ifBlank { TmdbApiConfig.INTEGRATED_TMDB_API_KEY }
         if (apiKey.isBlank()) {
             throw IllegalStateException("Chiave API TMDB mancante.")
@@ -247,6 +250,28 @@ class VixFlixRepository(
             val trendingAll = trendingAllDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
             val trendingMovies = trendingMoviesDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
             val trendingTv = trendingTvDef.await().results.mapNotNull { it.toDomain("tv") }.distinctBy { it.uniqueKey }
+
+            val primaryHero = trendingAll.firstOrNull { it.backdropPath != null }
+                ?: trendingMovies.firstOrNull()
+                ?: trendingTv.firstOrNull()
+
+            if (onPrimaryFeedReady != null && primaryHero != null) {
+                onPrimaryFeedReady(
+                    CatalogFeed(
+                        heroBanner = primaryHero,
+                        top10Today = trendingAll.take(10),
+                        trendingMovies = trendingMovies,
+                        trendingTv = trendingTv,
+                        popularMovies = emptyList(),
+                        popularTv = emptyList(),
+                        nowPlayingMovies = emptyList(),
+                        topRatedMovies = emptyList(),
+                        actionMovies = emptyList(),
+                        sciFiMovies = emptyList()
+                    )
+                )
+            }
+
             val popularMovies = popularMoviesDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
             val popularTv = popularTvDef.await().results.mapNotNull { it.toDomain("tv") }.distinctBy { it.uniqueKey }
             val nowPlaying = nowPlayingDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
@@ -254,7 +279,7 @@ class VixFlixRepository(
             val action = actionDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
             val sciFi = sciFiDef.await().results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
 
-            val hero = trendingAll.firstOrNull { it.backdropPath != null }
+            val hero = primaryHero
                 ?: popularMovies.firstOrNull()
                 ?: throw IllegalStateException("TMDB non ha restituito risultati per il catalogo.")
 
@@ -433,9 +458,43 @@ class VixFlixRepository(
         }.getOrDefault(TmdbGenreMap.defaultMovieGenres)
     }
 
-    suspend fun fetchMoviesByGenre(genreId: Int, page: Int = 1): Result<List<MediaItem>> = runCatching {
+    fun getCachedMoviesByGenre(genreId: Int): List<MediaItem>? {
+        val now = System.currentTimeMillis()
+        return movieGenreMemoryCache.get(genreId)
+            ?.takeIf { now - it.updatedAtMs <= CATALOG_FRESH_MS && it.value.isNotEmpty() }
+            ?.value
+    }
+
+    fun invalidateMovieGenreCache(genreId: Int) {
+        movieGenreMemoryCache.remove(genreId)
+    }
+
+    fun getCachedPlatformCatalog(providerId: Int): PlatformCatalogContent? {
+        val now = System.currentTimeMillis()
+        return platformCatalogMemoryCache.get(providerId)
+            ?.takeIf { now - it.updatedAtMs <= CATALOG_FRESH_MS && it.value.allCombined.isNotEmpty() }
+            ?.value
+    }
+
+    fun invalidatePlatformCatalogCache(providerId: Int) {
+        platformCatalogMemoryCache.remove(providerId)
+    }
+
+    suspend fun fetchMoviesByGenre(
+        genreId: Int,
+        page: Int = 1,
+        forceRefresh: Boolean = false
+    ): Result<List<MediaItem>> = runCatching {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && page == 1) {
+            getCachedMoviesByGenre(genreId)?.let { return@runCatching it }
+        }
         val response = tmdbApi.discoverMoviesByGenre(genreId = genreId.toString(), page = page)
-        response.results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+        response.results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }.also { items ->
+            if (page == 1 && items.isNotEmpty()) {
+                movieGenreMemoryCache.put(genreId, TimedMemoryEntry(items, now))
+            }
+        }
     }
 
     /**
@@ -877,14 +936,36 @@ class VixFlixRepository(
         )
     }
 
+    /**
+     * Riduce l'impronta RAM delle cache volatili in memoria su pressione di sistema (`onTrimMemory`),
+     * lasciando intatta la persistenza su disco Room/HTTP.
+     */
+    fun trimMemoryCaches(level: Int) {
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE
+        ) {
+            detailsMemoryCache.evictAll()
+            episodesMemoryCache.evictAll()
+            platformCatalogMemoryCache.evictAll()
+            movieGenreMemoryCache.evictAll()
+        } else {
+            detailsMemoryCache.trimToSize(8)
+            episodesMemoryCache.trimToSize(6)
+            platformCatalogMemoryCache.trimToSize(4)
+            movieGenreMemoryCache.trimToSize(6)
+        }
+    }
+
     suspend fun clearAllLocalCaches(clearImageCaches: () -> Unit) {
         detailsMemoryCache.evictAll()
         episodesMemoryCache.evictAll()
         platformCatalogMemoryCache.evictAll()
+        movieGenreMemoryCache.evictAll()
         streamMemoryCache.clear()
         cachedGenresInMemory = null
         cachedProvidersInMemory = null
         withContext(Dispatchers.IO) {
+            runCatching { tmdbHttpCache?.evictAll() }
             runCatching { dao.clearCatalogSnapshot() }
             runCatching { dao.clearMediaDetailsCache() }
             runCatching { dao.clearSeasonEpisodesCache() }

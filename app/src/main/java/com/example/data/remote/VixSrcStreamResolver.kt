@@ -1,6 +1,8 @@
 package com.example.data.remote
 
+import androidx.compose.runtime.Immutable
 import com.example.BuildConfig
+import com.squareup.moshi.JsonClass
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -17,6 +19,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 
+@Immutable
 data class ResolvedStream(
     val streamUrl: String,
     val embedUrl: String,
@@ -36,6 +39,8 @@ data class ResolvedStream(
     }
 }
 
+@Immutable
+@JsonClass(generateAdapter = true)
 data class SubtitleTrack(
     val label: String,
     val language: String,
@@ -51,6 +56,11 @@ data class SubtitleTrack(
  *    affinché `DefaultHlsExtractorFactory` di ExoPlayer utilizzi immediatamente `TsExtractor`.
  */
 class VixSrcOkHttpInterceptor : Interceptor {
+    companion object {
+        private val ENC_KEY_REGEX = Regex("""URI=(["'])/storage/enc\.key([^"']*)\1""")
+        private val HLS_MEDIA_TYPE = "application/vnd.apple.mpegurl".toMediaType()
+    }
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
         val originalUrl = originalRequest.url
@@ -86,6 +96,13 @@ class VixSrcOkHttpInterceptor : Interceptor {
             return response
         }
 
+        // Fast-path per segmenti binari HLS dai CDN VixSrc: evita qualsiasi controllo/buffer stringa sul body.
+        if (path.contains("/hls/") && (path.endsWith(".html") || path.endsWith(".m4s") || path.endsWith(".ts"))) {
+            return response.newBuilder()
+                .header("Content-Type", "video/mp2t")
+                .build()
+        }
+
         // Se è una playlist HLS (.m3u8) di VixSrc, assicura URI assoluta per la chiave AES-128 /storage/enc.key
         val contentType = response.header("Content-Type").orEmpty()
         val isM3u8Candidate = (host.contains("vixsrc.to") && path.contains("/playlist/")) ||
@@ -103,13 +120,12 @@ class VixSrcOkHttpInterceptor : Interceptor {
                         append(":").append(originalUrl.port)
                     }
                 }
-                val encKeyRegex = Regex("""URI=(["'])/storage/enc\.key([^"']*)\1""")
-                val fixedManifest = encKeyRegex.replace(cleanedManifest) { match ->
+                val fixedManifest = ENC_KEY_REGEX.replace(cleanedManifest) { match ->
                     val quote = match.groupValues[1]
                     val suffix = match.groupValues[2]
                     "URI=${quote}$keyBaseUrl/storage/enc.key$suffix$quote"
                 }
-                val newBody = fixedManifest.toResponseBody("application/vnd.apple.mpegurl".toMediaType())
+                val newBody = fixedManifest.toResponseBody(HLS_MEDIA_TYPE)
                 return response.newBuilder()
                     .header("Content-Type", "application/vnd.apple.mpegurl")
                     .body(newBody)
@@ -120,14 +136,6 @@ class VixSrcOkHttpInterceptor : Interceptor {
             }
         }
 
-        // Se è un segmento video/audio HLS dai CDN VixSrc (camuffato con estensione .html o .m4s e text/html),
-        // imposta Content-Type: video/mp2t così ExoPlayer usa TsExtractor al primo colpo.
-        if (path.contains("/hls/") && (path.endsWith(".html") || path.endsWith(".m4s") || path.endsWith(".ts"))) {
-            return response.newBuilder()
-                .header("Content-Type", "video/mp2t")
-                .build()
-        }
-
         return response
     }
 }
@@ -136,6 +144,31 @@ class VixSrcStreamResolver(
     baseOkHttpClient: OkHttpClient,
     rawBaseUrl: String = BuildConfig.VIXSRC_BASE_URL
 ) {
+    companion object {
+        private val TMDB_ID_REGEX = Regex(""""tmdb_id"\s*:\s*(\d+)""")
+        private val SRC_MATCH_REGEX = Regex(""""src"\s*:\s*"([^"]+)"""")
+        private val EXPIRES_QUERY_REGEX = Regex("""[?&]expires=(\d+)""")
+        private val MASTER_BLOCK_REGEX = Regex(
+            """window\.masterPlaylist\s*=\s*\{(.*?)\}\s*;?""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val PLAYLIST_URL_REGEX = Regex("""['"]?url['"]?\s*:\s*['"]([^'"]+playlist[^'"]+|[^'"]+\.m3u8[^'"]*)['"]""")
+        private val PARAMS_BLOCK_REGEX = Regex(
+            """params\s*:\s*\{(.*?)\}""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val KV_REGEX = Regex("""['"]([^'"]+)['"]\s*:\s*['"]([^'"]*)['"]""")
+        private val TOKEN_FALLBACK_REGEX = Regex("""['"]token['"]\s*:\s*['"]([^'"]+)['"]""")
+        private val EXPIRES_FALLBACK_REGEX = Regex("""['"]expires['"]\s*:\s*['"]([^'"]+)['"]""")
+        private val STREAMS_BLOCK_REGEX = Regex(
+            """window\.streams\s*=\s*(\[.*?\]);""",
+            setOf(RegexOption.DOT_MATCHES_ALL)
+        )
+        private val STREAM_URL_REGEX = Regex("""["'](?:url|file)["']\s*:\s*["']([^"']+)["']""")
+        private val DIRECT_M3U8_REGEX = Regex("""https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*""")
+        private val SUBTITLE_REGEX = Regex("""https?://[^\s"'<>]+?\.(?:vtt|srt)[^\s"'<>]*""")
+    }
+
     private val baseUrl = rawBaseUrl.trimEnd('/')
     private val catalogMutex = Mutex()
     private val cachedMovieIds = mutableSetOf<Int>()
@@ -148,11 +181,11 @@ class VixSrcStreamResolver(
      * isolati dalle richieste catalogo TMDB e dal download automatico degli aggiornamenti APK.
      */
     private val streamingDispatcher = Dispatcher().apply {
-        maxRequests = 64
-        maxRequestsPerHost = 12
+        maxRequests = 48
+        maxRequestsPerHost = 10
     }
 
-    private val streamingConnectionPool = ConnectionPool(8, 5, TimeUnit.MINUTES)
+    private val streamingConnectionPool = ConnectionPool(6, 5, TimeUnit.MINUTES)
 
     /**
      * Client OkHttp condiviso con `OkHttpDataSource.Factory` di Media3 ExoPlayer.
@@ -173,6 +206,10 @@ class VixSrcStreamResolver(
         .callTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    private val prewarmApiClient: OkHttpClient = exoOkHttpClient.newBuilder()
+        .callTimeout(5, TimeUnit.SECONDS)
+        .build()
+
     /**
      * Pre-riscalda in modo leggero e asincrono DNS, handshake TLS e socket keep-alive verso i server video
      * subito dopo l'apertura dell'app, senza scaricare JSON pesanti né competere con la riproduzione.
@@ -188,9 +225,7 @@ class VixSrcStreamResolver(
                 .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
                 .header("Accept", "application/json, */*")
                 .build()
-            resolverApiClient.newBuilder()
-                .callTimeout(5, TimeUnit.SECONDS)
-                .build()
+            prewarmApiClient
                 .newCall(headRequest)
                 .execute()
                 .close()
@@ -263,8 +298,7 @@ class VixSrcStreamResolver(
             exoOkHttpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val body = response.body?.string().orEmpty()
-                    val regex = Regex(""""tmdb_id"\s*:\s*(\d+)""")
-                    val ids = regex.findAll(body).mapNotNull { it.groupValues[1].toIntOrNull() }.toSet()
+                    val ids = TMDB_ID_REGEX.findAll(body).mapNotNull { it.groupValues[1].toIntOrNull() }.toSet()
                     if (ids.isNotEmpty()) {
                         catalogMutex.withLock {
                             targetSet.addAll(ids)
@@ -324,7 +358,7 @@ class VixSrcStreamResolver(
                     throw IllegalStateException("Titolo non trovato su VixSrc API (HTTP ${apiResponse.code})")
                 }
                 val jsonBody = apiResponse.body?.string().orEmpty()
-                val srcMatch = Regex(""""src"\s*:\s*"([^"]+)"""").find(jsonBody)?.groupValues?.getOrNull(1)
+                val srcMatch = SRC_MATCH_REGEX.find(jsonBody)?.groupValues?.getOrNull(1)
                 srcMatch?.replace("\\/", "/")?.takeIf { it.isNotBlank() }
                     ?: throw IllegalStateException("Nessun flusso disponibile su VixSrc per questo titolo.")
             }
@@ -370,7 +404,7 @@ class VixSrcStreamResolver(
         val safetyMarginMs = 120_000L
         val maxCapMs = nowMs + 6L * 3600L * 1000L
 
-        val rawExpires = Regex("""[?&]expires=(\d+)""")
+        val rawExpires = EXPIRES_QUERY_REGEX
             .find(streamUrl)
             ?.groupValues
             ?.getOrNull(1)
@@ -419,30 +453,20 @@ class VixSrcStreamResolver(
         lang: String = "it",
         startSeconds: Long = 0L
     ): String? {
-        val masterBlockRegex = Regex(
-            """window\.masterPlaylist\s*=\s*\{(.*?)\}\s*;?""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        )
-        val masterMatch = masterBlockRegex.find(html)?.groupValues?.getOrNull(1) ?: html
+        val masterMatch = MASTER_BLOCK_REGEX.find(html)?.groupValues?.getOrNull(1) ?: html
 
-        val urlRegex = Regex("""['"]?url['"]?\s*:\s*['"]([^'"]+playlist[^'"]+|[^'"]+\.m3u8[^'"]*)['"]""")
-        val rawPlaylistUrl = urlRegex.find(masterMatch)?.groupValues?.getOrNull(1)
-            ?: urlRegex.find(html)?.groupValues?.getOrNull(1)
+        val rawPlaylistUrl = PLAYLIST_URL_REGEX.find(masterMatch)?.groupValues?.getOrNull(1)
+            ?: PLAYLIST_URL_REGEX.find(html)?.groupValues?.getOrNull(1)
 
         if (!rawPlaylistUrl.isNullOrBlank()) {
             val resolvedBase = resolveRelativeUrl(rawPlaylistUrl)
             val paramsMap = linkedMapOf<String, String>()
 
-            val paramsBlockRegex = Regex(
-                """params\s*:\s*\{(.*?)\}""",
-                setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-            )
-            val paramsContent = paramsBlockRegex.find(masterMatch)?.groupValues?.getOrNull(1)
-                ?: paramsBlockRegex.find(html)?.groupValues?.getOrNull(1)
+            val paramsContent = PARAMS_BLOCK_REGEX.find(masterMatch)?.groupValues?.getOrNull(1)
+                ?: PARAMS_BLOCK_REGEX.find(html)?.groupValues?.getOrNull(1)
 
             if (!paramsContent.isNullOrBlank()) {
-                val kvRegex = Regex("""['"]([^'"]+)['"]\s*:\s*['"]([^'"]*)['"]""")
-                kvRegex.findAll(paramsContent).forEach { matchResult ->
+                KV_REGEX.findAll(paramsContent).forEach { matchResult ->
                     val k = matchResult.groupValues[1]
                     val v = matchResult.groupValues[2]
                     if (k.isNotBlank() && v.isNotBlank()) {
@@ -450,8 +474,8 @@ class VixSrcStreamResolver(
                     }
                 }
             } else {
-                val tokenMatch = Regex("""['"]token['"]\s*:\s*['"]([^'"]+)['"]""").find(html)?.groupValues?.getOrNull(1)
-                val expiresMatch = Regex("""['"]expires['"]\s*:\s*['"]([^'"]+)['"]""").find(html)?.groupValues?.getOrNull(1)
+                val tokenMatch = TOKEN_FALLBACK_REGEX.find(html)?.groupValues?.getOrNull(1)
+                val expiresMatch = EXPIRES_FALLBACK_REGEX.find(html)?.groupValues?.getOrNull(1)
                 if (!tokenMatch.isNullOrBlank()) paramsMap["token"] = tokenMatch
                 if (!expiresMatch.isNullOrBlank()) paramsMap["expires"] = expiresMatch
             }
@@ -469,21 +493,16 @@ class VixSrcStreamResolver(
             return if (queryString.isNotBlank()) "$resolvedBase$separator$queryString" else resolvedBase
         }
 
-        val streamsRegex = Regex(
-            """window\.streams\s*=\s*(\[.*?\]);""",
-            setOf(RegexOption.DOT_MATCHES_ALL)
-        )
-        val streamsJson = streamsRegex.find(html)?.groupValues?.getOrNull(1)
+        val streamsJson = STREAMS_BLOCK_REGEX.find(html)?.groupValues?.getOrNull(1)
         if (!streamsJson.isNullOrBlank()) {
-            val streamUrlMatch = Regex("""["'](?:url|file)["']\s*:\s*["']([^"']+)["']""")
+            val streamUrlMatch = STREAM_URL_REGEX
                 .find(streamsJson)?.groupValues?.getOrNull(1)
             if (!streamUrlMatch.isNullOrBlank()) {
                 return resolveRelativeUrl(streamUrlMatch)
             }
         }
 
-        val directM3u8Regex = Regex("""https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*""")
-        val directMatch = directM3u8Regex.find(html)?.value
+        val directMatch = DIRECT_M3U8_REGEX.find(html)?.value
         if (!directMatch.isNullOrBlank()) {
             return directMatch.replace("\\/", "/")
         }
@@ -493,8 +512,7 @@ class VixSrcStreamResolver(
 
     private fun parseSubtitlesFromHtml(html: String): List<SubtitleTrack> {
         val tracks = mutableListOf<SubtitleTrack>()
-        val subRegex = Regex("""https?://[^\s"'<>]+?\.(?:vtt|srt)[^\s"'<>]*""")
-        subRegex.findAll(html).forEachIndexed { idx, match ->
+        SUBTITLE_REGEX.findAll(html).forEachIndexed { idx, match ->
             val url = match.value.replace("\\/", "/")
             val lang = if (url.contains("it", ignoreCase = true)) "it" else "en"
             val label = if (lang == "it") "Italiano #${idx + 1}" else "Sottotitoli #${idx + 1}"

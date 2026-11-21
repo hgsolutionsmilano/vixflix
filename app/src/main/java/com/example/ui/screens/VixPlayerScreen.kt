@@ -62,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -73,7 +74,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -83,7 +83,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +90,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem as ExoMediaItem
@@ -102,11 +104,12 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import coil.compose.AsyncImage
+import com.example.VixFlixApplication
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.VixSrcStreamResolver
@@ -114,8 +117,6 @@ import com.example.ui.PlaybackSession
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
-import com.example.ui.components.TvSeekTimeBar
-import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
@@ -123,16 +124,29 @@ import com.example.ui.components.takeIfAttached
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
-import com.example.ui.theme.NetflixDarkSurface
 import com.example.ui.theme.NetflixElevatedSurface
-import com.example.ui.theme.NetflixLightGray
-import com.example.ui.theme.NetflixMatchGreen
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
 import kotlinx.coroutines.delay
 
+private const val LOW_RAM_MAX_BUFFER_BYTES = 32 * 1024 * 1024
+private const val LOW_RAM_BACK_BUFFER_MS = 8_000
+private const val STANDARD_BACK_BUFFER_MS = 15_000
+
 @OptIn(UnstableApi::class)
-internal fun StreamingBufferPreset.toExoLoadControl(): DefaultLoadControl {
+internal fun StreamingBufferPreset.toExoLoadControl(
+    isLowRamDevice: Boolean = false
+): DefaultLoadControl {
+    val effectiveTargetBytes = if (isLowRamDevice) {
+        minOf(targetBufferBytes, LOW_RAM_MAX_BUFFER_BYTES)
+    } else {
+        targetBufferBytes
+    }
+    val effectiveBackBufferMs = if (isLowRamDevice) {
+        LOW_RAM_BACK_BUFFER_MS
+    } else {
+        STANDARD_BACK_BUFFER_MS
+    }
     return DefaultLoadControl.Builder()
         .setAllocator(DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE))
         .setBufferDurationsMs(
@@ -141,8 +155,8 @@ internal fun StreamingBufferPreset.toExoLoadControl(): DefaultLoadControl {
             bufferForPlaybackMs,
             bufferForPlaybackAfterRebufferMs
         )
-        .setBackBuffer(15_000, true)
-        .setTargetBufferBytes(targetBufferBytes)
+        .setBackBuffer(effectiveBackBufferMs, true)
+        .setTargetBufferBytes(effectiveTargetBytes)
         .setPrioritizeTimeOverSizeThresholds(false)
         .build()
 }
@@ -160,24 +174,31 @@ fun VixPlayerScreen(
     onProgressUpdate: (positionMs: Long, durationMs: Long) -> Unit,
     onNextEpisode: () -> Unit,
     onClose: () -> Unit,
-    onInvalidateAndRetryStream: (() -> Unit)? = null
+    onInvalidateAndRetryStream: (() -> Unit)? = null,
+    onPreResolveNextEpisode: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val isLowRamDevice = remember(context) { VixFlixApplication.isLowRamDevice(context) }
     val resolvedStream = session.resolvedStream
 
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
     var playerErrorMessage by remember(session.errorMessage) { mutableStateOf(session.errorMessage) }
-    var currentPositionMs by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+    // Stato posizione/durata mantenuto come State holder per evitare ricomposizioni ogni 1s del root
+    val currentPositionMsState = remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableLongStateOf(session.startPositionMs)
     }
     LaunchedEffect(session.startPositionMs, session.isResolvingStream) {
         if (session.isResolvingStream) {
-            currentPositionMs = session.startPositionMs
+            currentPositionMsState.longValue = session.startPositionMs
         }
     }
-    var durationMs by remember { mutableLongStateOf(0L) }
+    val durationMsState = remember { mutableLongStateOf(0L) }
     var hasSeekedInitial by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
+    var hasPreResolvedNext by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
     var controlsVisible by remember { mutableStateOf(true) }
@@ -193,7 +214,7 @@ fun VixPlayerScreen(
     var autoNextDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
-    var autoNextRemainingSec by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+    val autoNextRemainingSecState = remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableIntStateOf(10)
     }
     var mediaActionBadge by remember { mutableStateOf<String?>(null) }
@@ -227,7 +248,12 @@ fun VixPlayerScreen(
         nextEpisodeDto != null || session.seasonEpisodes.isEmpty()
     )
     val currentError = playerErrorMessage ?: session.errorMessage
-    val nearEpisodeEnd = durationMs > 60_000L && currentPositionMs >= (durationMs - 12_000L)
+    val nearEpisodeEnd by remember {
+        derivedStateOf {
+            val dur = durationMsState.longValue
+            dur > 60_000L && currentPositionMsState.longValue >= (dur - 12_000L)
+        }
+    }
     val showAutoNext = hasNextEpisodeCandidate &&
         currentError == null &&
         !isBuffering &&
@@ -247,13 +273,20 @@ fun VixPlayerScreen(
             .setDefaultRequestProperties(headers)
     }
 
-    val exoPlayer = remember(context, bufferPreset) {
+    val exoPlayer = remember(context, bufferPreset, isLowRamDevice) {
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
+        val trackSelector = DefaultTrackSelector(context).apply {
+            parameters = buildUponParameters()
+                .setViewportSizeToPhysicalDisplaySize(context, true)
+                .setForceHighestSupportedBitrate(false)
+                .build()
+        }
         ExoPlayer.Builder(context)
-            .setLoadControl(bufferPreset.toExoLoadControl())
+            .setTrackSelector(trackSelector)
+            .setLoadControl(bufferPreset.toExoLoadControl(isLowRamDevice = isLowRamDevice))
             .setAudioAttributes(audioAttributes, true)
             .setSeekBackIncrementMs(10_000L)
             .setSeekForwardIncrementMs(10_000L)
@@ -261,6 +294,26 @@ fun VixPlayerScreen(
             .apply {
                 playWhenReady = true
             }
+    }
+
+    // Mette in pausa il decoder hardware e salva i progressi quando l'app va in background (tasto Home Fire TV)
+    DisposableEffect(lifecycleOwner, exoPlayer) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                if (exoPlayer.isPlaying) {
+                    exoPlayer.pause()
+                }
+                val pos = exoPlayer.currentPosition.coerceAtLeast(currentPositionMsState.longValue)
+                val dur = exoPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: durationMsState.longValue
+                if (pos > 0L) {
+                    onProgressUpdate(pos, dur)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     // Imposta la lingua audio preferita (ita / eng) su ogni istanza attiva di ExoPlayer
@@ -287,8 +340,9 @@ fun VixPlayerScreen(
                 }
             }
             else -> {
-                if (currentPositionMs > 0L) {
-                    onProgressUpdate(currentPositionMs, durationMs)
+                val pos = currentPositionMsState.longValue
+                if (pos > 0L) {
+                    onProgressUpdate(pos, durationMsState.longValue)
                 }
                 onClose()
             }
@@ -326,7 +380,7 @@ fun VixPlayerScreen(
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(4))
             .createMediaSource(mediaItem)
 
-        val resumePosMs = maxOf(session.startPositionMs, currentPositionMs)
+        val resumePosMs = maxOf(session.startPositionMs, currentPositionMsState.longValue)
         if (resumePosMs > 0L) {
             exoPlayer.setMediaSource(mediaSource, resumePosMs)
         } else {
@@ -346,16 +400,17 @@ fun VixPlayerScreen(
                     playbackEnded = false
                     val d = exoPlayer.duration
                     if (d != C.TIME_UNSET && d > 0L) {
-                        durationMs = d
+                        durationMsState.longValue = d
                     }
                     if (!hasSeekedInitial) {
                         hasSeekedInitial = true
-                        val targetStart = maxOf(session.startPositionMs, currentPositionMs)
-                        if (targetStart > 0L && durationMs > 0L) {
-                            val maxSafePos = (durationMs - 5_000L).coerceAtLeast(0L)
+                        val targetStart = maxOf(session.startPositionMs, currentPositionMsState.longValue)
+                        val dur = durationMsState.longValue
+                        if (targetStart > 0L && dur > 0L) {
+                            val maxSafePos = (dur - 5_000L).coerceAtLeast(0L)
                             if (exoPlayer.currentPosition > maxSafePos) {
                                 exoPlayer.seekTo(maxSafePos)
-                                currentPositionMs = maxSafePos
+                                currentPositionMsState.longValue = maxSafePos
                             }
                         }
                     }
@@ -387,8 +442,8 @@ fun VixPlayerScreen(
         }
         exoPlayer.addListener(listener)
         onDispose {
-            val finalPos = currentPositionMs.coerceAtLeast(exoPlayer.currentPosition)
-            val finalDur = durationMs.coerceAtLeast(exoPlayer.duration.coerceAtLeast(0L))
+            val finalPos = currentPositionMsState.longValue.coerceAtLeast(exoPlayer.currentPosition)
+            val finalDur = durationMsState.longValue.coerceAtLeast(exoPlayer.duration.coerceAtLeast(0L))
             if (finalPos > 0L) {
                 onProgressUpdate(finalPos, finalDur)
             }
@@ -397,18 +452,22 @@ fun VixPlayerScreen(
         }
     }
 
-    // Loop di aggiornamento UI + persistenza su Room ogni 3 secondi
+    // Loop di aggiornamento posizione ogni 1s + persistenza su Room ogni 10s + pre-risoluzione silenziosa prossimo episodio
     LaunchedEffect(exoPlayer) {
         var tick = 0
         while (true) {
             if (exoPlayer.isPlaying && !isRemoteScrubbing) {
                 val pos = exoPlayer.currentPosition
-                val dur = exoPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: durationMs
+                val dur = exoPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: durationMsState.longValue
                 if (pos > 0L) {
-                    currentPositionMs = pos
-                    durationMs = dur
-                    if (tick % 3 == 0) {
+                    currentPositionMsState.longValue = pos
+                    durationMsState.longValue = dur
+                    if (tick % 10 == 0) {
                         onProgressUpdate(pos, dur)
+                    }
+                    if (!hasPreResolvedNext && hasNextEpisodeCandidate && dur > 120_000L && pos >= (dur - 90_000L)) {
+                        hasPreResolvedNext = true
+                        onPreResolveNextEpisode()
                     }
                     tick++
                 }
@@ -420,15 +479,15 @@ fun VixPlayerScreen(
     // Timer conto alla rovescia automatico Prossimo Episodio
     LaunchedEffect(showAutoNext, currentSeason, currentEpisode) {
         if (!showAutoNext) return@LaunchedEffect
-        autoNextRemainingSec = 10
+        autoNextRemainingSecState.intValue = 10
         controlsVisible = false
         if (isTvDevice) {
             delay(60L)
             autoNextPlayFocusRequester.safeRequestFocus()
         }
-        while (autoNextRemainingSec > 0) {
+        while (autoNextRemainingSecState.intValue > 0) {
             delay(1_000L)
-            autoNextRemainingSec--
+            autoNextRemainingSecState.intValue--
         }
         if (showAutoNext && !autoNextDismissed) {
             onNextEpisode()
@@ -558,8 +617,9 @@ fun VixPlayerScreen(
                                     if (isTvDevice) rootFocusRequester.safeRequestFocus()
                                 }
                                 else -> {
-                                    if (currentPositionMs > 0L) {
-                                        onProgressUpdate(currentPositionMs, durationMs)
+                                    val pos = currentPositionMsState.longValue
+                                    if (pos > 0L) {
+                                        onProgressUpdate(pos, durationMsState.longValue)
                                     }
                                     onClose()
                                 }
@@ -587,7 +647,7 @@ fun VixPlayerScreen(
                         Key.MediaFastForward -> {
                             val target = exoPlayer.currentPosition + 10_000L
                             exoPlayer.seekTo(target)
-                            currentPositionMs = target
+                            currentPositionMsState.longValue = target
                             mediaActionBadge = "+10s"
                             controlsVisible = true
                             return@onPreviewKeyEvent true
@@ -595,7 +655,7 @@ fun VixPlayerScreen(
                         Key.MediaRewind -> {
                             val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                             exoPlayer.seekTo(target)
-                            currentPositionMs = target
+                            currentPositionMsState.longValue = target
                             playbackEnded = false
                             mediaActionBadge = "-10s"
                             controlsVisible = true
@@ -625,18 +685,18 @@ fun VixPlayerScreen(
                             Key.DirectionLeft -> {
                                 val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                                 exoPlayer.seekTo(target)
-                                currentPositionMs = target
-                                onProgressUpdate(currentPositionMs, durationMs)
+                                currentPositionMsState.longValue = target
+                                onProgressUpdate(target, durationMsState.longValue)
                                 focusTimeBarOnReveal = true
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
                             }
                             Key.DirectionRight -> {
-                                val maxDur = durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
+                                val maxDur = durationMsState.longValue.takeIf { it > 0L } ?: Long.MAX_VALUE
                                 val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(maxDur)
                                 exoPlayer.seekTo(target)
-                                currentPositionMs = target
-                                onProgressUpdate(currentPositionMs, durationMs)
+                                currentPositionMsState.longValue = target
+                                onProgressUpdate(target, durationMsState.longValue)
                                 focusTimeBarOnReveal = true
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
@@ -673,6 +733,9 @@ fun VixPlayerScreen(
                 if (view.resizeMode != resizeMode) {
                     view.resizeMode = resizeMode
                 }
+            },
+            onRelease = { view ->
+                view.player = null
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -764,8 +827,9 @@ fun VixPlayerScreen(
                 cancelFocusRequester = cancelLoadingFocusRequester,
                 upFocusRequester = backButtonFocusRequester,
                 onCancel = {
-                    if (currentPositionMs > 0L) {
-                        onProgressUpdate(currentPositionMs, durationMs)
+                    val pos = currentPositionMsState.longValue
+                    if (pos > 0L) {
+                        onProgressUpdate(pos, durationMsState.longValue)
                     }
                     onClose()
                 },
@@ -838,8 +902,9 @@ fun VixPlayerScreen(
                 ) {
                     IconButton(
                         onClick = {
-                            if (currentPositionMs > 0L) {
-                                onProgressUpdate(currentPositionMs, durationMs)
+                            val pos = currentPositionMsState.longValue
+                            if (pos > 0L) {
+                                onProgressUpdate(pos, durationMsState.longValue)
                             }
                             onClose()
                         },
@@ -884,22 +949,9 @@ fun VixPlayerScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        val subText = buildString {
-                            if (session.mediaItem.isSeries && session.seasonNumber != null && session.episodeNumber != null) {
-                                append("S${session.seasonNumber}:E${session.episodeNumber}")
-                                if (!session.episodeTitle.isNullOrBlank()) {
-                                    append(" - ${session.episodeTitle}")
-                                }
-                                append(" • ")
-                            }
-                            append("VixSrc HLS 1080p • startAt=${currentPositionMs / 1000L}s (min ${currentPositionMs / 60_000L})")
-                        }
-                        Text(
-                            text = subText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = NetflixMatchGreen,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                        VixPlayerTopSubtitle(
+                            session = session,
+                            positionMsProvider = { currentPositionMsState.longValue }
                         )
                     }
                 }
@@ -1009,7 +1061,7 @@ fun VixPlayerScreen(
                                                 mediaType = session.mediaItem.mediaType,
                                                 season = session.seasonNumber,
                                                 episode = session.episodeNumber,
-                                                startSeconds = currentPositionMs / 1000L,
+                                                startSeconds = currentPositionMsState.longValue / 1000L,
                                                 lang = streamLang
                                             )
                                             context.startActivity(
@@ -1072,9 +1124,9 @@ fun VixPlayerScreen(
                         onClick = {
                             val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                             exoPlayer.seekTo(target)
-                            currentPositionMs = target
+                            currentPositionMsState.longValue = target
                             playbackEnded = false
-                            onProgressUpdate(currentPositionMs, durationMs)
+                            onProgressUpdate(target, durationMsState.longValue)
                         },
                         modifier = Modifier
                             .size(54.dp)
@@ -1161,8 +1213,8 @@ fun VixPlayerScreen(
                         onClick = {
                             val target = exoPlayer.currentPosition + 10_000L
                             exoPlayer.seekTo(target)
-                            currentPositionMs = target
-                            onProgressUpdate(currentPositionMs, durationMs)
+                            currentPositionMsState.longValue = target
+                            onProgressUpdate(target, durationMsState.longValue)
                         },
                         modifier = Modifier
                             .size(54.dp)
@@ -1220,18 +1272,18 @@ fun VixPlayerScreen(
                         .navigationBarsPadding()
                         .padding(horizontal = 20.dp, vertical = 14.dp)
                 ) {
-                    TvSeekTimeBar(
-                        currentPositionMs = currentPositionMs,
-                        durationMs = durationMs,
+                    VixPlayerSeekBarIsolated(
+                        positionMsProvider = { currentPositionMsState.longValue },
+                        durationMsProvider = { durationMsState.longValue },
                         onSeekPreview = { previewMs ->
-                            currentPositionMs = previewMs
+                            currentPositionMsState.longValue = previewMs
                             interactionTick++
                         },
                         onSeekCommit = { targetMs ->
-                            currentPositionMs = targetMs
+                            currentPositionMsState.longValue = targetMs
                             playbackEnded = false
                             exoPlayer.seekTo(targetMs)
-                            onProgressUpdate(targetMs, durationMs)
+                            onProgressUpdate(targetMs, durationMsState.longValue)
                             interactionTick++
                         },
                         onTogglePlayPause = {
@@ -1244,7 +1296,6 @@ fun VixPlayerScreen(
                         focusRequester = timeBarFocusRequester,
                         upFocusRequester = playPauseFocusRequester,
                         downFocusRequester = bottomPrimaryFocusRequester,
-                        compact = false,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("player_time_bar")
@@ -1257,22 +1308,12 @@ fun VixPlayerScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "${formatSecondsToMmSs(currentPositionMs / 1000L)} / ${
-                                    if (durationMs > 0L) formatSecondsToMmSs(durationMs / 1000L) else "HLS STREAM"
-                                } • Salvato in Room (min ${currentPositionMs / 60_000L})",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixWhite
-                            )
-                            Text(
-                                text = "VixSrc Direct MasterPlaylist • Audio ${streamLang.uppercase()} • startAt=${currentPositionMs / 1000L}s",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixLightGray,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        VixPlayerTimestampInfo(
+                            positionMsProvider = { currentPositionMsState.longValue },
+                            durationMsProvider = { durationMsState.longValue },
+                            streamLang = streamLang,
+                            modifier = Modifier.weight(1f)
+                        )
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -1391,448 +1432,18 @@ fun VixPlayerScreen(
                 .navigationBarsPadding()
                 .padding(24.dp)
         ) {
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = NetflixCardSurface.copy(alpha = 0.96f)),
-                border = BorderStroke(1.5.dp, NetflixRed),
-                elevation = CardDefaults.cardElevation(defaultElevation = 18.dp),
-                modifier = Modifier
-                    .widthIn(max = 390.dp)
-                    .fillMaxWidth()
-                    .testTag("auto_next_episode_card")
-            ) {
-                Column(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .focusGroup(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "PROSSIMO EPISODIO IN ${autoNextRemainingSec}s",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = NetflixMatchGreen
-                        )
-                        Surface(
-                            color = NetflixRed,
-                            shape = RoundedCornerShape(6.dp)
-                        ) {
-                            Text(
-                                text = "S${currentSeason}:E${currentEpisode + 1}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        val thumb = nextEpisodeDto?.stillUrl ?: session.mediaItem.backdropUrl ?: session.mediaItem.posterUrl
-                        if (!thumb.isNullOrBlank()) {
-                            AsyncImage(
-                                model = thumb,
-                                contentDescription = nextEpisodeDto?.name ?: "Prossimo episodio",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(width = 96.dp, height = 56.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(NetflixDarkSurface)
-                            )
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = nextEpisodeDto?.name ?: "Episodio ${currentEpisode + 1}",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = NetflixWhite,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = session.mediaItem.title,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixLightGray,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-
-                    LinearProgressIndicator(
-                        progress = { ((10 - autoNextRemainingSec) / 10f).coerceIn(0f, 1f) },
-                        color = NetflixRed,
-                        trackColor = NetflixElevatedSurface,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                    )
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Button(
-                            onClick = onNextEpisode,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = NetflixWhite,
-                                contentColor = NetflixBlack
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .safeFocusRequester(autoNextPlayFocusRequester)
-                                .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                        when (keyEvent.key) {
-                                            Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft -> true
-                                            Key.DirectionRight -> autoNextCancelFocusRequester.safeRequestFocus()
-                                            else -> false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                .focusProperties {
-                                    autoNextCancelFocusRequester.takeIfAttached()?.let { right = it }
-                                }
-                                .tvFocusableControl(
-                                    shape = RoundedCornerShape(10.dp),
-                                    focusedBorderColor = NetflixRed,
-                                    focusedScale = 1.04f,
-                                    focusTag = "auto_next_play_now_button"
-                                )
-                                .testTag("auto_next_play_now_button")
-                        ) {
-                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Riproduci Ora", fontWeight = FontWeight.Bold)
-                        }
-
-                        OutlinedButton(
-                            onClick = { autoNextDismissed = true },
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                            border = BorderStroke(1.dp, NetflixElevatedSurface),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .safeFocusRequester(autoNextCancelFocusRequester)
-                                .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                        when (keyEvent.key) {
-                                            Key.DirectionUp, Key.DirectionDown, Key.DirectionRight -> true
-                                            Key.DirectionLeft -> autoNextPlayFocusRequester.safeRequestFocus()
-                                            else -> false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                .focusProperties {
-                                    autoNextPlayFocusRequester.takeIfAttached()?.let { left = it }
-                                }
-                                .tvFocusableControl(
-                                    shape = RoundedCornerShape(10.dp),
-                                    focusedBorderColor = NetflixWhite,
-                                    focusedScale = 1.04f,
-                                    focusTag = "auto_next_cancel_button"
-                                )
-                                .testTag("auto_next_cancel_button")
-                        ) {
-                            Text("Annulla")
-                        }
-                    }
-                }
-            }
-        }
-    }
-    }
-}
-
-/**
- * Popup modale di caricamento mostrato in fase di avvio del video e in attesa dello streaming,
- * con locandina/miniature, titolo, stagione/episodio (se Serie TV), minuto di ripresa e stato del buffer.
- */
-@Composable
-private fun VixStreamLoadingPopup(
-    session: PlaybackSession,
-    streamLang: String,
-    bufferPreset: StreamingBufferPreset,
-    cancelFocusRequester: FocusRequester,
-    upFocusRequester: FocusRequester,
-    onCancel: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val item = session.mediaItem
-    val currentEpisodeDto = remember(session.seasonEpisodes, session.episodeNumber) {
-        session.seasonEpisodes.firstOrNull { it.episodeNumber == session.episodeNumber }
-    }
-    val resolvedEpisodeTitle = session.episodeTitle?.takeIf { it.isNotBlank() }
-        ?: currentEpisodeDto?.name?.takeIf { it.isNotBlank() }
-    val resolvedOverview = currentEpisodeDto?.overview?.takeIf { it.isNotBlank() }
-        ?: item.overview
-    val imageUrl = currentEpisodeDto?.stillUrl ?: item.backdropUrl ?: item.posterUrl
-
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = NetflixCardSurface.copy(alpha = 0.96f)
-        ),
-        border = BorderStroke(1.5.dp, NetflixRed.copy(alpha = 0.75f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
-        modifier = modifier
-            .widthIn(max = 460.dp)
-            .fillMaxWidth()
-            .testTag("video_loading_popup")
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Riga superiore: Locandina/Fotogramma + Dati principali del titolo
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 112.dp, height = 74.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(NetflixDarkSurface)
-                ) {
-                    if (imageUrl != null) {
-                        AsyncImage(
-                            model = imageUrl,
-                            contentDescription = item.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                    // Badge tipo media nell'angolo dell'anteprima
-                    Surface(
-                        color = NetflixRed,
-                        shape = RoundedCornerShape(bottomEnd = 6.dp),
-                        modifier = Modifier.align(Alignment.TopStart)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (item.isSeries) Icons.Default.Tv else Icons.Default.Movie,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(11.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = if (item.isSeries) "SERIE TV" else "FILM",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                        }
-                    }
-                }
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = item.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = NetflixWhite,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "${item.matchPercentage}% Compatibile",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = NetflixMatchGreen
-                        )
-                        if (item.releaseYear.isNotBlank()) {
-                            Text(
-                                text = "• ${item.releaseYear}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixLightGray
-                            )
-                        }
-                        Surface(
-                            color = NetflixElevatedSurface,
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text(
-                                text = "1080p ${streamLang.uppercase()}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixWhite,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Box dedicato a Stagione ed Episodio se è una Serie TV
-            if (item.isSeries && (session.seasonNumber != null || session.episodeNumber != null)) {
-                val seasonNum = session.seasonNumber ?: 1
-                val episodeNum = session.episodeNumber ?: 1
-                Surface(
-                    color = NetflixDarkSurface,
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("loading_popup_series_info")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Stagione $seasonNum • Episodio $episodeNum (S${seasonNum}:E${episodeNum})",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = NetflixRed
-                            )
-                            if (!resolvedEpisodeTitle.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "\"$resolvedEpisodeTitle\"",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = NetflixWhite,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Sinossi sintetica del film o episodio
-            if (resolvedOverview.isNotBlank()) {
-                Text(
-                    text = resolvedOverview,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = NetflixLightGray,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            // Badge punto di ripresa ("Continua a guardare") se presente
-            if (session.startSeconds > 0L) {
-                Surface(
-                    color = NetflixMatchGreen.copy(alpha = 0.14f),
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, NetflixMatchGreen.copy(alpha = 0.6f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "Ripresa automatica da ${formatSecondsToMmSs(session.startSeconds)} (Minuto ${session.startMinutes})",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = NetflixMatchGreen,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
-                }
-            }
-
-            // Indicatore di caricamento e stato della connessione allo stream VixSrc / ExoPlayer
-            LinearProgressIndicator(
-                color = NetflixRed,
-                trackColor = NetflixElevatedSurface,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
+            VixAutoNextEpisodeCard(
+                session = session,
+                currentSeason = currentSeason,
+                currentEpisode = currentEpisode,
+                nextEpisodeDto = nextEpisodeDto,
+                remainingSecProvider = { autoNextRemainingSecState.intValue },
+                playFocusRequester = autoNextPlayFocusRequester,
+                cancelFocusRequester = autoNextCancelFocusRequester,
+                onPlayNow = onNextEpisode,
+                onCancel = { autoNextDismissed = true }
             )
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    CircularProgressIndicator(
-                        color = NetflixRed,
-                        strokeWidth = 2.2.dp,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = if (session.isResolvingStream) {
-                            "Connessione diretta a vixsrc.to e recupero stream HLS…"
-                        } else {
-                            "Avvio rapido video (Buffer ${bufferPreset.label} • ${bufferPreset.sizeMb} MB)…"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NetflixWhite
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(10.dp))
-
-                OutlinedButton(
-                    onClick = onCancel,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .safeFocusRequester(cancelFocusRequester)
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionUp -> upFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
-                                    else -> false
-                                }
-                            } else {
-                                false
-                            }
-                        }
-                        .focusProperties {
-                            upFocusRequester.takeIfAttached()?.let { up = it }
-                        }
-                        .tvFocusableControl(
-                            shape = RoundedCornerShape(8.dp),
-                            focusedBorderColor = NetflixRed,
-                            focusedScale = 1.04f,
-                            focusTag = "loading_cancel_button"
-                        )
-                        .testTag("loading_cancel_button")
-                ) {
-                    Text("Annulla", style = MaterialTheme.typography.labelMedium)
-                }
-            }
         }
+    }
     }
 }

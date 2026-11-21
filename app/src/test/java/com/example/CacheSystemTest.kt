@@ -165,7 +165,7 @@ class CacheSystemTest {
         v1Helper.close()
 
         val upgradedDb = Room.databaseBuilder(context, VixFlixDatabase::class.java, dbName)
-            .addMigrations(VixFlixDatabase.MIGRATION_1_2)
+            .addMigrations(VixFlixDatabase.MIGRATION_1_2, VixFlixDatabase.MIGRATION_2_3)
             .allowMainThreadQueries()
             .build()
 

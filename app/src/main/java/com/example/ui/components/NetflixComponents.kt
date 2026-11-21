@@ -62,11 +62,13 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.minimumInteractiveComponentSize
+import java.util.Locale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -576,29 +578,16 @@ private fun rememberSizedImageRequest(
     url: String?,
     widthDp: Dp,
     heightDp: Dp,
-    crossfadeMs: Int = 0
+    crossfadeMs: Int = 0,
+    allowRgb565: Boolean = true
 ): Any? {
-    val context = LocalContext.current
-    val density = LocalDensity.current
-    val widthPx = with(density) { widthDp.roundToPx().coerceAtLeast(64) }
-    val heightPx = with(density) { heightDp.roundToPx().coerceAtLeast(64) }
-    return remember(context, url, widthPx, heightPx, crossfadeMs) {
-        if (url.isNullOrBlank()) {
-            null
-        } else {
-            ImageRequest.Builder(context)
-                .data(url)
-                .size(widthPx, heightPx)
-                .precision(Precision.INEXACT)
-                .scale(Scale.FILL)
-                .allowHardware(true)
-                .allowRgb565(true)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .crossfade(crossfadeMs)
-                .build()
-        }
-    }
+    return rememberOptimizedImageRequest(
+        url = url,
+        widthDp = widthDp,
+        heightDp = heightDp,
+        allowRgb565 = allowRgb565,
+        crossfadeMs = crossfadeMs
+    )
 }
 
 @Composable
@@ -1020,13 +1009,18 @@ fun ContinueWatchingSection(
     var lastFocusedIndex by androidx.compose.runtime.saveable.rememberSaveable {
         androidx.compose.runtime.mutableIntStateOf(0)
     }
-    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeEntries.lastIndex)
-    val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
-    val rememberedIdx = lastFocusedIndex.coerceIn(0, safeEntries.lastIndex)
-    val targetFocusIdx = if (visibleIndices.isEmpty() || rememberedIdx in visibleIndices) {
-        rememberedIdx
-    } else {
-        firstVisibleIdx
+    val targetFocusIdx by remember(listState, safeEntries.size) {
+        derivedStateOf {
+            val maxIdx = (safeEntries.size - 1).coerceAtLeast(0)
+            val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, maxIdx)
+            val rememberedIdx = lastFocusedIndex.coerceIn(0, maxIdx)
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty() || visibleItems.any { it.index == rememberedIdx }) {
+                rememberedIdx
+            } else {
+                firstVisibleIdx
+            }
+        }
     }
 
     Column(
@@ -1340,13 +1334,18 @@ fun Top10Section(
     var lastFocusedIndex by androidx.compose.runtime.saveable.rememberSaveable(title) {
         androidx.compose.runtime.mutableIntStateOf(0)
     }
-    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeItems.lastIndex)
-    val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
-    val rememberedIdx = lastFocusedIndex.coerceIn(0, safeItems.lastIndex)
-    val targetFocusIdx = if (visibleIndices.isEmpty() || rememberedIdx in visibleIndices) {
-        rememberedIdx
-    } else {
-        firstVisibleIdx
+    val targetFocusIdx by remember(listState, safeItems.size) {
+        derivedStateOf {
+            val maxIdx = (safeItems.size - 1).coerceAtLeast(0)
+            val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, maxIdx)
+            val rememberedIdx = lastFocusedIndex.coerceIn(0, maxIdx)
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty() || visibleItems.any { it.index == rememberedIdx }) {
+                rememberedIdx
+            } else {
+                firstVisibleIdx
+            }
+        }
     }
 
     Column(
@@ -1590,13 +1589,18 @@ fun MediaCatalogRow(
     var lastFocusedIndex by androidx.compose.runtime.saveable.rememberSaveable(title) {
         androidx.compose.runtime.mutableIntStateOf(0)
     }
-    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeItems.lastIndex)
-    val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
-    val rememberedIdx = lastFocusedIndex.coerceIn(0, safeItems.lastIndex)
-    val targetFocusIdx = if (visibleIndices.isEmpty() || rememberedIdx in visibleIndices) {
-        rememberedIdx
-    } else {
-        firstVisibleIdx
+    val targetFocusIdx by remember(listState, safeItems.size) {
+        derivedStateOf {
+            val maxIdx = (safeItems.size - 1).coerceAtLeast(0)
+            val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, maxIdx)
+            val rememberedIdx = lastFocusedIndex.coerceIn(0, maxIdx)
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty() || visibleItems.any { it.index == rememberedIdx }) {
+                rememberedIdx
+            } else {
+                firstVisibleIdx
+            }
+        }
     }
 
     Column(
@@ -1768,8 +1772,11 @@ fun MediaPosterCard(
                             modifier = Modifier.size(10.dp)
                         )
                         Spacer(modifier = Modifier.width(2.dp))
+                        val formattedVote = remember(item.voteAverage) {
+                            String.format(Locale.US, "%.1f", item.voteAverage)
+                        }
                         Text(
-                            text = String.format("%.1f", item.voteAverage),
+                            text = formattedVote,
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 10.sp,
                             color = NetflixWhite
@@ -1874,12 +1881,20 @@ fun MovieGenreChipBar(
         }
     }
 
-    val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeGenres.size)
-    val focusTargetChipIdx = if (selectedGenre != null) {
-        val visibleIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
-        if (targetIndex in visibleIndices || visibleIndices.isEmpty()) targetIndex else firstVisibleIdx
-    } else {
-        firstVisibleIdx
+    val focusTargetChipIdx by remember(listState, safeGenres.size, selectedGenre, targetIndex) {
+        derivedStateOf {
+            val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, safeGenres.size)
+            if (selectedGenre != null) {
+                val visibleItems = listState.layoutInfo.visibleItemsInfo
+                if (visibleItems.isEmpty() || visibleItems.any { it.index == targetIndex }) {
+                    targetIndex
+                } else {
+                    firstVisibleIdx
+                }
+            } else {
+                firstVisibleIdx
+            }
+        }
     }
 
     LazyRow(
@@ -2037,9 +2052,9 @@ fun formatSecondsToMmSs(totalSeconds: Long): String {
     val minutes = (safe % 3600L) / 60L
     val seconds = safe % 60L
     return if (hours > 0L) {
-        String.format("%d:%02d:%02d", hours, minutes, seconds)
+        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
     } else {
-        String.format("%02d:%02d", minutes, seconds)
+        String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 }
 
@@ -2106,17 +2121,22 @@ fun StreamingPlatformsStrip(
         }
     }
 
-    val firstVisibleProviderIdx = listState.firstVisibleItemIndex.coerceIn(0, safeProviders.lastIndex)
-    val visibleProviderIndices = listState.layoutInfo.visibleItemsInfo.map { it.index }
-    val preferredProviderIdx = if (selectedProvider != null) {
-        targetIndex
-    } else {
-        lastFocusedProviderIdx.coerceIn(0, safeProviders.lastIndex)
-    }
-    val focusTargetProviderIdx = if (visibleProviderIndices.isEmpty() || preferredProviderIdx in visibleProviderIndices) {
-        preferredProviderIdx
-    } else {
-        firstVisibleProviderIdx
+    val focusTargetProviderIdx by remember(listState, safeProviders.size, selectedProvider, targetIndex) {
+        derivedStateOf {
+            val maxIdx = (safeProviders.size - 1).coerceAtLeast(0)
+            val firstVisibleProviderIdx = listState.firstVisibleItemIndex.coerceIn(0, maxIdx)
+            val preferredProviderIdx = if (selectedProvider != null) {
+                targetIndex
+            } else {
+                lastFocusedProviderIdx.coerceIn(0, maxIdx)
+            }
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty() || visibleItems.any { it.index == preferredProviderIdx }) {
+                preferredProviderIdx
+            } else {
+                firstVisibleProviderIdx
+            }
+        }
     }
 
     Column(
@@ -2390,7 +2410,12 @@ fun PlatformLogoBadge(
         )
         if (!provider.logoUrl.isNullOrBlank()) {
             AsyncImage(
-                model = rememberSizedImageRequest(provider.logoUrl, size, size),
+                model = rememberSizedImageRequest(
+                    url = provider.logoUrl,
+                    widthDp = size,
+                    heightDp = size,
+                    allowRgb565 = false
+                ),
                 contentDescription = "Logo ${provider.displayName}",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier

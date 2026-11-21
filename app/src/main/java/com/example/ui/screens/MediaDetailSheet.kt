@@ -54,10 +54,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import java.util.Locale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -93,6 +95,7 @@ import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.formatSecondsToMmSs
+import com.example.ui.components.rememberOptimizedImageRequest
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
@@ -1281,13 +1284,18 @@ fun MediaDetailScreen(
                             var lastFocusedCastIdx by remember(currentItem.uniqueKey) {
                                 androidx.compose.runtime.mutableIntStateOf(0)
                             }
-                            val firstVisibleCastIdx = castListState.firstVisibleItemIndex.coerceIn(0, castList.lastIndex)
-                            val visibleCastIndices = castListState.layoutInfo.visibleItemsInfo.map { it.index }
-                            val rememberedCastIdx = lastFocusedCastIdx.coerceIn(0, castList.lastIndex)
-                            val targetCastIdx = if (visibleCastIndices.isEmpty() || rememberedCastIdx in visibleCastIndices) {
-                                rememberedCastIdx
-                            } else {
-                                firstVisibleCastIdx
+                            val targetCastIdx by remember(castListState, castList.size) {
+                                derivedStateOf {
+                                    val maxIdx = (castList.size - 1).coerceAtLeast(0)
+                                    val firstVisibleCastIdx = castListState.firstVisibleItemIndex.coerceIn(0, maxIdx)
+                                    val rememberedCastIdx = lastFocusedCastIdx.coerceIn(0, maxIdx)
+                                    val visibleItems = castListState.layoutInfo.visibleItemsInfo
+                                    if (visibleItems.isEmpty() || visibleItems.any { it.index == rememberedCastIdx }) {
+                                        rememberedCastIdx
+                                    } else {
+                                        firstVisibleCastIdx
+                                    }
+                                }
                             }
                             LazyRow(
                                 state = castListState,
@@ -1879,27 +1887,13 @@ private fun rememberSizedDetailImageRequest(
     widthDp: Dp,
     heightDp: Dp
 ): Any? {
-    val context = LocalContext.current
-    val density = LocalDensity.current
-    val widthPx = with(density) { widthDp.roundToPx().coerceAtLeast(1) }
-    val heightPx = with(density) { heightDp.roundToPx().coerceAtLeast(1) }
-    return remember(context, url, widthPx, heightPx) {
-        if (url.isNullOrBlank()) {
-            null
-        } else {
-            ImageRequest.Builder(context)
-                .data(url)
-                .size(widthPx, heightPx)
-                .precision(Precision.INEXACT)
-                .scale(Scale.FILL)
-                .allowHardware(true)
-                .allowRgb565(true)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .crossfade(false)
-                .build()
-        }
-    }
+    return rememberOptimizedImageRequest(
+        url = url,
+        widthDp = widthDp,
+        heightDp = heightDp,
+        allowRgb565 = true,
+        crossfadeMs = 0
+    )
 }
 
 @Composable
@@ -2068,8 +2062,11 @@ private fun EpisodeRowItem(
                                     modifier = Modifier.size(12.dp)
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
+                                val formattedEpVote = remember(episode.voteAverage) {
+                                    String.format(Locale.US, "%.1f", episode.voteAverage)
+                                }
                                 Text(
-                                    text = String.format("%.1f", episode.voteAverage),
+                                    text = formattedEpVote,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = NetflixLightGray
                                 )

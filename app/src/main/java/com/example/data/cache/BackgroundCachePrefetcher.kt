@@ -3,9 +3,7 @@ package com.example.data.cache
 import android.content.Context
 import coil.Coil
 import coil.request.CachePolicy
-import coil.request.ImageRequest
-import coil.size.Precision
-import coil.size.Scale
+import com.example.VixFlixApplication
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
 import com.example.data.remote.MediaDetails
@@ -14,38 +12,38 @@ import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
 import com.example.data.repository.CatalogFeed
+import com.example.ui.components.ImageTargetSizes
 import java.io.File
-import kotlin.math.roundToInt
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 /**
  * Coordinatore leggero per il precaricamento in background di locandine, backdrop e miniature
- * nella cache RAM + disco di Coil, progettato per non rallentare mai UI, scrolling o playback video.
- *
- * - Usa le stesse dimensioni target dei componenti UI per massimizzare gli hit in MemoryCache.
- * - Limita la concorrenza a massimo 2 download paralleli su Dispatchers.IO.
- * - Si interrompe immediatamente quando l'utente avvia la riproduzione video o disattiva l'opzione.
+ * nella cache RAM + disco di Coil, ottimizzato per Fire TV Stick e Android TV entry-level:
+ * - Usa le dimensioni esatte condivise in `ImageTargetSizes` per 100% MemoryCache hit.
+ * - Su dispositivi low-RAM esegue prefetch solo su disco per le righe fuori schermo,
+ *   evitando di scacciare dalla RAM le bitmap visibili.
+ * - Usa un pool fisso di 2 worker invece di creare decine di coroutine in coda.
  */
 class BackgroundCachePrefetcher(private val context: Context) {
 
     private data class PrefetchSpec(
         val url: String,
         val widthPx: Int,
-        val heightPx: Int
+        val heightPx: Int,
+        val allowRgb565: Boolean = true,
+        val cacheInMemory: Boolean = true
     )
 
     private val density: Float = context.resources.displayMetrics.density.coerceAtLeast(1f)
-    private val semaphore = Semaphore(permits = 2)
+    private val isLowRam: Boolean = VixFlixApplication.isLowRamDevice(context)
 
-    private fun dpToPx(dp: Float): Int = (dp * density).roundToInt().coerceAtLeast(64)
+    private fun dpToPx(dp: Float): Int = ImageTargetSizes.dpToPx(dp, density)
 
     fun estimateImageDiskCacheBytes(): Long {
         return runCatching {
@@ -84,22 +82,41 @@ class BackgroundCachePrefetcher(private val context: Context) {
         if (!shouldContinue()) return
         val specs = LinkedHashMap<String, PrefetchSpec>()
 
-        fun addSpec(url: String?, widthDp: Float, heightDp: Float) {
+        fun addSpec(
+            url: String?,
+            widthDp: Float,
+            heightDp: Float,
+            allowRgb565: Boolean = true,
+            cacheInMemory: Boolean = true
+        ) {
             val clean = url?.trim().takeIf { !it.isNullOrBlank() } ?: return
             val w = dpToPx(widthDp)
             val h = dpToPx(heightDp)
-            specs.putIfAbsent("$clean|$w|$h", PrefetchSpec(clean, w, h))
+            specs.putIfAbsent("$clean|$w|$h", PrefetchSpec(clean, w, h, allowRgb565, cacheInMemory))
         }
 
-        addSpec(details.item.backdropUrl ?: details.item.posterUrl, 960f, 360f)
+        addSpec(
+            details.item.backdropUrl ?: details.item.posterUrl,
+            ImageTargetSizes.DETAIL_BACKDROP_WIDTH_DP,
+            ImageTargetSizes.DETAIL_BACKDROP_HEIGHT_DP
+        )
         details.cast.take(6).forEach { member ->
-            addSpec(member.profileUrl, 76f, 76f)
+            addSpec(member.profileUrl, ImageTargetSizes.CAST_AVATAR_DP, ImageTargetSizes.CAST_AVATAR_DP)
         }
         details.similar.take(6).forEach { sim ->
-            addSpec(sim.posterUrl, 124f, 190f)
+            addSpec(
+                sim.posterUrl,
+                ImageTargetSizes.POSTER_WIDTH_DP,
+                ImageTargetSizes.POSTER_HEIGHT_DP,
+                cacheInMemory = !isLowRam
+            )
         }
         episodes.take(6).forEach { ep ->
-            addSpec(ep.stillUrl ?: details.item.backdropUrl, 124f, 72f)
+            addSpec(
+                ep.stillUrl ?: details.item.backdropUrl,
+                ImageTargetSizes.EPISODE_STILL_WIDTH_DP,
+                ImageTargetSizes.EPISODE_STILL_HEIGHT_DP
+            )
         }
 
         executeSpecs(specs.values.toList(), shouldContinue)
@@ -114,53 +131,83 @@ class BackgroundCachePrefetcher(private val context: Context) {
     ): List<PrefetchSpec> {
         val specs = LinkedHashMap<String, PrefetchSpec>()
 
-        fun addSpec(url: String?, widthDp: Float, heightDp: Float) {
+        fun addSpec(
+            url: String?,
+            widthDp: Float,
+            heightDp: Float,
+            allowRgb565: Boolean = true,
+            cacheInMemory: Boolean = true
+        ) {
             val clean = url?.trim().takeIf { !it.isNullOrBlank() } ?: return
             val w = dpToPx(widthDp)
             val h = dpToPx(heightDp)
-            specs.putIfAbsent("$clean|$w|$h", PrefetchSpec(clean, w, h))
+            specs.putIfAbsent("$clean|$w|$h", PrefetchSpec(clean, w, h, allowRgb565, cacheInMemory))
         }
 
         // 1. Hero Banner (priorità massima all'apertura della Home)
         addSpec(
             url = feed.heroBanner.backdropUrl ?: feed.heroBanner.posterUrl,
-            widthDp = 960f,
-            heightDp = if (isTvDevice) 410f else 500f
+            widthDp = ImageTargetSizes.HERO_WIDTH_DP,
+            heightDp = if (isTvDevice) ImageTargetSizes.HERO_HEIGHT_TV_DP else ImageTargetSizes.HERO_HEIGHT_MOBILE_DP
         )
 
-        // 2. Loghi piattaforme streaming TMDB nella striscia orizzontale Home
+        // 2. Loghi piattaforme streaming TMDB (mantengono canale alpha)
         providers.take(10).forEach { provider ->
-            addSpec(provider.logoUrl, 44f, 44f)
+            addSpec(
+                url = provider.logoUrl,
+                widthDp = ImageTargetSizes.PROVIDER_LOGO_DP,
+                heightDp = ImageTargetSizes.PROVIDER_LOGO_DP,
+                allowRgb565 = false
+            )
         }
 
-        // 3. Continua a guardare (backdrop 16:9 usati subito sotto l'Hero)
+        // 3. Continua a guardare (backdrop 16:9 subito sotto l'Hero)
         continueWatching.take(6).forEach { entry ->
             val cwUrl = entry.backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" }
                 ?: entry.posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
-            addSpec(cwUrl, 228f, 126f)
+            addSpec(
+                url = cwUrl,
+                widthDp = ImageTargetSizes.CONTINUE_WATCHING_WIDTH_DP,
+                heightDp = ImageTargetSizes.CONTINUE_WATCHING_HEIGHT_DP
+            )
         }
 
-        // 4. Top 10 di oggi (prime card visibili)
-        feed.top10Today.take(8).forEach { item ->
-            addSpec(item.posterUrl, 130f, 194f)
+        // 4. Top 10 di oggi (dimensioni esatte Top10PosterCard)
+        feed.top10Today.take(if (isLowRam) 6 else 8).forEach { item ->
+            addSpec(
+                url = item.posterUrl,
+                widthDp = ImageTargetSizes.TOP10_POSTER_WIDTH_DP,
+                heightDp = ImageTargetSizes.TOP10_POSTER_HEIGHT_DP
+            )
         }
 
-        // 4. Prime locandine delle righe principali Home + Mia Lista
+        // 5. Prime locandine delle righe principali (su low-RAM prefetch disco-only per righe sotto la piega)
         val priorityRows: List<List<MediaItem>> = listOf(
-            feed.trendingMovies.take(6),
-            feed.trendingTv.take(6),
-            feed.popularMovies.take(5),
-            feed.popularTv.take(5)
+            feed.trendingMovies.take(if (isLowRam) 5 else 6),
+            feed.trendingTv.take(if (isLowRam) 5 else 6),
+            feed.popularMovies.take(if (isLowRam) 4 else 5),
+            feed.popularTv.take(if (isLowRam) 4 else 5)
         )
-        priorityRows.forEach { row ->
+        priorityRows.forEachIndexed { rowIdx, row ->
+            val keepInRam = !isLowRam || rowIdx == 0
             row.forEach { item ->
-                addSpec(item.posterUrl, 124f, 190f)
+                addSpec(
+                    url = item.posterUrl,
+                    widthDp = ImageTargetSizes.POSTER_WIDTH_DP,
+                    heightDp = ImageTargetSizes.POSTER_HEIGHT_DP,
+                    cacheInMemory = keepInRam
+                )
             }
         }
         watchlist.take(6).forEach { saved ->
             val wlUrl = saved.posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
                 ?: saved.backdropPath?.let { "https://image.tmdb.org/t/p/w500$it" }
-            addSpec(wlUrl, 124f, 190f)
+            addSpec(
+                url = wlUrl,
+                widthDp = ImageTargetSizes.POSTER_WIDTH_DP,
+                heightDp = ImageTargetSizes.POSTER_HEIGHT_DP,
+                cacheInMemory = !isLowRam
+            )
         }
 
         return specs.values.toList()
@@ -172,26 +219,26 @@ class BackgroundCachePrefetcher(private val context: Context) {
     ) = withContext(Dispatchers.IO) {
         if (specs.isEmpty() || !shouldContinue()) return@withContext
         val imageLoader = Coil.imageLoader(context)
+        val nextIndex = AtomicInteger(0)
+        val workerCount = if (isLowRam) 2 else 2
 
         try {
             coroutineScope {
-                specs.forEach { spec ->
-                    ensureActive()
-                    if (!shouldContinue()) return@coroutineScope
+                repeat(workerCount) {
                     launch {
-                        semaphore.withPermit {
-                            if (!shouldContinue()) return@withPermit
-                            val request = ImageRequest.Builder(context)
-                                .data(spec.url)
-                                .size(spec.widthPx, spec.heightPx)
-                                .precision(Precision.INEXACT)
-                                .scale(Scale.FILL)
-                                .allowHardware(true)
-                                .allowRgb565(true)
-                                .memoryCachePolicy(CachePolicy.ENABLED)
-                                .diskCachePolicy(CachePolicy.ENABLED)
-                                .networkCachePolicy(CachePolicy.ENABLED)
-                                .build()
+                        while (shouldContinue()) {
+                            ensureActive()
+                            val idx = nextIndex.getAndIncrement()
+                            if (idx >= specs.size) break
+                            val spec = specs[idx]
+                            val request = ImageTargetSizes.buildRequest(
+                                context = context,
+                                url = spec.url,
+                                widthPx = spec.widthPx,
+                                heightPx = spec.heightPx,
+                                allowRgb565 = spec.allowRgb565,
+                                memoryCachePolicy = if (spec.cacheInMemory) CachePolicy.ENABLED else CachePolicy.DISABLED
+                            )
                             runCatching { imageLoader.execute(request) }
                         }
                     }

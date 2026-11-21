@@ -6,6 +6,8 @@ import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -93,20 +95,27 @@ class TmdbTrailerResolver(
                 val itaQuery = "$baseTitle$yearToken trailer ufficiale ita"
                 val engQuery = "$baseTitle$yearToken official trailer"
 
-                val itaResults = queryYouTubeSearch(
-                    query = itaQuery,
-                    hl = "it",
-                    gl = "IT",
-                    defaultLangLabel = "ITA",
-                    movieTitle = baseTitle
-                )
-                val engResults = queryYouTubeSearch(
-                    query = engQuery,
-                    hl = "en",
-                    gl = "US",
-                    defaultLangLabel = "ENG",
-                    movieTitle = baseTitle
-                )
+                val (itaResults, engResults) = coroutineScope {
+                    val itaDef = async {
+                        queryYouTubeSearch(
+                            query = itaQuery,
+                            hl = "it",
+                            gl = "IT",
+                            defaultLangLabel = "ITA",
+                            movieTitle = baseTitle
+                        )
+                    }
+                    val engDef = async {
+                        queryYouTubeSearch(
+                            query = engQuery,
+                            hl = "en",
+                            gl = "US",
+                            defaultLangLabel = "ENG",
+                            movieTitle = baseTitle
+                        )
+                    }
+                    itaDef.await() to engDef.await()
+                }
 
                 val mergedById = LinkedHashMap<String, YouTubeTrailerCandidate>()
                 // Prima tutti i risultati marcati ITA
@@ -173,7 +182,7 @@ class TmdbTrailerResolver(
     }
 
     private fun resolveYouTubeTrailer(video: TmdbVideoDto): ResolvedTrailerStream {
-        val cleanKey = video.key.trim().replace(Regex("[^A-Za-z0-9_-]"), "")
+        val cleanKey = video.key.trim().replace(SAFE_KEY_REGEX, "")
         if (cleanKey.isBlank()) {
             throw IllegalStateException("Chiave video YouTube non valida per questo trailer.")
         }
@@ -374,9 +383,9 @@ class TmdbTrailerResolver(
             cleanTrailerHttpClient.newCall(req).execute().use { resp ->
                 val html = if (resp.isSuccessful) resp.body?.string().orEmpty() else ""
                 YouTubeEmbedConfig(
-                    apiKey = Regex(""""INNERTUBE_API_KEY"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.getOrNull(1),
-                    visitorData = Regex(""""visitorData"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.getOrNull(1),
-                    signatureTimestamp = Regex(""""STS"\s*:\s*(\d+)""").find(html)?.groupValues?.getOrNull(1)?.toIntOrNull(),
+                    apiKey = API_KEY_REGEX.find(html)?.groupValues?.getOrNull(1),
+                    visitorData = VISITOR_DATA_REGEX.find(html)?.groupValues?.getOrNull(1),
+                    signatureTimestamp = STS_REGEX.find(html)?.groupValues?.getOrNull(1)?.toIntOrNull(),
                     embedHttpCode = resp.code,
                     isEmbedPageReachable = resp.isSuccessful && !html.contains("\"UNPLAYABLE\"")
                 )
@@ -575,7 +584,7 @@ class TmdbTrailerResolver(
 
         val scored = mutableListOf<Pair<Int, YouTubeTrailerCandidate>>()
         val titleWords = movieTitle.lowercase()
-            .split(Regex("[^a-z0-9]+"))
+            .split(NON_ALNUM_REGEX)
             .filter { it.length >= 3 }
 
         for (renderer in renderers) {
@@ -601,8 +610,8 @@ class TmdbTrailerResolver(
 
             val lowerTitle = title.lowercase()
             val lowerChannel = channel.lowercase()
-            val isItaMarked = Regex("""\b(ita|italiano|sub ita|ufficiale|doppiato)\b""").containsMatchIn(lowerTitle)
-            val isEngMarked = Regex("""\b(official trailer|english|en|original)\b""").containsMatchIn(lowerTitle)
+            val isItaMarked = ITA_MARKED_REGEX.containsMatchIn(lowerTitle)
+            val isEngMarked = ENG_MARKED_REGEX.containsMatchIn(lowerTitle)
             val langLabel = when {
                 isItaMarked -> "ITA"
                 defaultLangLabel == "ITA" && !isEngMarked -> "ITA"
@@ -975,7 +984,7 @@ class TmdbTrailerResolver(
     }
 
     private fun parseQualityHeight(label: String): Int {
-        return Regex("""(\d{3,4})""").find(label)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 360
+        return QUALITY_HEIGHT_REGEX.find(label)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 360
     }
 
     private data class YouTubeEmbedConfig(
@@ -996,6 +1005,15 @@ class TmdbTrailerResolver(
     )
 
     companion object {
+        private val SAFE_KEY_REGEX = Regex("[^A-Za-z0-9_-]")
+        private val API_KEY_REGEX = Regex(""""INNERTUBE_API_KEY"\s*:\s*"([^"]+)"""")
+        private val VISITOR_DATA_REGEX = Regex(""""visitorData"\s*:\s*"([^"]+)"""")
+        private val STS_REGEX = Regex(""""STS"\s*:\s*(\d+)""")
+        private val NON_ALNUM_REGEX = Regex("[^a-z0-9]+")
+        private val ITA_MARKED_REGEX = Regex("""\b(ita|italiano|sub ita|ufficiale|doppiato)\b""")
+        private val ENG_MARKED_REGEX = Regex("""\b(official trailer|english|en|original)\b""")
+        private val QUALITY_HEIGHT_REGEX = Regex("""(\d{3,4})""")
+
         @Volatile
         var isWebViewRendererUnstable: Boolean = false
 

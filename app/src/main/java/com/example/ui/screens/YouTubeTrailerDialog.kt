@@ -1603,7 +1603,7 @@ private fun YouTubeWebEmbedPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val safeVideoId = remember(videoId) { videoId.replace(Regex("[^A-Za-z0-9_-]"), "") }
+    val safeVideoId = remember(videoId) { videoId.replace(YOUTUBE_VIDEO_ID_SANITIZE_REGEX, "") }
     val embedOrigin = remember(context) {
         val pkg = context.packageName.ifBlank { "com.example.vixflix" }
         "https://$pkg"
@@ -1791,6 +1791,7 @@ private fun YouTubeWebEmbedPlayer(
         webView.onResume()
         onWebViewReady(webView)
         onDispose {
+            mainHandler.removeCallbacksAndMessages(null)
             onWebViewReady(null)
             destroyWebViewOnce(webView)
         }
@@ -1889,12 +1890,14 @@ private fun mapYouTubeEmbedError(code: Int): String {
     }
 }
 
+private val YOUTUBE_VIDEO_ID_SANITIZE_REGEX = Regex("[^A-Za-z0-9_-]")
+
 internal fun buildYouTubeEmbedHtml(
     videoId: String,
     originUrl: String = "https://com.example.vixflix",
     autoplay: Boolean = true
 ): String {
-    val safeVideoId = videoId.replace(Regex("[^A-Za-z0-9_-]"), "")
+    val safeVideoId = videoId.replace(YOUTUBE_VIDEO_ID_SANITIZE_REGEX, "")
     val safeOrigin = originUrl.trimEnd('/')
     val autoplayFlag = if (autoplay) 1 else 0
     val embedSrc =
