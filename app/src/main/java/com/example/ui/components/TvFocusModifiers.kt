@@ -538,6 +538,7 @@ fun TvSeekTimeBar(
     upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester? = null,
     compact: Boolean = false,
+    showAssistiveHeader: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val maxMs = if (durationMs > 0L) {
@@ -549,11 +550,15 @@ fun TvSeekTimeBar(
     val dpadFocusScope = LocalDpadFocusScope.current
     var isFocused by remember { mutableStateOf(false) }
     var isRemoteScrubbing by remember { mutableStateOf(false) }
+    var isTouchScrubbing by remember { mutableStateOf(false) }
     var remotePreviewMs by remember { mutableLongStateOf(currentPositionMs) }
+    var touchPreviewMs by remember { mutableLongStateOf(currentPositionMs) }
     var scrubStartMs by remember { mutableLongStateOf(currentPositionMs) }
     var consecutivePresses by remember { mutableIntStateOf(0) }
     var lastDirection by remember { mutableIntStateOf(0) }
     var scrubTick by remember { mutableLongStateOf(0L) }
+
+    val isAnyScrubbing = isRemoteScrubbing || isTouchScrubbing
 
     androidx.compose.runtime.DisposableEffect(dpadFocusScope) {
         onDispose {
@@ -567,12 +572,16 @@ fun TvSeekTimeBar(
         }
     }
 
-    val displayPosMs = (if (isRemoteScrubbing) remotePreviewMs else currentPositionMs).coerceIn(0L, maxMs)
+    val displayPosMs = when {
+        isTouchScrubbing -> touchPreviewMs
+        isRemoteScrubbing -> remotePreviewMs
+        else -> currentPositionMs
+    }.coerceIn(0L, maxMs)
 
-    // Auto-commit di sicurezza se il telecomando non invia KeyUp dopo lo scorrimento
+    // Auto-commit di sicurezza dopo pausa prolungata durante lo scorrimento da telecomando
     LaunchedEffect(isRemoteScrubbing, scrubTick) {
         if (isRemoteScrubbing) {
-            delay(650L)
+            delay(1_600L)
             if (isRemoteScrubbing) {
                 val target = remotePreviewMs
                 isRemoteScrubbing = false
@@ -585,7 +594,7 @@ fun TvSeekTimeBar(
     }
 
     val borderColor = when {
-        isRemoteScrubbing -> NetflixGold
+        isAnyScrubbing -> NetflixGold
         isFocused -> NetflixWhite
         else -> Color.Transparent
     }
@@ -595,8 +604,8 @@ fun TvSeekTimeBar(
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (isFocused || isRemoteScrubbing) {
-                    NetflixBlack.copy(alpha = 0.78f)
+                if (isFocused || isAnyScrubbing) {
+                    NetflixBlack.copy(alpha = 0.65f)
                 } else {
                     Color.Transparent
                 }
@@ -613,8 +622,8 @@ fun TvSeekTimeBar(
                 }
             )
             .padding(
-                horizontal = if (isFocused || isRemoteScrubbing) 10.dp else 0.dp,
-                vertical = if (isFocused || isRemoteScrubbing) 6.dp else 0.dp
+                horizontal = if (isFocused || isAnyScrubbing) 10.dp else 0.dp,
+                vertical = if (isFocused || isAnyScrubbing) 4.dp else 0.dp
             )
             .safeFocusRequester(focusRequester)
             .focusProperties {
@@ -648,14 +657,44 @@ fun TvSeekTimeBar(
                     Key.DirectionUp -> {
                         if (keyEvent.type == KeyEventType.KeyDown) {
                             onInteraction()
-                            return@onPreviewKeyEvent upFocusRequester.safeRequestFocus()
+                            if (isRemoteScrubbing) {
+                                val target = remotePreviewMs
+                                isRemoteScrubbing = false
+                                consecutivePresses = 0
+                                lastDirection = 0
+                                onScrubbingChanged(false)
+                                onSeekCommit(target)
+                            }
+                            return@onPreviewKeyEvent upFocusRequester?.safeRequestFocus() ?: true
                         }
-                        return@onPreviewKeyEvent false
+                        return@onPreviewKeyEvent true
                     }
                     Key.DirectionDown -> {
                         if (keyEvent.type == KeyEventType.KeyDown) {
                             onInteraction()
+                            if (isRemoteScrubbing) {
+                                val target = remotePreviewMs
+                                isRemoteScrubbing = false
+                                consecutivePresses = 0
+                                lastDirection = 0
+                                onScrubbingChanged(false)
+                                onSeekCommit(target)
+                            }
                             return@onPreviewKeyEvent downFocusRequester?.safeRequestFocus() ?: true
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    Key.Escape -> {
+                        if (isRemoteScrubbing) {
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                val restoreTarget = scrubStartMs
+                                isRemoteScrubbing = false
+                                consecutivePresses = 0
+                                lastDirection = 0
+                                onScrubbingChanged(false)
+                                onSeekPreview(restoreTarget)
+                            }
+                            return@onPreviewKeyEvent true
                         }
                         return@onPreviewKeyEvent false
                     }
@@ -700,21 +739,14 @@ fun TvSeekTimeBar(
                                 return@onPreviewKeyEvent true
                             }
                             KeyEventType.KeyUp -> {
-                                if (isRemoteScrubbing) {
-                                    val commitTarget = remotePreviewMs
-                                    isRemoteScrubbing = false
-                                    consecutivePresses = 0
-                                    lastDirection = 0
-                                    onScrubbingChanged(false)
-                                    onSeekCommit(commitTarget)
-                                }
+                                // Consuma KeyUp senza interrompere la sessione di scrubbing tra pressioni ripetute
                                 return@onPreviewKeyEvent true
                             }
                             else -> return@onPreviewKeyEvent true
                         }
                     }
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                        if (keyEvent.type == KeyEventType.KeyUp) {
+                        if (keyEvent.type == KeyEventType.KeyDown) {
                             onInteraction()
                             if (isRemoteScrubbing) {
                                 val commitTarget = remotePreviewMs
@@ -723,10 +755,11 @@ fun TvSeekTimeBar(
                                 lastDirection = 0
                                 onScrubbingChanged(false)
                                 onSeekCommit(commitTarget)
-                            } else {
+                            } else if (compact) {
                                 onTogglePlayPause()
                             }
                         }
+                        // Consuma sia KeyDown che KeyUp per evitare conflitti o pause involontarie
                         return@onPreviewKeyEvent true
                     }
                     else -> Unit
@@ -735,48 +768,50 @@ fun TvSeekTimeBar(
             }
             .focusable()
     ) {
-        AnimatedVisibility(visible = isFocused || isRemoteScrubbing) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 2.dp)
-            ) {
+        if (showAssistiveHeader) {
+            AnimatedVisibility(visible = isFocused || isAnyScrubbing) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 2.dp)
                 ) {
-                    Surface(
-                        color = if (isRemoteScrubbing) NetflixRed else NetflixElevatedSurface,
-                        shape = RoundedCornerShape(4.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = formatSecondsToMmSs(displayPosMs / 1000L),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
+                        Surface(
+                            color = if (isAnyScrubbing) NetflixRed else NetflixElevatedSurface,
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = formatSecondsToMmSs(displayPosMs / 1000L),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+
+                        if (isRemoteScrubbing) {
+                            val deltaSec = (remotePreviewMs - scrubStartMs) / 1000L
+                            val deltaSign = if (deltaSec >= 0L) "+" else ""
+                            Text(
+                                text = "$deltaSign${deltaSec}s",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = NetflixGold
+                            )
+                        }
                     }
 
-                    if (isRemoteScrubbing) {
-                        val deltaSec = (remotePreviewMs - scrubStartMs) / 1000L
-                        val deltaSign = if (deltaSec >= 0L) "+" else ""
-                        Text(
-                            text = "$deltaSign${deltaSec}s",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = NetflixGold
-                        )
-                    }
+                    Text(
+                        text = if (compact) "◀ ▶ Scorri • OK Pausa/Play" else "◀ ▶ Avanti/Indietro • OK Conferma",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixLightGray
+                    )
                 }
-
-                Text(
-                    text = if (compact) "◀ ▶ Scorri • OK Pausa/Play" else "◀ ▶ Avanti/Indietro • OK Pausa/Play",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NetflixLightGray
-                )
             }
         }
 
@@ -789,19 +824,31 @@ fun TvSeekTimeBar(
                 Text(
                     text = formatSecondsToMmSs(displayPosMs / 1000L),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isRemoteScrubbing) NetflixGold else NetflixWhite
+                    color = if (isAnyScrubbing) NetflixGold else NetflixWhite
                 )
                 Slider(
                     value = displayPosMs.toFloat().coerceIn(0f, maxMs.toFloat()),
                     onValueChange = { newValue ->
                         val target = newValue.toLong().coerceIn(0L, maxMs)
+                        touchPreviewMs = target
+                        if (!isTouchScrubbing) {
+                            isTouchScrubbing = true
+                            onScrubbingChanged(true)
+                        }
                         onInteraction()
                         onSeekPreview(target)
-                        onSeekCommit(target)
+                    },
+                    onValueChangeFinished = {
+                        if (isTouchScrubbing) {
+                            val commitTarget = touchPreviewMs
+                            isTouchScrubbing = false
+                            onScrubbingChanged(false)
+                            onSeekCommit(commitTarget)
+                        }
                     },
                     valueRange = 0f..maxMs.toFloat(),
                     colors = SliderDefaults.colors(
-                        thumbColor = if (isFocused || isRemoteScrubbing) NetflixWhite else NetflixRed,
+                        thumbColor = if (isFocused || isAnyScrubbing) NetflixWhite else NetflixRed,
                         activeTrackColor = NetflixRed,
                         inactiveTrackColor = NetflixElevatedSurface
                     ),
@@ -820,13 +867,25 @@ fun TvSeekTimeBar(
                 value = displayPosMs.toFloat().coerceIn(0f, maxMs.toFloat()),
                 onValueChange = { newValue ->
                     val target = newValue.toLong().coerceIn(0L, maxMs)
+                    touchPreviewMs = target
+                    if (!isTouchScrubbing) {
+                        isTouchScrubbing = true
+                        onScrubbingChanged(true)
+                    }
                     onInteraction()
                     onSeekPreview(target)
-                    onSeekCommit(target)
+                },
+                onValueChangeFinished = {
+                    if (isTouchScrubbing) {
+                        val commitTarget = touchPreviewMs
+                        isTouchScrubbing = false
+                        onScrubbingChanged(false)
+                        onSeekCommit(commitTarget)
+                    }
                 },
                 valueRange = 0f..maxMs.toFloat(),
                 colors = SliderDefaults.colors(
-                    thumbColor = if (isFocused || isRemoteScrubbing) NetflixWhite else NetflixRed,
+                    thumbColor = if (isFocused || isAnyScrubbing) NetflixWhite else NetflixRed,
                     activeTrackColor = NetflixRed,
                     inactiveTrackColor = NetflixElevatedSurface
                 ),

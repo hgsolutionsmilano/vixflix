@@ -1,9 +1,12 @@
 package com.example
 
 import android.app.Application
+import android.graphics.Bitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasTestTag
@@ -14,6 +17,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.requestFocus
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
@@ -41,9 +45,11 @@ import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.repository.VixFlixRepository
 import com.example.ui.GitHubUpdateUiState
 import com.example.ui.PlaybackSession
+import com.example.ui.screens.PlayerAudioTrackOption
 import com.example.ui.screens.SettingsCategory
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.VixPlayerScreen
+import com.example.ui.screens.formatMsToHhMmSs
 import com.example.ui.theme.VixFlixTheme
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -182,10 +188,10 @@ class AdvancedVideoPlayerTest {
     }
 
     @Test
-    fun moviePlayer_showsOnlyTitleAboveSeekBar_andManualCompletionButton() {
+    fun moviePlayer_showsCleanLayoutWithoutTopBar_timeBelowSeekBar_andThreeCircularControls() {
         val movieSession = PlaybackSession(
             mediaItem = sampleMovie,
-            startPositionMs = 120_000L,
+            startPositionMs = 2_142_000L, // 00:35:42
             isResolvingStream = false,
             resolvedStream = ResolvedStream(
                 streamUrl = "https://example.com/movie.m3u8",
@@ -194,7 +200,6 @@ class AdvancedVideoPlayerTest {
             )
         )
 
-        var completedCalled = false
         composeRule.setContent {
             VixFlixTheme {
                 VixPlayerScreen(
@@ -207,33 +212,306 @@ class AdvancedVideoPlayerTest {
                     onProgressUpdate = { _, _ -> },
                     onNextEpisode = {},
                     onClose = {},
-                    onCompleteMovieAndClose = { completedCalled = true },
-                    initialDurationMsOverride = 7_200_000L,
+                    initialDurationMsOverride = 6_738_000L, // 01:52:18
                     initialReadyForTest = true
                 )
             }
         }
 
+        // 1. Nessun elemento superiore (nessuna freccia indietro, nessuna scritta verde, nessun pulsante top)
+        composeRule.onNodeWithTag("player_back_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_audio_lang_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("open_external_vixsrc_button").assertDoesNotExist()
+        composeRule.onNodeWithText("VixSrc HLS 1080p", substring = true).assertDoesNotExist()
+
+        // 2. Titolo film sopra la barra, nessun sottotitolo serie
         composeRule.onNodeWithTag("player_media_title_header").assertIsDisplayed()
         composeRule.onNodeWithTag("player_media_main_title")
             .assertIsDisplayed()
             .assertTextEquals(sampleMovie.title)
         composeRule.onNodeWithTag("player_media_series_subtitle").assertDoesNotExist()
+
+        // 3. Barra di avanzamento + formato tempo esatto "00:35:42 / 01:52:18" subito sotto
         composeRule.onNodeWithTag("player_time_bar").assertIsDisplayed()
-        composeRule.onNodeWithTag("player_skip_intro_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_time_display")
+            .assertIsDisplayed()
+            .assertTextEquals("00:35:42 / 01:52:18")
+
+        // 4. Esclusivamente i tre pulsanti circolari sotto le informazioni temporali
+        composeRule.onNodeWithTag("player_controls_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("exo_play_pause_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_audio_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_vixsrc_link_button").assertIsDisplayed()
+
+        // 5. Vecchi pulsanti eliminati definitivamente
+        composeRule.onNodeWithTag("player_replay_10_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_forward_10_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_resize_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_manual_complete_button").assertDoesNotExist()
         composeRule.onNodeWithTag("next_episode_button").assertDoesNotExist()
-        composeRule.onNodeWithTag("player_manual_complete_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_skip_intro_button").assertDoesNotExist()
+    }
 
-        // Clic manuale su "Termina film" apre popup di conferma
-        composeRule.onNodeWithTag("player_manual_complete_button").performClick()
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun playerCircularButtons_togglePlayPause_selectAudioTrack_andHandleVixSrcLinkWithDpad() {
+        val movieSession = PlaybackSession(
+            mediaItem = sampleMovie,
+            startPositionMs = 90_000L,
+            isResolvingStream = false,
+            resolvedStream = ResolvedStream(
+                streamUrl = "https://example.com/movie.m3u8",
+                embedUrl = "https://vixsrc.to/movie/7001?lang=it",
+                isDirectHls = true
+            )
+        )
+        val mockTracks = listOf(
+            PlayerAudioTrackOption(
+                id = "track_it",
+                title = "Italiano (IT)",
+                details = "Surround 5.1 • Dolby Digital+ • 384 kbps",
+                isSelected = true
+            ),
+            PlayerAudioTrackOption(
+                id = "track_en",
+                title = "Inglese (EN)",
+                details = "Stereo 2.0 • AAC • 192 kbps",
+                isSelected = false
+            )
+        )
+        var selectedTrack: PlayerAudioTrackOption? = null
+        var openedVixUrl: String? = null
+        var closedCalled = false
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = movieSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onNextEpisode = {},
+                    onClose = { closedCalled = true },
+                    initialDurationMsOverride = 3_600_000L,
+                    initialReadyForTest = true,
+                    audioTracksOverrideForTest = mockTracks,
+                    onAudioTrackSelectedForTest = { selectedTrack = it },
+                    onOpenVixSrcLinkOverrideForTest = { openedVixUrl = it }
+                )
+            }
+        }
+
+        // Play / Pausa commuta lo stato e l'icona (Pausa -> Riproduci -> Pausa)
+        composeRule.onNodeWithTag("exo_play_pause_button")
+            .assertContentDescriptionEquals("Pausa")
+            .performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("exo_play_pause_button")
+            .assertContentDescriptionEquals("Riproduci")
+            .performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("exo_play_pause_button")
+            .assertContentDescriptionEquals("Pausa")
+
+        // Navigazione D-Pad tra i 3 pulsanti circolari e la barra del tempo
+        composeRule.onNodeWithTag("exo_play_pause_button").requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("exo_play_pause_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("exo_play_pause_button").performKeyInput {
+            pressKey(Key.DirectionRight)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_audio_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_audio_button").performKeyInput {
+            pressKey(Key.DirectionRight)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_vixsrc_link_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_vixsrc_link_button").performKeyInput {
+            pressKey(Key.DirectionUp)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_time_bar").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_time_bar").performKeyInput {
+            pressKey(Key.DirectionDown)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("exo_play_pause_button").assertIsFocused()
+
+        // Apri selettore Audio, verifica lingua/dettagli e seleziona Inglese
+        composeRule.onNodeWithTag("player_audio_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_audio_selector_panel").assertIsDisplayed()
+        composeRule.onNodeWithText("Italiano (IT)").assertIsDisplayed()
+        composeRule.onNodeWithText("Surround 5.1 • Dolby Digital+ • 384 kbps").assertIsDisplayed()
+        composeRule.onNodeWithText("Inglese (EN)").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("player_audio_option_track_en").performClick()
+        composeRule.waitForIdle()
+        assertEquals("track_en", selectedTrack?.id)
+        composeRule.onNodeWithTag("player_audio_selector_panel").assertDoesNotExist()
+        assertFalse(closedCalled)
+
+        // Apri pannello Link VixSrc, verifica URL reale VixSrc, testa BACK e apertura link
+        composeRule.onNodeWithTag("player_vixsrc_link_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_vixsrc_link_panel").assertIsDisplayed()
+        composeRule.onNodeWithTag("vixsrc_link_url_text")
+            .assertTextContains("https://vixsrc.to/movie/7001", substring = true)
+
+        // BACK chiude il pannello senza chiudere il player
+        composeRule.onNodeWithTag("vix_player_screen").performKeyInput {
+            pressKey(Key.Escape)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_vixsrc_link_panel").assertDoesNotExist()
+        assertFalse(closedCalled)
+
+        // Riapri pannello Link VixSrc e premi "Apri Link"
+        composeRule.onNodeWithTag("player_vixsrc_link_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("vixsrc_copy_link_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Copiato").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("vixsrc_open_link_button").performClick()
+        composeRule.waitForIdle()
+        assertNotNull(openedVixUrl)
+        assertTrue(openedVixUrl!!.startsWith("https://vixsrc.to/movie/7001"))
+        composeRule.onNodeWithTag("player_vixsrc_link_panel").assertDoesNotExist()
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun playerSeekBarScrubbing_showsOnlyThumbnailPreview_andHidesItOnConfirm() {
+        val intro = IntroSegmentEntity(
+            episodeKey = PlayerSegmentKeys.introEpisodeKey(sampleSeries.id, 2, 5),
+            seriesTmdbId = sampleSeries.id,
+            seasonNumber = 2,
+            episodeNumber = 5,
+            introStartMs = 20_000L,
+            introEndMs = 90_000L,
+            source = IntroSegmentSource.LOCAL_DB.storageKey
+        )
+        val seriesSession = PlaybackSession(
+            mediaItem = sampleSeries,
+            seasonNumber = 2,
+            episodeNumber = 5,
+            episodeTitle = "Il segreto",
+            startPositionMs = 30_000L, // 00:00:30
+            isResolvingStream = false,
+            resolvedStream = ResolvedStream(
+                streamUrl = "https://example.com/s2e5.m3u8",
+                embedUrl = "https://vixsrc.to/tv/8002/2/5",
+                isDirectHls = true
+            ),
+            introSegment = intro
+        )
+        val decodedFrame = Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888)
+        var lastCommittedMs = -1L
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = seriesSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { pos, _ -> lastCommittedMs = pos },
+                    onNextEpisode = {},
+                    onClose = {},
+                    initialDurationMsOverride = 3_600_000L, // 01:00:00
+                    initialReadyForTest = true,
+                    previewBitmapProvider = { decodedFrame }
+                )
+            }
+        }
+
+        // Prima dello scrubbing: titolo visibile, nessuna miniatura
+        composeRule.onNodeWithTag("player_media_title_header").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_seek_thumbnail_preview").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_time_display").assertTextEquals("00:00:30 / 01:00:00")
+
+        // Focalizza barra del tempo e premi freccia DESTRA -> entra in scrubbing
+        composeRule.onNodeWithTag("player_time_bar").requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_time_bar").performKeyInput {
+            pressKey(Key.DirectionRight)
+        }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag("movie_ended_popup_card").assertIsDisplayed()
-        composeRule.onNodeWithText("IL FILM È TERMINATO").assertIsDisplayed()
-        composeRule.onNodeWithTag("movie_ended_finish_button").performClick()
+        // Durante lo scrubbing: ESCLUSIVAMENTE la miniatura visibile; titolo e Salta Intro nascosti; tempo aggiornato
+        composeRule.onNodeWithTag("player_seek_thumbnail_preview").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_media_title_header").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_skip_intro_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_time_display").assertTextEquals("00:00:40 / 01:00:00")
+
+        // Premi OK -> conferma la posizione selezionata e nasconde subito la miniatura
+        composeRule.onNodeWithTag("player_time_bar").performKeyInput {
+            pressKey(Key.DirectionCenter)
+        }
         composeRule.waitForIdle()
 
-        assertTrue(completedCalled)
+        assertEquals(40_000L, lastCommittedMs)
+        composeRule.onNodeWithTag("player_seek_thumbnail_preview").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_media_title_header").assertIsDisplayed()
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun playerSeekBarScrubbing_withoutDecodableFrame_neverShowsFakeThumbnail() {
+        val movieSession = PlaybackSession(
+            mediaItem = sampleMovie,
+            startPositionMs = 60_000L,
+            isResolvingStream = false,
+            resolvedStream = ResolvedStream(
+                streamUrl = "https://example.com/movie.m3u8",
+                embedUrl = "https://vixsrc.to/movie/7001",
+                isDirectHls = true
+            )
+        )
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = movieSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onNextEpisode = {},
+                    onClose = {},
+                    initialDurationMsOverride = 3_600_000L,
+                    initialReadyForTest = true,
+                    previewBitmapProvider = { null }
+                )
+            }
+        }
+
+        assertEquals("00:35:42", formatMsToHhMmSs(2_142_000L))
+        assertEquals("01:52:18", formatMsToHhMmSs(6_738_000L))
+
+        composeRule.onNodeWithTag("player_time_bar").requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_time_bar").performKeyInput {
+            pressKey(Key.DirectionRight)
+        }
+        composeRule.waitForIdle()
+
+        // Se il frame reale non è disponibile -> nessuna immagine segnaposto o casuale mostrata
+        composeRule.onNodeWithTag("player_seek_thumbnail_preview").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_time_display").assertTextEquals("00:01:10 / 01:00:00")
     }
 
     @Test

@@ -1,6 +1,10 @@
 package com.example.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
@@ -12,14 +16,10 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,36 +28,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Forward10
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Replay10
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -88,7 +67,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -100,6 +78,7 @@ import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -124,11 +103,9 @@ import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
-import com.example.ui.components.takeIfAttached
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
-import com.example.ui.theme.NetflixElevatedSurface
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
 import kotlinx.coroutines.delay
@@ -136,6 +113,12 @@ import kotlinx.coroutines.delay
 private const val LOW_RAM_MAX_BUFFER_BYTES = 32 * 1024 * 1024
 private const val LOW_RAM_BACK_BUFFER_MS = 8_000
 private const val STANDARD_BACK_BUFFER_MS = 15_000
+
+private enum class PlayerFocusRestoreTarget {
+    NONE,
+    AUDIO_BUTTON,
+    VIX_LINK_BUTTON
+}
 
 @OptIn(UnstableApi::class)
 internal fun StreamingBufferPreset.toExoLoadControl(
@@ -184,7 +167,11 @@ fun VixPlayerScreen(
     onCompleteMovieAndClose: () -> Unit = onClose,
     initialDurationMsOverride: Long = 0L,
     initialReadyForTest: Boolean = false,
-    onSkipIntroTriggered: ((Long) -> Unit)? = null
+    onSkipIntroTriggered: ((Long) -> Unit)? = null,
+    previewBitmapProvider: ((Long) -> Bitmap?)? = null,
+    audioTracksOverrideForTest: List<PlayerAudioTrackOption>? = null,
+    onAudioTrackSelectedForTest: ((PlayerAudioTrackOption) -> Unit)? = null,
+    onOpenVixSrcLinkOverrideForTest: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -194,6 +181,7 @@ fun VixPlayerScreen(
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember(initialReadyForTest) { mutableStateOf(!initialReadyForTest) }
     var playerErrorMessage by remember(session.errorMessage) { mutableStateOf(session.errorMessage) }
+
     // Stato posizione/durata mantenuto come State holder per evitare ricomposizioni ogni 1s del root
     val currentPositionMsState = remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableLongStateOf(session.startPositionMs)
@@ -218,12 +206,18 @@ fun VixPlayerScreen(
         mutableStateOf(false)
     }
     var controlsVisible by remember { mutableStateOf(true) }
-    var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var interactionTick by remember { mutableLongStateOf(0L) }
     var isRemoteScrubbing by remember { mutableStateOf(false) }
     var isTimeBarFocused by remember { mutableStateOf(false) }
     var focusTimeBarOnReveal by remember { mutableStateOf(false) }
     var wasControlsVisible by remember { mutableStateOf(false) }
+    var showAudioSelector by remember { mutableStateOf(false) }
+    var showVixLinkPanel by remember { mutableStateOf(false) }
+    var pendingFocusRestore by remember { mutableStateOf(PlayerFocusRestoreTarget.NONE) }
+    var tracksVersion by remember { mutableIntStateOf(0) }
+    var selectedOverrideAudioId by remember(audioTracksOverrideForTest) {
+        mutableStateOf(audioTracksOverrideForTest?.firstOrNull { it.isSelected }?.id)
+    }
     var playbackEnded by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
@@ -239,9 +233,6 @@ fun VixPlayerScreen(
     var movieEndedDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
-    var manualMovieEndedRequested by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
     val autoNextRemainingSecState = remember(
         session.mediaItem.id,
         session.seasonNumber,
@@ -250,23 +241,16 @@ fun VixPlayerScreen(
     ) {
         mutableIntStateOf(advancedSettings.sanitizedCountdownSec)
     }
-    var mediaActionBadge by remember { mutableStateOf<String?>(null) }
     var retryNonce by remember { mutableIntStateOf(0) }
     var hasAutoRetriedCachedStream by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
 
     val isTvDevice = rememberIsTvDevice()
-    val backButtonFocusRequester = remember { FocusRequester() }
-    val audioLangFocusRequester = remember { FocusRequester() }
-    val vixLinkFocusRequester = remember { FocusRequester() }
-    val replay10FocusRequester = remember { FocusRequester() }
-    val playPauseFocusRequester = remember { FocusRequester() }
-    val forward10FocusRequester = remember { FocusRequester() }
     val timeBarFocusRequester = remember { FocusRequester() }
-    val resizeFocusRequester = remember { FocusRequester() }
-    val nextEpisodeFocusRequester = remember { FocusRequester() }
-    val manualMovieCompleteFocusRequester = remember { FocusRequester() }
+    val playPauseFocusRequester = remember { FocusRequester() }
+    val audioButtonFocusRequester = remember { FocusRequester() }
+    val vixLinkButtonFocusRequester = remember { FocusRequester() }
     val skipIntroFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
     val cancelLoadingFocusRequester = remember { FocusRequester() }
@@ -336,15 +320,23 @@ fun VixPlayerScreen(
         !isBuffering &&
         !session.isResolvingStream &&
         !autoNextDismissed &&
+        !isRemoteScrubbing &&
+        !showAudioSelector &&
+        !showVixLinkPanel &&
         (playbackEnded || inCreditsWindow)
 
     val showMovieEndedPopup = !session.mediaItem.isSeries &&
         currentError == null &&
         !isBuffering &&
         !session.isResolvingStream &&
-        (manualMovieEndedRequested || (!movieEndedDismissed && (playbackEnded || inCreditsWindow)))
+        !movieEndedDismissed &&
+        !isRemoteScrubbing &&
+        !showAudioSelector &&
+        !showVixLinkPanel &&
+        (playbackEnded || inCreditsWindow)
 
     val anyBlockingPopupVisible = showAutoNext || showMovieEndedPopup
+    val anySubPanelVisible = showAudioSelector || showVixLinkPanel
 
     // Usa OkHttpDataSource.Factory con l'interceptor VixSrc per gestire playlist HLS,
     // chiave AES-128 (/storage/enc.key) e segmenti MPEG-TS direttamente da vixsrc.to
@@ -410,13 +402,40 @@ fun VixPlayerScreen(
             .build()
     }
 
+    val togglePlayPause: () -> Unit = {
+        val currentlyPlaying = if (initialReadyForTest && exoPlayer.playbackState == Player.STATE_IDLE) {
+            isPlaying
+        } else {
+            exoPlayer.isPlaying
+        }
+        if (currentlyPlaying) {
+            exoPlayer.pause()
+            isPlaying = false
+        } else {
+            exoPlayer.play()
+            isPlaying = true
+        }
+        interactionTick++
+    }
+
+    val closeAudioSelector: () -> Unit = {
+        showAudioSelector = false
+        interactionTick++
+        pendingFocusRestore = PlayerFocusRestoreTarget.AUDIO_BUTTON
+    }
+
+    val closeVixLinkPanel: () -> Unit = {
+        showVixLinkPanel = false
+        interactionTick++
+        pendingFocusRestore = PlayerFocusRestoreTarget.VIX_LINK_BUTTON
+    }
+
     val performSkipIntro: () -> Unit = {
         val targetMs = session.introSegment?.introEndMs
         if (targetMs != null && targetMs > 0L) {
             introSkipped = true
             exoPlayer.seekTo(targetMs)
             currentPositionMsState.longValue = targetMs
-            mediaActionBadge = "Intro saltata"
             onSkipIntroTriggered?.invoke(targetMs)
             onProgressUpdate(targetMs, durationMsState.longValue)
             if (!controlsVisible) {
@@ -427,12 +446,17 @@ fun VixPlayerScreen(
 
     val dismissMovieEndedPopup: () -> Unit = {
         movieEndedDismissed = true
-        manualMovieEndedRequested = false
         rootFocusRequester.safeRequestFocus()
     }
 
     BackHandler {
         when {
+            showAudioSelector -> closeAudioSelector()
+            showVixLinkPanel -> closeVixLinkPanel()
+            isRemoteScrubbing -> {
+                isRemoteScrubbing = false
+                timeBarFocusRequester.safeRequestFocus()
+            }
             showMovieEndedPopup -> dismissMovieEndedPopup()
             showAutoNext -> {
                 autoNextDismissed = true
@@ -501,7 +525,7 @@ fun VixPlayerScreen(
         exoPlayer.playWhenReady = true
     }
 
-    // Listener eventi Player + salvataggio su Room Database
+    // Listener eventi Player + salvataggio su Room Database + aggiornamento tracce audio reali
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -530,6 +554,10 @@ fun VixPlayerScreen(
                     isPlaying = false
                     playbackEnded = true
                 }
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                tracksVersion++
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -623,21 +651,27 @@ fun VixPlayerScreen(
     }
 
     // Auto-focus sul pulsante "SALTA INTRO" quando i controlli sono nascosti per conferma immediata con tasto OK
-    LaunchedEffect(showSkipIntro, controlsVisible, anyBlockingPopupVisible) {
-        if (showSkipIntro && !controlsVisible && !anyBlockingPopupVisible) {
+    LaunchedEffect(showSkipIntro, controlsVisible, anyBlockingPopupVisible, anySubPanelVisible, isRemoteScrubbing) {
+        if (showSkipIntro && !controlsVisible && !anyBlockingPopupVisible && !anySubPanelVisible && !isRemoteScrubbing) {
             delay(60L)
             skipIntroFocusRequester.safeRequestFocus()
         }
     }
 
-    LaunchedEffect(mediaActionBadge) {
-        if (mediaActionBadge != null) {
-            delay(1_200L)
-            mediaActionBadge = null
+    // Ripristino deterministico del focus dopo la chiusura dei pannelli Audio o Link VixSrc
+    LaunchedEffect(pendingFocusRestore, showAudioSelector, showVixLinkPanel) {
+        if (pendingFocusRestore != PlayerFocusRestoreTarget.NONE && !showAudioSelector && !showVixLinkPanel) {
+            delay(50L)
+            when (pendingFocusRestore) {
+                PlayerFocusRestoreTarget.AUDIO_BUTTON -> audioButtonFocusRequester.safeRequestFocus()
+                PlayerFocusRestoreTarget.VIX_LINK_BUTTON -> vixLinkButtonFocusRequester.safeRequestFocus()
+                PlayerFocusRestoreTarget.NONE -> Unit
+            }
+            pendingFocusRestore = PlayerFocusRestoreTarget.NONE
         }
     }
 
-    // Auto-hide dei controlli dopo 4.5 secondi (sospeso durante lo scorrimento sulla barra del tempo)
+    // Auto-hide dei controlli dopo 4.5 secondi (sospeso durante lo scrubbing o con pannelli Audio / Link aperti)
     LaunchedEffect(
         controlsVisible,
         isPlaying,
@@ -646,9 +680,19 @@ fun VixPlayerScreen(
         session.isResolvingStream,
         isRemoteScrubbing,
         anyBlockingPopupVisible,
+        anySubPanelVisible,
         interactionTick
     ) {
-        if (controlsVisible && isPlaying && !isBuffering && !session.isResolvingStream && !isRemoteScrubbing && playerErrorMessage == null && !anyBlockingPopupVisible) {
+        if (
+            controlsVisible &&
+            isPlaying &&
+            !isBuffering &&
+            !session.isResolvingStream &&
+            !isRemoteScrubbing &&
+            playerErrorMessage == null &&
+            !anyBlockingPopupVisible &&
+            !anySubPanelVisible
+        ) {
             delay(4_500L)
             controlsVisible = false
             if (showSkipIntro) {
@@ -659,17 +703,17 @@ fun VixPlayerScreen(
         }
     }
 
-    // Sposta automaticamente il focus sui controlli TV solo quando compaiono (senza rubare focus alla barra del tempo durante i seek)
+    // Gestione pulita del focus TV quando i controlli compaiono/scompaiono
     LaunchedEffect(
         controlsVisible,
         playerErrorMessage,
         session.errorMessage,
         isBuffering,
         session.isResolvingStream,
-        anyBlockingPopupVisible
+        anyBlockingPopupVisible,
+        anySubPanelVisible
     ) {
-        if (anyBlockingPopupVisible) {
-            wasControlsVisible = false
+        if (anyBlockingPopupVisible || anySubPanelVisible) {
             return@LaunchedEffect
         }
         val hasErr = (playerErrorMessage ?: session.errorMessage) != null && !session.isResolvingStream
@@ -688,9 +732,8 @@ fun VixPlayerScreen(
             return@LaunchedEffect
         }
 
-        val readyControls = controlsVisible
-        if (readyControls) {
-            if (!wasControlsVisible && !isTimeBarFocused) {
+        if (controlsVisible) {
+            if (!wasControlsVisible && !isTimeBarFocused && pendingFocusRestore == PlayerFocusRestoreTarget.NONE) {
                 if (focusTimeBarOnReveal) {
                     focusTimeBarOnReveal = false
                     timeBarFocusRequester.safeRequestFocus()
@@ -710,6 +753,40 @@ fun VixPlayerScreen(
         }
     }
 
+    val availableAudioTracks = remember(exoPlayer, streamLang, tracksVersion, audioTracksOverrideForTest, selectedOverrideAudioId) {
+        if (audioTracksOverrideForTest != null) {
+            audioTracksOverrideForTest.map { option ->
+                if (selectedOverrideAudioId != null) {
+                    option.copy(isSelected = option.id == selectedOverrideAudioId)
+                } else {
+                    option
+                }
+            }
+        } else {
+            extractPlayerAudioTrackOptions(exoPlayer = exoPlayer, currentStreamLang = streamLang)
+        }
+    }
+
+    val liveVixSrcUrl = remember(
+        session.mediaItem.id,
+        session.mediaItem.mediaType,
+        session.seasonNumber,
+        session.episodeNumber,
+        streamLang,
+        resolvedStream?.embedUrl,
+        showVixLinkPanel
+    ) {
+        val currentSec = (currentPositionMsState.longValue / 1000L).coerceAtLeast(0L)
+        vixSrcResolver.buildVixSrcApiUrl(
+            tmdbId = session.mediaItem.id,
+            mediaType = session.mediaItem.mediaType,
+            season = session.seasonNumber,
+            episode = session.episodeNumber,
+            startSeconds = currentSec,
+            lang = streamLang
+        ).ifBlank { resolvedStream?.embedUrl.orEmpty() }
+    }
+
     DpadFocusScopeProvider(
         scope = DpadFocusScope.VIDEO_PLAYER,
         onRecoverFocus = {
@@ -717,713 +794,311 @@ fun VixPlayerScreen(
                 showMovieEndedPopup && movieEndedFinishFocusRequester.safeRequestFocus() -> "movie_ended_finish_button"
                 showAutoNext && autoNextPlayFocusRequester.safeRequestFocus() -> "auto_next_play_now_button"
                 currentError != null && !session.isResolvingStream && retryFocusRequester.safeRequestFocus() -> "player_retry_stream_button"
-                currentError != null && !session.isResolvingStream && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
                 (isBuffering || session.isResolvingStream) && cancelLoadingFocusRequester.safeRequestFocus() -> "loading_cancel_button"
-                (isBuffering || session.isResolvingStream) && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
-                showSkipIntro && !controlsVisible && skipIntroFocusRequester.safeRequestFocus() -> "player_skip_intro_button"
-                controlsVisible && playPauseFocusRequester.safeRequestFocus() -> "exo_play_pause_button"
-                controlsVisible && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
+                showSkipIntro && !controlsVisible && !isRemoteScrubbing && !anySubPanelVisible && skipIntroFocusRequester.safeRequestFocus() -> "player_skip_intro_button"
+                controlsVisible && !anySubPanelVisible && playPauseFocusRequester.safeRequestFocus() -> "exo_play_pause_button"
+                controlsVisible && !anySubPanelVisible && timeBarFocusRequester.safeRequestFocus() -> "player_time_bar"
                 rootFocusRequester.safeRequestFocus() -> "vix_player_root"
                 else -> null
             }
         }
     ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .safeFocusRequester(rootFocusRequester)
-            .onFocusChanged { state ->
-                if (state.isFocused) {
-                    DpadFocusObserverRegistry.onNodeFocusChanged(
-                        scope = DpadFocusScope.VIDEO_PLAYER,
-                        tag = "vix_player_root",
-                        isFocused = true
-                    )
-                }
-            }
-            .onPreviewKeyEvent { keyEvent ->
-                interactionTick++
-                if (keyEvent.type == KeyEventType.KeyDown) {
-                    when (keyEvent.key) {
-                        Key.Menu -> {
-                            if (!anyBlockingPopupVisible && currentError == null && !isBuffering && !session.isResolvingStream) {
-                                controlsVisible = !controlsVisible
-                                if (!controlsVisible && isTvDevice) {
-                                    rootFocusRequester.safeRequestFocus()
-                                }
-                                return@onPreviewKeyEvent true
-                            }
-                        }
-                        Key.Escape -> {
-                            when {
-                                showMovieEndedPopup -> dismissMovieEndedPopup()
-                                showAutoNext -> {
-                                    autoNextDismissed = true
-                                    rootFocusRequester.safeRequestFocus()
-                                }
-                                controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
-                                    controlsVisible = false
-                                    rootFocusRequester.safeRequestFocus()
-                                }
-                                showSkipIntro -> {
-                                    introDismissed = true
-                                    rootFocusRequester.safeRequestFocus()
-                                }
-                                else -> {
-                                    val pos = currentPositionMsState.longValue
-                                    if (pos > 0L) {
-                                        onProgressUpdate(pos, durationMsState.longValue)
-                                    }
-                                    onClose()
-                                }
-                            }
-                            return@onPreviewKeyEvent true
-                        }
-                        Key.MediaPlayPause -> {
-                            val willPlay = !exoPlayer.isPlaying
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                            mediaActionBadge = if (willPlay) "Riproduzione" else "In Pausa"
-                            if (!willPlay) controlsVisible = true
-                            return@onPreviewKeyEvent true
-                        }
-                        Key.MediaPlay -> {
-                            exoPlayer.play()
-                            mediaActionBadge = "Riproduzione"
-                            return@onPreviewKeyEvent true
-                        }
-                        Key.MediaPause -> {
-                            exoPlayer.pause()
-                            mediaActionBadge = "In Pausa"
-                            controlsVisible = true
-                            return@onPreviewKeyEvent true
-                        }
-                        Key.MediaFastForward -> {
-                            val target = exoPlayer.currentPosition + 10_000L
-                            exoPlayer.seekTo(target)
-                            currentPositionMsState.longValue = target
-                            mediaActionBadge = "+10s"
-                            controlsVisible = true
-                            return@onPreviewKeyEvent true
-                        }
-                        Key.MediaRewind -> {
-                            val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
-                            exoPlayer.seekTo(target)
-                            currentPositionMsState.longValue = target
-                            playbackEnded = false
-                            mediaActionBadge = "-10s"
-                            controlsVisible = true
-                            return@onPreviewKeyEvent true
-                        }
-                        Key.MediaNext -> {
-                            if (hasVerifiedNextEpisode) {
-                                onNextEpisode()
-                                return@onPreviewKeyEvent true
-                            }
-                        }
-                        else -> Unit
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .safeFocusRequester(rootFocusRequester)
+                .onFocusChanged { state ->
+                    if (state.isFocused) {
+                        DpadFocusObserverRegistry.onNodeFocusChanged(
+                            scope = DpadFocusScope.VIDEO_PLAYER,
+                            tag = "vix_player_root",
+                            isFocused = true
+                        )
                     }
-
-                    val canRevealOrSeek = !controlsVisible &&
-                        !anyBlockingPopupVisible &&
-                        playerErrorMessage == null &&
-                        session.errorMessage == null &&
-                        !isBuffering &&
-                        !session.isResolvingStream
-                    if (canRevealOrSeek) {
+                }
+                .onPreviewKeyEvent { keyEvent ->
+                    interactionTick++
+                    if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
-                            Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                                // Se "SALTA INTRO" è attivo a schermo senza controlli, lascia gestire OK al pulsante "SALTA INTRO"
-                                if (!showSkipIntro) {
-                                    controlsVisible = true
+                            Key.Menu -> {
+                                if (!anyBlockingPopupVisible && !anySubPanelVisible && currentError == null && !isBuffering && !session.isResolvingStream) {
+                                    controlsVisible = !controlsVisible
+                                    if (!controlsVisible && isTvDevice) {
+                                        rootFocusRequester.safeRequestFocus()
+                                    }
                                     return@onPreviewKeyEvent true
                                 }
                             }
-                            Key.DirectionUp, Key.DirectionDown -> {
+                            Key.Escape -> {
+                                // Se la barra del tempo è in scrubbing, lascia che TvSeekTimeBar annulli lo scrubbing
+                                if (isRemoteScrubbing) {
+                                    return@onPreviewKeyEvent false
+                                }
+                                when {
+                                    showAudioSelector -> closeAudioSelector()
+                                    showVixLinkPanel -> closeVixLinkPanel()
+                                    showMovieEndedPopup -> dismissMovieEndedPopup()
+                                    showAutoNext -> {
+                                        autoNextDismissed = true
+                                        rootFocusRequester.safeRequestFocus()
+                                    }
+                                    controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
+                                        controlsVisible = false
+                                        rootFocusRequester.safeRequestFocus()
+                                    }
+                                    showSkipIntro -> {
+                                        introDismissed = true
+                                        rootFocusRequester.safeRequestFocus()
+                                    }
+                                    else -> {
+                                        val pos = currentPositionMsState.longValue
+                                        if (pos > 0L) {
+                                            onProgressUpdate(pos, durationMsState.longValue)
+                                        }
+                                        onClose()
+                                    }
+                                }
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaPlayPause -> {
+                                togglePlayPause()
+                                if (!isPlaying) controlsVisible = true
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaPlay -> {
+                                exoPlayer.play()
+                                isPlaying = true
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaPause -> {
+                                exoPlayer.pause()
+                                isPlaying = false
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
                             }
-                            Key.DirectionLeft -> {
-                                val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
-                                exoPlayer.seekTo(target)
-                                currentPositionMsState.longValue = target
-                                onProgressUpdate(target, durationMsState.longValue)
-                                focusTimeBarOnReveal = true
-                                controlsVisible = true
-                                return@onPreviewKeyEvent true
-                            }
-                            Key.DirectionRight -> {
+                            Key.MediaFastForward -> {
                                 val maxDur = durationMsState.longValue.takeIf { it > 0L } ?: Long.MAX_VALUE
-                                val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(maxDur)
+                                val target = (currentPositionMsState.longValue + 10_000L).coerceAtMost(maxDur)
                                 exoPlayer.seekTo(target)
                                 currentPositionMsState.longValue = target
-                                onProgressUpdate(target, durationMsState.longValue)
-                                focusTimeBarOnReveal = true
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
+                            }
+                            Key.MediaRewind -> {
+                                val target = (currentPositionMsState.longValue - 10_000L).coerceAtLeast(0L)
+                                exoPlayer.seekTo(target)
+                                currentPositionMsState.longValue = target
+                                playbackEnded = false
+                                controlsVisible = true
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.MediaNext -> {
+                                if (hasVerifiedNextEpisode) {
+                                    onNextEpisode()
+                                    return@onPreviewKeyEvent true
+                                }
                             }
                             else -> Unit
                         }
-                    }
-                }
-                false
-            }
-            .focusable()
-            .testTag("vix_player_screen")
-    ) {
-        // Vista nativa 100% Media3 ExoPlayer (non focusabile così i tasti D-Pad non restano mai intrappolati sul video)
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false
-                    setKeepContentOnPlayerReset(true)
-                    isFocusable = false
-                    isFocusableInTouchMode = false
-                    this.resizeMode = resizeMode
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                }
-            },
-            update = { view ->
-                if (view.player !== exoPlayer) {
-                    view.player = exoPlayer
-                }
-                if (view.resizeMode != resizeMode) {
-                    view.resizeMode = resizeMode
-                }
-            },
-            onRelease = { view ->
-                view.player = null
-            },
-            modifier = Modifier
-                .fillMaxSize()
-                .focusProperties { canFocus = false }
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            controlsVisible = !controlsVisible
-                        }
-                    )
-                }
-        )
 
-        if (currentError != null && !session.isResolvingStream) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(28.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(NetflixCardSurface.copy(alpha = 0.95f))
-                    .padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ErrorOutline,
-                    contentDescription = null,
-                    tint = NetflixRed,
-                    modifier = Modifier.size(44.dp)
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = currentError,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = NetflixWhite,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(14.dp))
-                Button(
-                    onClick = {
-                        playerErrorMessage = null
-                        isBuffering = true
-                        retryNonce++
-                        if (onInvalidateAndRetryStream != null) {
-                            onInvalidateAndRetryStream.invoke()
-                        } else {
-                            onToggleLanguage(streamLang)
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = NetflixRed,
-                        contentColor = Color.White
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .safeFocusRequester(retryFocusRequester)
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionUp -> backButtonFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
-                                    else -> false
+                        val canRevealOrSeek = !controlsVisible &&
+                            !anyBlockingPopupVisible &&
+                            !anySubPanelVisible &&
+                            playerErrorMessage == null &&
+                            session.errorMessage == null &&
+                            !isBuffering &&
+                            !session.isResolvingStream
+                        if (canRevealOrSeek) {
+                            when (keyEvent.key) {
+                                Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                                    if (!showSkipIntro) {
+                                        controlsVisible = true
+                                        return@onPreviewKeyEvent true
+                                    }
                                 }
-                            } else {
-                                false
+                                Key.DirectionUp, Key.DirectionDown -> {
+                                    controlsVisible = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                Key.DirectionLeft -> {
+                                    val target = (currentPositionMsState.longValue - 10_000L).coerceAtLeast(0L)
+                                    exoPlayer.seekTo(target)
+                                    currentPositionMsState.longValue = target
+                                    playbackEnded = false
+                                    onProgressUpdate(target, durationMsState.longValue)
+                                    focusTimeBarOnReveal = true
+                                    controlsVisible = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                Key.DirectionRight -> {
+                                    val maxDur = durationMsState.longValue.takeIf { it > 0L } ?: Long.MAX_VALUE
+                                    val target = (currentPositionMsState.longValue + 10_000L).coerceAtMost(maxDur)
+                                    exoPlayer.seekTo(target)
+                                    currentPositionMsState.longValue = target
+                                    onProgressUpdate(target, durationMsState.longValue)
+                                    focusTimeBarOnReveal = true
+                                    controlsVisible = true
+                                    return@onPreviewKeyEvent true
+                                }
+                                else -> Unit
                             }
                         }
-                        .focusProperties {
-                            backButtonFocusRequester.takeIfAttached()?.let { up = it }
-                        }
-                        .tvFocusableControl(
-                            shape = RoundedCornerShape(8.dp),
-                            focusedScale = 1.06f,
-                            focusTag = "player_retry_stream_button"
-                        )
-                        .testTag("player_retry_stream_button")
-                ) {
-                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Riprova Connessione VixSrc")
-                }
-            }
-        } else if (isBuffering || session.isResolvingStream) {
-            // Popup di Loading in fase di avvio/attesa dello streaming con tasto Annulla focusabile su TV
-            VixStreamLoadingPopup(
-                session = session,
-                streamLang = streamLang,
-                bufferPreset = bufferPreset,
-                cancelFocusRequester = cancelLoadingFocusRequester,
-                upFocusRequester = backButtonFocusRequester,
-                onCancel = {
-                    val pos = currentPositionMsState.longValue
-                    if (pos > 0L) {
-                        onProgressUpdate(pos, durationMsState.longValue)
                     }
-                    onClose()
+                    false
+                }
+                .focusable()
+                .testTag("vix_player_screen")
+        ) {
+            // 1. VIDEO (Vista nativa 100% Media3 ExoPlayer, completamente pulita nella parte superiore)
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = false
+                        setKeepContentOnPlayerReset(true)
+                        isFocusable = false
+                        isFocusableInTouchMode = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                update = { view ->
+                    if (view.player !== exoPlayer) {
+                        view.player = exoPlayer
+                    }
+                },
+                onRelease = { view ->
+                    view.player = null
                 },
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 20.dp)
+                    .fillMaxSize()
+                    .focusProperties { canFocus = false }
+                    .pointerInput(anySubPanelVisible) {
+                        detectTapGestures(
+                            onTap = {
+                                when {
+                                    showAudioSelector -> closeAudioSelector()
+                                    showVixLinkPanel -> closeVixLinkPanel()
+                                    else -> controlsVisible = !controlsVisible
+                                }
+                            }
+                        )
+                    }
             )
-        }
 
-        // Badge discreto per tasti multimediali dedicati telecomando (Play/Pausa/±10s)
-        AnimatedVisibility(
-            visible = mediaActionBadge != null && !controlsVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(top = 20.dp, end = 24.dp)
-        ) {
-            Surface(
-                color = NetflixBlack.copy(alpha = 0.85f),
-                shape = RoundedCornerShape(50),
-                border = BorderStroke(1.dp, NetflixRed)
-            ) {
-                Text(
-                    text = mediaActionBadge.orEmpty(),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = NetflixWhite,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                )
-            }
-        }
-
-        // Overlay Top Bar
-        AnimatedVisibility(
-            visible = (controlsVisible || currentError != null || isBuffering || session.isResolvingStream) && !showAutoNext,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter)
-        ) {
-            val readyOverlayActive = controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream
-            val topBarDownTarget: FocusRequester? = when {
-                currentError != null && !session.isResolvingStream -> retryFocusRequester
-                isBuffering || session.isResolvingStream -> cancelLoadingFocusRequester
-                readyOverlayActive -> playPauseFocusRequester
-                else -> null
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                NetflixBlack.copy(alpha = 0.88f),
-                                Color.Transparent
-                            )
-                        )
-                    )
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .focusGroup(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    IconButton(
-                        onClick = {
-                            val pos = currentPositionMsState.longValue
-                            if (pos > 0L) {
-                                onProgressUpdate(pos, durationMsState.longValue)
-                            }
-                            onClose()
-                        },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .safeFocusRequester(backButtonFocusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionUp, Key.DirectionLeft -> true
-                                        Key.DirectionRight -> audioLangFocusRequester.safeRequestFocus()
-                                        Key.DirectionDown -> topBarDownTarget?.safeRequestFocus() ?: true
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .focusProperties {
-                                audioLangFocusRequester.takeIfAttached()?.let { right = it }
-                                topBarDownTarget.takeIfAttached()?.let { down = it }
-                            }
-                            .tvFocusableControl(
-                                shape = CircleShape,
-                                focusedScale = 1.12f,
-                                focusTag = "player_back_button"
-                            )
-                            .testTag("player_back_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Indietro",
-                            tint = NetflixWhite
-                        )
-                    }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        VixPlayerTopSubtitle(
-                            session = session,
-                            positionMsProvider = { currentPositionMsState.longValue }
-                        )
-                    }
-                }
-
-                val vixEmbedUrl = resolvedStream?.embedUrl
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Selettore Lingua Audio (ITA / ENG)
-                    Surface(
-                        color = NetflixCardSurface.copy(alpha = 0.9f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(1.dp, NetflixElevatedSurface),
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .safeFocusRequester(audioLangFocusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionUp -> true
-                                        Key.DirectionLeft -> backButtonFocusRequester.safeRequestFocus()
-                                        Key.DirectionRight -> {
-                                            if (!vixEmbedUrl.isNullOrBlank()) {
-                                                vixLinkFocusRequester.safeRequestFocus()
-                                            } else {
-                                                true
-                                            }
-                                        }
-                                        Key.DirectionDown -> topBarDownTarget?.safeRequestFocus() ?: true
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .focusProperties {
-                                backButtonFocusRequester.takeIfAttached()?.let { left = it }
-                                if (!vixEmbedUrl.isNullOrBlank()) {
-                                    vixLinkFocusRequester.takeIfAttached()?.let { right = it }
-                                }
-                                topBarDownTarget.takeIfAttached()?.let { down = it }
-                            }
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(6.dp),
-                                focusedScale = 1.08f,
-                                focusTag = "player_audio_lang_button",
-                                onClick = {
-                                    onToggleLanguage(if (streamLang == "it") "en" else "it")
-                                }
-                            )
-                            .testTag("player_audio_lang_button")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Language,
-                                contentDescription = null,
-                                tint = NetflixRed,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Audio: ${streamLang.uppercase()}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = NetflixWhite
-                            )
-                        }
-                    }
-
-                    // Link diretto esterno VixSrc con startAt
-                    if (!vixEmbedUrl.isNullOrBlank()) {
-                        Surface(
-                            color = NetflixCardSurface.copy(alpha = 0.9f),
-                            shape = RoundedCornerShape(6.dp),
-                            border = BorderStroke(1.dp, NetflixElevatedSurface),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .safeFocusRequester(vixLinkFocusRequester)
-                                .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                        when (keyEvent.key) {
-                                            Key.DirectionUp, Key.DirectionRight -> true
-                                            Key.DirectionLeft -> audioLangFocusRequester.safeRequestFocus()
-                                            Key.DirectionDown -> topBarDownTarget?.safeRequestFocus() ?: true
-                                            else -> false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                .focusProperties {
-                                    audioLangFocusRequester.takeIfAttached()?.let { left = it }
-                                    topBarDownTarget.takeIfAttached()?.let { down = it }
-                                }
-                                .tvFocusableControl(
-                                    shape = RoundedCornerShape(6.dp),
-                                    focusedScale = 1.08f,
-                                    focusTag = "open_external_vixsrc_button",
-                                    onClick = {
-                                        runCatching {
-                                            val liveUrl = vixSrcResolver.buildVixSrcApiUrl(
-                                                tmdbId = session.mediaItem.id,
-                                                mediaType = session.mediaItem.mediaType,
-                                                season = session.seasonNumber,
-                                                episode = session.episodeNumber,
-                                                startSeconds = currentPositionMsState.longValue / 1000L,
-                                                lang = streamLang
-                                            )
-                                            context.startActivity(
-                                                Intent(Intent.ACTION_VIEW, Uri.parse(liveUrl)).apply {
-                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                }
-                                            )
-                                        }
-                                    }
-                                )
-                                .testTag("open_external_vixsrc_button")
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                    contentDescription = "Apri URL VixSrc",
-                                    tint = NetflixWhite,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "VixSrc Link",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = NetflixWhite
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Controlli centrali e barra inferiore per ExoPlayer Nativo (visibili quando il popup di loading non è mostrato)
-        AnimatedVisibility(
-            visible = controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream && !anyBlockingPopupVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            val showManualCompleteButton = !session.mediaItem.isSeries && advancedSettings.manualMovieCompletionEnabled
-            val bottomPrimaryFocusRequester = when {
-                hasVerifiedNextEpisode -> nextEpisodeFocusRequester
-                showManualCompleteButton -> manualMovieCompleteFocusRequester
-                else -> resizeFocusRequester
-            }
-
-            Box(modifier = Modifier.fillMaxSize()) {
-                // Pulsanti centrali -10s / Play-Pause / +10s
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .focusGroup(),
-                    horizontalArrangement = Arrangement.spacedBy(36.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = {
-                            val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
-                            exoPlayer.seekTo(target)
-                            currentPositionMsState.longValue = target
-                            playbackEnded = false
-                            onProgressUpdate(target, durationMsState.longValue)
-                        },
-                        modifier = Modifier
-                            .size(54.dp)
-                            .safeFocusRequester(replay10FocusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionLeft -> true
-                                        Key.DirectionRight -> playPauseFocusRequester.safeRequestFocus()
-                                        Key.DirectionUp -> backButtonFocusRequester.safeRequestFocus()
-                                        Key.DirectionDown -> timeBarFocusRequester.safeRequestFocus()
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .focusProperties {
-                                playPauseFocusRequester.takeIfAttached()?.let { right = it }
-                                backButtonFocusRequester.takeIfAttached()?.let { up = it }
-                                timeBarFocusRequester.takeIfAttached()?.let { down = it }
-                            }
-                            .tvFocusableControl(
-                                shape = CircleShape,
-                                focusedScale = 1.14f,
-                                focusTag = "player_replay_10_button"
-                            )
-                            .clip(CircleShape)
-                            .background(NetflixBlack.copy(alpha = 0.65f))
-                            .testTag("player_replay_10_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Replay10,
-                            contentDescription = "Indietro 10 secondi",
-                            tint = NetflixWhite,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                        },
-                        modifier = Modifier
-                            .size(70.dp)
-                            .safeFocusRequester(playPauseFocusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionLeft -> replay10FocusRequester.safeRequestFocus()
-                                        Key.DirectionRight -> forward10FocusRequester.safeRequestFocus()
-                                        Key.DirectionUp -> backButtonFocusRequester.safeRequestFocus()
-                                        Key.DirectionDown -> timeBarFocusRequester.safeRequestFocus()
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .focusProperties {
-                                replay10FocusRequester.takeIfAttached()?.let { left = it }
-                                forward10FocusRequester.takeIfAttached()?.let { right = it }
-                                backButtonFocusRequester.takeIfAttached()?.let { up = it }
-                                timeBarFocusRequester.takeIfAttached()?.let { down = it }
-                            }
-                            .tvFocusableControl(
-                                shape = CircleShape,
-                                focusedScale = 1.14f,
-                                focusTag = "exo_play_pause_button"
-                            )
-                            .clip(CircleShape)
-                            .background(NetflixRed)
-                            .testTag("exo_play_pause_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "Pausa" else "Riproduci",
-                            tint = Color.White,
-                            modifier = Modifier.size(40.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            val target = exoPlayer.currentPosition + 10_000L
-                            exoPlayer.seekTo(target)
-                            currentPositionMsState.longValue = target
-                            onProgressUpdate(target, durationMsState.longValue)
-                        },
-                        modifier = Modifier
-                            .size(54.dp)
-                            .safeFocusRequester(forward10FocusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionLeft -> playPauseFocusRequester.safeRequestFocus()
-                                        Key.DirectionRight -> {
-                                            if (showSkipIntro) {
-                                                skipIntroFocusRequester.safeRequestFocus()
-                                            } else {
-                                                true
-                                            }
-                                        }
-                                        Key.DirectionUp ->
-                                            audioLangFocusRequester.safeRequestFocus() || backButtonFocusRequester.safeRequestFocus()
-                                        Key.DirectionDown -> timeBarFocusRequester.safeRequestFocus()
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .focusProperties {
-                                playPauseFocusRequester.takeIfAttached()?.let { left = it }
-                                if (showSkipIntro) {
-                                    skipIntroFocusRequester.takeIfAttached()?.let { right = it }
-                                }
-                                (audioLangFocusRequester.takeIfAttached() ?: backButtonFocusRequester.takeIfAttached())?.let { up = it }
-                                timeBarFocusRequester.takeIfAttached()?.let { down = it }
-                            }
-                            .tvFocusableControl(
-                                shape = CircleShape,
-                                focusedScale = 1.14f,
-                                focusTag = "player_forward_10_button"
-                            )
-                            .clip(CircleShape)
-                            .background(NetflixBlack.copy(alpha = 0.65f))
-                            .testTag("player_forward_10_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Forward10,
-                            contentDescription = "Avanti 10 secondi",
-                            tint = NetflixWhite,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-                }
-
-                // Barra inferiore con Titolo + Stagione/Episodio sopra lo Slider rosso Netflix, timestamp e azioni rapide
+            // Stato errore stream o loading
+            if (currentError != null && !session.isResolvingStream) {
                 Column(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
+                        .align(Alignment.Center)
+                        .padding(28.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(NetflixCardSurface.copy(alpha = 0.95f))
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ErrorOutline,
+                        contentDescription = null,
+                        tint = NetflixRed,
+                        modifier = Modifier.size(44.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = currentError,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = NetflixWhite,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Button(
+                        onClick = {
+                            playerErrorMessage = null
+                            isBuffering = true
+                            retryNonce++
+                            if (onInvalidateAndRetryStream != null) {
+                                onInvalidateAndRetryStream.invoke()
+                            } else {
+                                onToggleLanguage(streamLang)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = NetflixRed,
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .safeFocusRequester(retryFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(8.dp),
+                                focusedScale = 1.06f,
+                                focusTag = "player_retry_stream_button"
+                            )
+                            .testTag("player_retry_stream_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Riprova Connessione VixSrc")
+                    }
+                }
+            } else if (isBuffering || session.isResolvingStream) {
+                VixStreamLoadingPopup(
+                    session = session,
+                    streamLang = streamLang,
+                    bufferPreset = bufferPreset,
+                    cancelFocusRequester = cancelLoadingFocusRequester,
+                    upFocusRequester = null,
+                    onCancel = {
+                        val pos = currentPositionMsState.longValue
+                        if (pos > 0L) {
+                            onProgressUpdate(pos, durationMsState.longValue)
+                        }
+                        onClose()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 20.dp)
+                )
+            }
+
+            // Controlli inferiori puliti e riorganizzati:
+            // Nessun elemento superiore!
+            // Ordine esatto:
+            // 1) Video (sfondo)
+            // 2) Barra di avanzamento temporale (con solo miniatura durante scrubbing, oppure titolo sopra quando non in scrubbing)
+            // 3) Durata totale e tempo di riproduzione attuale ("00:35:42 / 01:52:18")
+            // 4) Esclusivamente tre pulsanti circolari: PLAY/PAUSA, AUDIO, LINK VIXSRC
+            AnimatedVisibility(
+                visible = controlsVisible &&
+                    currentError == null &&
+                    !isBuffering &&
+                    !session.isResolvingStream &&
+                    !anyBlockingPopupVisible &&
+                    !anySubPanelVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
                         .fillMaxWidth()
                         .background(
                             Brush.verticalGradient(
@@ -1435,13 +1110,28 @@ fun VixPlayerScreen(
                             )
                         )
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 14.dp)
+                        .padding(horizontal = 24.dp, vertical = 16.dp)
                 ) {
-                    PlayerMediaTitleHeader(
-                        session = session,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (isRemoteScrubbing) {
+                        // Durante la ricerca manuale sulla barra: mostra ESCLUSIVAMENTE la miniatura del fotogramma reale
+                        SeekThumbnailPreviewStrip(
+                            isScrubbing = true,
+                            previewPositionMsProvider = { currentPositionMsState.longValue },
+                            durationMsProvider = { durationMsState.longValue },
+                            streamUrl = resolvedStream?.streamUrl,
+                            isDirectHls = resolvedStream?.isDirectHls == true,
+                            okHttpDataSourceFactory = okHttpDataSourceFactory,
+                            previewBitmapProvider = previewBitmapProvider,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        PlayerMediaTitleHeader(
+                            session = session,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
+                    // 2. BARRA DI AVANZAMENTO TEMPORALE
                     VixPlayerSeekBarIsolated(
                         positionMsProvider = { currentPositionMsState.longValue },
                         durationMsProvider = { durationMsState.longValue },
@@ -1456,261 +1146,186 @@ fun VixPlayerScreen(
                             onProgressUpdate(targetMs, durationMsState.longValue)
                             interactionTick++
                         },
-                        onTogglePlayPause = {
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                            interactionTick++
-                        },
+                        onTogglePlayPause = togglePlayPause,
                         onInteraction = { interactionTick++ },
                         onFocusChanged = { isTimeBarFocused = it },
-                        onScrubbingChanged = { isRemoteScrubbing = it },
+                        onScrubbingChanged = { scrubbing ->
+                            isRemoteScrubbing = scrubbing
+                            interactionTick++
+                        },
                         focusRequester = timeBarFocusRequester,
-                        upFocusRequester = playPauseFocusRequester,
-                        downFocusRequester = bottomPrimaryFocusRequester,
+                        upFocusRequester = if (showSkipIntro && !isRemoteScrubbing) skipIntroFocusRequester else null,
+                        downFocusRequester = playPauseFocusRequester,
+                        showAssistiveHeader = false,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("player_time_bar")
                     )
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusGroup(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        VixPlayerTimestampInfo(
-                            positionMsProvider = { currentPositionMsState.longValue },
-                            durationMsProvider = { durationMsState.longValue },
-                            streamLang = streamLang,
-                            modifier = Modifier.weight(1f)
-                        )
+                    // 3. DURATA TOTALE E TEMPO DI RIPRODUZIONE ATTUALE ("00:35:42 / 01:52:18")
+                    PlayerCleanTimeDisplay(
+                        positionMsProvider = { currentPositionMsState.longValue },
+                        durationMsProvider = { durationMsState.longValue },
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    resizeMode = if (resizeMode == AspectRatioFrameLayout.RESIZE_MODE_FIT) {
-                                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                    } else {
-                                        AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                    }
-                                },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .safeFocusRequester(resizeFocusRequester)
-                                    .onPreviewKeyEvent { keyEvent ->
-                                        if (keyEvent.type == KeyEventType.KeyDown) {
-                                            when (keyEvent.key) {
-                                                Key.DirectionLeft, Key.DirectionDown -> true
-                                                Key.DirectionUp -> timeBarFocusRequester.safeRequestFocus()
-                                                Key.DirectionRight -> {
-                                                    when {
-                                                        hasVerifiedNextEpisode -> nextEpisodeFocusRequester.safeRequestFocus()
-                                                        showManualCompleteButton -> manualMovieCompleteFocusRequester.safeRequestFocus()
-                                                        else -> true
-                                                    }
-                                                }
-                                                else -> false
-                                            }
-                                        } else {
-                                            false
-                                        }
-                                    }
-                                    .focusProperties {
-                                        timeBarFocusRequester.takeIfAttached()?.let { up = it }
-                                        when {
-                                            hasVerifiedNextEpisode -> nextEpisodeFocusRequester.takeIfAttached()?.let { right = it }
-                                            showManualCompleteButton -> manualMovieCompleteFocusRequester.takeIfAttached()?.let { right = it }
-                                        }
-                                    }
-                                    .tvFocusableControl(
-                                        shape = CircleShape,
-                                        focusedScale = 1.12f,
-                                        focusTag = "player_resize_button"
-                                    )
-                                    .testTag("player_resize_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.AspectRatio,
-                                    contentDescription = "Cambia proporzioni schermo",
-                                    tint = NetflixWhite
-                                )
-                            }
-
-                            if (showManualCompleteButton) {
-                                OutlinedButton(
-                                    onClick = { manualMovieEndedRequested = true },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                                    border = BorderStroke(1.dp, NetflixWhite.copy(alpha = 0.45f)),
-                                    shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                    modifier = Modifier
-                                        .heightIn(min = 48.dp)
-                                        .safeFocusRequester(manualMovieCompleteFocusRequester)
-                                        .onPreviewKeyEvent { keyEvent ->
-                                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                                when (keyEvent.key) {
-                                                    Key.DirectionRight, Key.DirectionDown -> true
-                                                    Key.DirectionLeft -> resizeFocusRequester.safeRequestFocus()
-                                                    Key.DirectionUp -> timeBarFocusRequester.safeRequestFocus()
-                                                    else -> false
-                                                }
-                                            } else {
-                                                false
-                                            }
-                                        }
-                                        .focusProperties {
-                                            timeBarFocusRequester.takeIfAttached()?.let { up = it }
-                                            resizeFocusRequester.takeIfAttached()?.let { left = it }
-                                        }
-                                        .tvFocusableControl(
-                                            shape = RoundedCornerShape(8.dp),
-                                            focusedBorderColor = NetflixRed,
-                                            focusedScale = 1.06f,
-                                            focusTag = "player_manual_complete_button"
-                                        )
-                                        .testTag("player_manual_complete_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Termina film",
-                                        style = MaterialTheme.typography.labelLarge
-                                    )
-                                }
-                            }
-
-                            if (hasVerifiedNextEpisode) {
-                                Button(
-                                    onClick = onNextEpisode,
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = NetflixWhite,
-                                        contentColor = NetflixBlack
-                                    ),
-                                    shape = RoundedCornerShape(6.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                    modifier = Modifier
-                                        .heightIn(min = 48.dp)
-                                        .safeFocusRequester(nextEpisodeFocusRequester)
-                                        .onPreviewKeyEvent { keyEvent ->
-                                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                                when (keyEvent.key) {
-                                                    Key.DirectionRight, Key.DirectionDown -> true
-                                                    Key.DirectionLeft -> resizeFocusRequester.safeRequestFocus()
-                                                    Key.DirectionUp -> timeBarFocusRequester.safeRequestFocus()
-                                                    else -> false
-                                                }
-                                            } else {
-                                                false
-                                            }
-                                        }
-                                        .focusProperties {
-                                            timeBarFocusRequester.takeIfAttached()?.let { up = it }
-                                            resizeFocusRequester.takeIfAttached()?.let { left = it }
-                                        }
-                                        .tvFocusableControl(
-                                            shape = RoundedCornerShape(6.dp),
-                                            focusedBorderColor = NetflixRed,
-                                            focusedScale = 1.06f,
-                                            focusTag = "next_episode_button"
-                                        )
-                                        .testTag("next_episode_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.SkipNext,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Prossimo Ep.",
-                                        style = MaterialTheme.typography.labelLarge
-                                    )
-                                }
-                            }
+                    // 4. FILA DI ESCLUSIVAMENTE TRE PULSANTI CIRCOLARI: PLAY/PAUSA, AUDIO, LINK VIXSRC
+                    PlayerCircularControlsRow(
+                        isPlaying = isPlaying,
+                        playPauseFocusRequester = playPauseFocusRequester,
+                        audioFocusRequester = audioButtonFocusRequester,
+                        vixLinkFocusRequester = vixLinkButtonFocusRequester,
+                        upToTimeBarFocusRequester = timeBarFocusRequester,
+                        onTogglePlayPause = togglePlayPause,
+                        onOpenAudioSelector = {
+                            showVixLinkPanel = false
+                            showAudioSelector = true
+                            interactionTick++
+                        },
+                        onOpenVixLinkPanel = {
+                            showAudioSelector = false
+                            showVixLinkPanel = true
+                            interactionTick++
                         }
-                    }
+                    )
                 }
             }
-        }
 
-        // Pulsante fluttuante "SALTA INTRO" (visibile solo per serie TV con dati intro affidabili)
-        AnimatedVisibility(
-            visible = showSkipIntro && !anyBlockingPopupVisible,
-            enter = fadeIn() + slideInVertically { it / 2 },
-            exit = fadeOut() + slideOutVertically { it / 2 },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(
-                    end = 24.dp,
-                    bottom = if (controlsVisible) 186.dp else 32.dp
+            // Selettore Tracce Audio (aperto dal pulsante circolare AUDIO)
+            AnimatedVisibility(
+                visible = showAudioSelector && currentError == null && !isBuffering && !session.isResolvingStream,
+                enter = fadeIn() + slideInVertically { it / 3 },
+                exit = fadeOut() + slideOutVertically { it / 3 },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 28.dp)
+            ) {
+                PlayerAudioSelectorPanel(
+                    tracks = availableAudioTracks,
+                    onSelectTrack = { selected ->
+                        selectedOverrideAudioId = selected.id
+                        onAudioTrackSelectedForTest?.invoke(selected)
+                        if (audioTracksOverrideForTest == null) {
+                            applyAudioTrackSelection(
+                                exoPlayer = exoPlayer,
+                                option = selected,
+                                onToggleLanguage = onToggleLanguage
+                            )
+                            tracksVersion++
+                        }
+                        closeAudioSelector()
+                    },
+                    onDismiss = closeAudioSelector
                 )
-        ) {
-            SkipIntroFloatingButton(
-                focusRequester = skipIntroFocusRequester,
-                controlsVisible = controlsVisible,
-                leftFocusRequester = forward10FocusRequester,
-                downFocusRequester = timeBarFocusRequester,
-                onSkipIntro = performSkipIntro
-            )
-        }
+            }
 
-        // Overlay "PROSSIMO EPISODIO" per serie TV (solo con episodio successivo reale verificato)
-        AnimatedVisibility(
-            visible = showAutoNext && verifiedNextEpisode != null,
-            enter = fadeIn() + slideInVertically { it / 3 },
-            exit = fadeOut() + slideOutVertically { it / 3 },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(24.dp)
-        ) {
-            verifiedNextEpisode?.let { nextEp ->
-                NextEpisodePopupCard(
-                    session = session,
-                    nextEpisode = nextEp,
-                    autoPlayEnabled = advancedSettings.autoPlayNextEpisodeEnabled,
-                    totalCountdownSec = advancedSettings.sanitizedCountdownSec,
-                    remainingSecProvider = { autoNextRemainingSecState.intValue },
-                    playFocusRequester = autoNextPlayFocusRequester,
-                    cancelFocusRequester = autoNextCancelFocusRequester,
-                    onPlayNow = onNextEpisode,
-                    onCancel = {
-                        autoNextDismissed = true
-                        rootFocusRequester.safeRequestFocus()
-                    }
+            // Pannello Link VixSrc (aperto dal pulsante circolare LINK VIXSRC)
+            AnimatedVisibility(
+                visible = showVixLinkPanel && currentError == null && !isBuffering && !session.isResolvingStream,
+                enter = fadeIn() + slideInVertically { it / 3 },
+                exit = fadeOut() + slideOutVertically { it / 3 },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 28.dp)
+            ) {
+                PlayerVixSrcLinkPanel(
+                    vixSrcUrl = liveVixSrcUrl,
+                    onOpenExternalLink = {
+                        if (onOpenVixSrcLinkOverrideForTest != null) {
+                            onOpenVixSrcLinkOverrideForTest.invoke(liveVixSrcUrl)
+                        } else if (liveVixSrcUrl.isNotBlank()) {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(liveVixSrcUrl)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                )
+                            }
+                        }
+                        closeVixLinkPanel()
+                    },
+                    onCopyLink = {
+                        if (liveVixSrcUrl.isNotBlank()) {
+                            runCatching {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                clipboard?.setPrimaryClip(ClipData.newPlainText("VixSrc Link", liveVixSrcUrl))
+                            }
+                        }
+                    },
+                    onDismiss = closeVixLinkPanel
+                )
+            }
+
+            // Pulsante fluttuante "SALTA INTRO" (nascosto durante scrubbing e pannelli aperti)
+            AnimatedVisibility(
+                visible = showSkipIntro && !anyBlockingPopupVisible && !anySubPanelVisible && !isRemoteScrubbing,
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(
+                        end = 24.dp,
+                        bottom = if (controlsVisible) 196.dp else 32.dp
+                    )
+            ) {
+                SkipIntroFloatingButton(
+                    focusRequester = skipIntroFocusRequester,
+                    controlsVisible = controlsVisible,
+                    leftFocusRequester = timeBarFocusRequester,
+                    downFocusRequester = timeBarFocusRequester,
+                    onSkipIntro = performSkipIntro
+                )
+            }
+
+            // Overlay "PROSSIMO EPISODIO" per serie TV (solo con episodio successivo reale verificato)
+            AnimatedVisibility(
+                visible = showAutoNext && verifiedNextEpisode != null,
+                enter = fadeIn() + slideInVertically { it / 3 },
+                exit = fadeOut() + slideOutVertically { it / 3 },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(24.dp)
+            ) {
+                verifiedNextEpisode?.let { nextEp ->
+                    NextEpisodePopupCard(
+                        session = session,
+                        nextEpisode = nextEp,
+                        autoPlayEnabled = advancedSettings.autoPlayNextEpisodeEnabled,
+                        totalCountdownSec = advancedSettings.sanitizedCountdownSec,
+                        remainingSecProvider = { autoNextRemainingSecState.intValue },
+                        playFocusRequester = autoNextPlayFocusRequester,
+                        cancelFocusRequester = autoNextCancelFocusRequester,
+                        onPlayNow = onNextEpisode,
+                        onCancel = {
+                            autoNextDismissed = true
+                            rootFocusRequester.safeRequestFocus()
+                        }
+                    )
+                }
+            }
+
+            // Overlay "IL FILM È TERMINATO" per film (rilevamento titoli di coda / fine riproduzione)
+            AnimatedVisibility(
+                visible = showMovieEndedPopup,
+                enter = fadeIn() + slideInVertically { it / 3 },
+                exit = fadeOut() + slideOutVertically { it / 3 },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(24.dp)
+            ) {
+                MovieEndedPopupCard(
+                    movieTitle = session.mediaItem.title,
+                    finishFocusRequester = movieEndedFinishFocusRequester,
+                    continueFocusRequester = movieEndedContinueFocusRequester,
+                    onFinishWatching = onCompleteMovieAndClose,
+                    onContinueWatching = dismissMovieEndedPopup
                 )
             }
         }
-
-        // Overlay "IL FILM È TERMINATO" per film (rilevamento titoli di coda o conferma manuale)
-        AnimatedVisibility(
-            visible = showMovieEndedPopup,
-            enter = fadeIn() + slideInVertically { it / 3 },
-            exit = fadeOut() + slideOutVertically { it / 3 },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(24.dp)
-        ) {
-            MovieEndedPopupCard(
-                movieTitle = session.mediaItem.title,
-                finishFocusRequester = movieEndedFinishFocusRequester,
-                continueFocusRequester = movieEndedContinueFocusRequester,
-                onFinishWatching = {
-                    manualMovieEndedRequested = false
-                    onCompleteMovieAndClose()
-                },
-                onContinueWatching = dismissMovieEndedPopup
-            )
-        }
-    }
     }
 }

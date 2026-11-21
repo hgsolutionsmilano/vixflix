@@ -545,16 +545,17 @@ class TvNavigationAndViewsCrashTest {
             }
         composeRule.waitForIdle()
 
+        composeRule.onNodeWithTag("player_back_button", useUnmergedTree = true).assertDoesNotExist()
         if (
             composeRule.onAllNodesWithTag("loading_cancel_button", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         ) {
             composeRule.onNodeWithTag("loading_cancel_button").performClick()
-        } else if (
-            composeRule.onAllNodesWithTag("player_back_button", useUnmergedTree = true)
-                .fetchSemanticsNodes().isNotEmpty()
-        ) {
-            composeRule.onNodeWithTag("player_back_button").performClick()
+        } else {
+            composeRule.onNodeWithTag("vix_player_screen", useUnmergedTree = true).performKeyInput {
+                pressKey(Key.Escape)
+                pressKey(Key.Escape)
+            }
         }
         composeRule.waitForIdle()
         assertTrue(

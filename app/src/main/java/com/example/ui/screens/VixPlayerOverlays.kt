@@ -74,44 +74,8 @@ import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
 
 /**
- * Sottotitolo della TopBar del player isolato in uno scope Compose dedicato:
- * legge [positionMsProvider] così gli aggiornamenti ogni secondo non ricompongono
- * mai l'intero albero di [VixPlayerScreen] né la PlayerView nativa.
- */
-@Composable
-internal fun VixPlayerTopSubtitle(
-    session: PlaybackSession,
-    positionMsProvider: () -> Long
-) {
-    val currentPositionMs = positionMsProvider()
-    val episodePrefix = remember(
-        session.mediaItem.isSeries,
-        session.seasonNumber,
-        session.episodeNumber,
-        session.episodeTitle
-    ) {
-        buildString {
-            if (session.mediaItem.isSeries && session.seasonNumber != null && session.episodeNumber != null) {
-                append("S${session.seasonNumber}:E${session.episodeNumber}")
-                if (!session.episodeTitle.isNullOrBlank()) {
-                    append(" - ${session.episodeTitle}")
-                }
-                append(" • ")
-            }
-        }
-    }
-    Text(
-        text = "${episodePrefix}VixSrc HLS 1080p • startAt=${currentPositionMs / 1000L}s (min ${currentPositionMs / 60_000L})",
-        style = MaterialTheme.typography.labelSmall,
-        color = NetflixMatchGreen,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
-    )
-}
-
-/**
  * Barra di avanzamento isolata che legge posizione e durata tramite provider lambda,
- * limitando la ricomposizione del ticker 1s esclusivamente allo slider e ai label temporali.
+ * limitando la ricomposizione del ticker 1s esclusivamente allo slider.
  */
 @Composable
 internal fun VixPlayerSeekBarIsolated(
@@ -124,8 +88,9 @@ internal fun VixPlayerSeekBarIsolated(
     onFocusChanged: (Boolean) -> Unit,
     onScrubbingChanged: (Boolean) -> Unit,
     focusRequester: FocusRequester,
-    upFocusRequester: FocusRequester,
+    upFocusRequester: FocusRequester? = null,
     downFocusRequester: FocusRequester,
+    showAssistiveHeader: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     TvSeekTimeBar(
@@ -141,38 +106,9 @@ internal fun VixPlayerSeekBarIsolated(
         upFocusRequester = upFocusRequester,
         downFocusRequester = downFocusRequester,
         compact = false,
+        showAssistiveHeader = showAssistiveHeader,
         modifier = modifier
     )
-}
-
-/**
- * Label di posizione/durata e stato salvataggio Room isolati nello scope inferiore del player.
- */
-@Composable
-internal fun VixPlayerTimestampInfo(
-    positionMsProvider: () -> Long,
-    durationMsProvider: () -> Long,
-    streamLang: String,
-    modifier: Modifier = Modifier
-) {
-    val currentPositionMs = positionMsProvider()
-    val durationMs = durationMsProvider()
-    Column(modifier = modifier) {
-        Text(
-            text = "${formatSecondsToMmSs(currentPositionMs / 1000L)} / ${
-                if (durationMs > 0L) formatSecondsToMmSs(durationMs / 1000L) else "HLS STREAM"
-            } • Salvato in Room (min ${currentPositionMs / 60_000L})",
-            style = MaterialTheme.typography.labelSmall,
-            color = NetflixWhite
-        )
-        Text(
-            text = "VixSrc Direct MasterPlaylist • Audio ${streamLang.uppercase()} • startAt=${currentPositionMs / 1000L}s",
-            style = MaterialTheme.typography.labelSmall,
-            color = NetflixLightGray,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
 }
 
 /**
@@ -379,7 +315,7 @@ internal fun VixStreamLoadingPopup(
     streamLang: String,
     bufferPreset: StreamingBufferPreset,
     cancelFocusRequester: FocusRequester,
-    upFocusRequester: FocusRequester,
+    upFocusRequester: FocusRequester? = null,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -627,7 +563,7 @@ internal fun VixStreamLoadingPopup(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
-                                    Key.DirectionUp -> upFocusRequester.safeRequestFocus()
+                                    Key.DirectionUp -> upFocusRequester?.safeRequestFocus() ?: true
                                     Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
                                     else -> false
                                 }
