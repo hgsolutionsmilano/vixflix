@@ -1445,6 +1445,264 @@ class TvNavigationAndViewsCrashTest {
         composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true).assertIsFocused()
     }
 
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `remote menu key opens poster quick action dialog navigates vertically escapes cleanly and opens rail from hero`() {
+        launchTvApp()
+
+        // 1. Su Hero Banner il tasto MENU del telecomando apre il menu laterale sul tab attivo
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Menu) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_home", useUnmergedTree = true).assertIsFocused()
+
+        // Torna su Serie TV e sposta il focus sulla prima locandina della riga (poster_card_tv_500)
+        composeRule.onNodeWithTag("tv_rail_series").performClick()
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("poster_card_tv_500", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true).assertIsFocused()
+
+        // 2. Premendo MENU sulla locandina si apre il popup rapido opzioni TV con focus immediato su Riproduci
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Menu) }
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("quick_poster_play_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("quick_poster_play_button", useUnmergedTree = true).assertIsFocused()
+
+        // 3. Navigazione verticale D-Pad Giù attraverso tutte le voci del modal + edge lock sul fondo
+        composeRule.onNodeWithTag("quick_poster_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("quick_poster_details_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("quick_poster_details_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("quick_poster_watchlist_button", useUnmergedTree = true).assertIsFocused()
+
+        // Edge lock sul fondo (Giù / Destra / Sinistra non fanno fuggire il focus)
+        composeRule.onNodeWithTag("quick_poster_watchlist_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("quick_poster_watchlist_button", useUnmergedTree = true).assertIsFocused()
+
+        // 4. ESC chiude il modal e ripristina il focus D-Pad sulla locandina di origine
+        composeRule.onNodeWithTag("quick_poster_watchlist_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Escape) }
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("quick_poster_dialog", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true).assertIsFocused()
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `github update dialog focuses confirm button navigates horizontally and dismisses with escape`() {
+        var dismissed = false
+        val mockState = com.example.ui.GitHubUpdateUiState(
+            showUpdateDialog = true,
+            releaseInfo = com.example.data.remote.GitHubReleaseInfo(
+                tagName = "v9.9.9",
+                releaseTitle = "Test Release",
+                changelog = "Ottimizzazione D-Pad globale",
+                publishedAt = "2026-11-20",
+                htmlUrl = "https://github.com/test/repo/releases/tag/v9.9.9",
+                apkDownloadUrl = "https://example.com/app.apk",
+                apkFileName = "app-release.apk",
+                apkSizeBytes = 12_000_000L,
+                isUpdateAvailable = true
+            )
+        )
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                com.example.ui.screens.GitHubUpdateDialog(
+                    state = mockState,
+                    onDismiss = { dismissed = true },
+                    onConfirmUpdate = {},
+                    onOpenGitHubTab = {}
+                )
+            }
+        }
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("github_update_confirm_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("github_update_confirm_button", useUnmergedTree = true).assertIsFocused()
+
+        // Edge lock a destra sul bottone Installa Ora
+        composeRule.onNodeWithTag("github_update_confirm_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("github_update_confirm_button", useUnmergedTree = true).assertIsFocused()
+
+        // Sinistra -> Più tardi -> Sinistra -> Dettagli CI
+        composeRule.onNodeWithTag("github_update_confirm_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("github_update_dismiss_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("github_update_dismiss_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("github_update_details_button", useUnmergedTree = true).assertIsFocused()
+
+        // Destra torna a Più tardi e poi Installa Ora
+        composeRule.onNodeWithTag("github_update_details_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("github_update_dismiss_button", useUnmergedTree = true).assertIsFocused()
+
+        // ESC chiude il dialog
+        composeRule.onNodeWithTag("github_update_dismiss_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Escape) }
+        composeRule.waitForIdle()
+        assertTrue("GitHubUpdateDialog must dismiss on Key.Escape", dismissed)
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `settings all four panels support complete dpad navigation including text fields and horizontal button rows`() {
+        launchTvApp()
+
+        composeRule.onNodeWithTag("tv_rail_settings").performClick()
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("settings_tab_playback", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        // 1. Tab AGGIORNAMENTI: Switch -> OutlinedTextField (github_repo_input) -> Verifica Nuova Versione -> Rail
+        composeRule.onNodeWithTag("settings_tab_playback", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("github_repo_input", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("github_repo_input", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("check_github_updates_button", useUnmergedTree = true).assertIsFocused()
+
+        // Risalita da check_github_updates_button -> github_repo_input -> settings_auto_update_switch -> settings_tab_updates
+        composeRule.onNodeWithTag("check_github_updates_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("github_repo_input", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("github_repo_input", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("settings_auto_update_switch", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true).assertIsFocused()
+
+        // 2. Tab API & SORGENTI: tmdb_api_key_input -> Applica Chiave <-> Copia -> Dettagli tecnici
+        composeRule.onNodeWithTag("settings_tab_updates", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tab_api_sources", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("settings_tab_api_sources", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tmdb_api_key_input", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("tmdb_api_key_input", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("save_tmdb_key_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("save_tmdb_key_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("copy_tmdb_key_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("copy_tmdb_key_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("toggle_technical_details_button", useUnmergedTree = true).assertIsFocused()
+
+        // Sinistra da toggle_technical_details_button apre il menu laterale su tv_rail_settings
+        composeRule.onNodeWithTag("toggle_technical_details_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tv_rail_settings", useUnmergedTree = true).assertIsFocused()
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `detail screen supports media play remote key and top bar edge locks without losing focus`() {
+        launchTvApp()
+
+        composeRule.onNodeWithTag("hero_info_button", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("detail_play_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+
+        // Su da Play porta il focus sul tasto Chiudi in alto; Su / Destra / Sinistra restano bloccati lì
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_close_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("detail_close_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_close_button", useUnmergedTree = true).assertIsFocused()
+
+        // Giù da Chiudi torna al pulsante Play
+        composeRule.onNodeWithTag("detail_close_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+
+        // Il tasto multimediale MediaPlay sul telecomando avvia direttamente lo streaming
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.MediaPlay) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.playbackSession.value != null
+        }
+        assertTrue("Pressing Key.MediaPlay on detail screen must start playback session", viewModel.playbackSession.value != null)
+    }
+
     private class FullMockTmdbServer {
         private var socket: ServerSocket? = null
         private val executor = Executors.newCachedThreadPool()

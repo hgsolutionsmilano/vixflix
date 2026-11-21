@@ -449,6 +449,13 @@ fun Modifier.animatedPosterShowcase(
                 onQuickPlay()
                 return@onPreviewKeyEvent true
             }
+            if (keyEvent.type == KeyEventType.KeyDown &&
+                keyEvent.key == Key.Menu &&
+                onLongClick != null
+            ) {
+                onLongClick()
+                return@onPreviewKeyEvent true
+            }
 
             val isCenterKey = keyEvent.key == Key.DirectionCenter ||
                 keyEvent.key == Key.Enter ||
@@ -539,6 +546,7 @@ fun TvSeekTimeBar(
         (currentPositionMs + 60_000L).coerceAtLeast(1_000L)
     }
 
+    val dpadFocusScope = LocalDpadFocusScope.current
     var isFocused by remember { mutableStateOf(false) }
     var isRemoteScrubbing by remember { mutableStateOf(false) }
     var remotePreviewMs by remember { mutableLongStateOf(currentPositionMs) }
@@ -546,6 +554,18 @@ fun TvSeekTimeBar(
     var consecutivePresses by remember { mutableIntStateOf(0) }
     var lastDirection by remember { mutableIntStateOf(0) }
     var scrubTick by remember { mutableLongStateOf(0L) }
+
+    androidx.compose.runtime.DisposableEffect(dpadFocusScope) {
+        onDispose {
+            if (isFocused) {
+                DpadFocusObserverRegistry.onNodeFocusChanged(
+                    scope = dpadFocusScope,
+                    tag = "player_time_bar",
+                    isFocused = false
+                )
+            }
+        }
+    }
 
     val displayPosMs = (if (isRemoteScrubbing) remotePreviewMs else currentPositionMs).coerceIn(0L, maxMs)
 
@@ -611,13 +631,34 @@ fun TvSeekTimeBar(
                     onScrubbingChanged(false)
                     onSeekCommit(target)
                 }
-                isFocused = focusedNow
+                if (isFocused != focusedNow) {
+                    isFocused = focusedNow
+                    DpadFocusObserverRegistry.onNodeFocusChanged(
+                        scope = dpadFocusScope,
+                        tag = "player_time_bar",
+                        isFocused = focusedNow
+                    )
+                }
                 onFocusChanged(focusedNow)
             }
             .onPreviewKeyEvent { keyEvent ->
                 if (!isFocused) return@onPreviewKeyEvent false
 
                 when (keyEvent.key) {
+                    Key.DirectionUp -> {
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            onInteraction()
+                            return@onPreviewKeyEvent upFocusRequester.safeRequestFocus()
+                        }
+                        return@onPreviewKeyEvent false
+                    }
+                    Key.DirectionDown -> {
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            onInteraction()
+                            return@onPreviewKeyEvent downFocusRequester?.safeRequestFocus() ?: true
+                        }
+                        return@onPreviewKeyEvent false
+                    }
                     Key.DirectionLeft, Key.DirectionRight -> {
                         val dir = if (keyEvent.key == Key.DirectionLeft) -1 else 1
                         when (keyEvent.type) {

@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -358,6 +359,7 @@ fun NetflixTopBar(
         ) {
             val clearSearchFocusRequester = remember { FocusRequester() }
             val hasClearButton = searchQuery.isNotEmpty() || isTvLayout
+            var isSearchInputFocused by remember { mutableStateOf(false) }
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -365,7 +367,12 @@ fun NetflixTopBar(
                     .fillMaxWidth()
                     .padding(top = if (isTvLayout) 4.dp else 8.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(NetflixCardSurface)
+                    .background(if (isSearchInputFocused) NetflixElevatedSurface else NetflixCardSurface)
+                    .border(
+                        width = if (isSearchInputFocused) 2.dp else 1.dp,
+                        color = if (isSearchInputFocused) NetflixWhite else NetflixElevatedSurface,
+                        shape = RoundedCornerShape(10.dp)
+                    )
             ) {
                 TextField(
                     value = searchQuery,
@@ -405,6 +412,17 @@ fun NetflixTopBar(
                     modifier = Modifier
                         .weight(1f)
                         .safeFocusRequester(searchFocusRequester)
+                        .onFocusChanged { state ->
+                            val focusedNow = state.isFocused || state.hasFocus
+                            if (isSearchInputFocused != focusedNow) {
+                                isSearchInputFocused = focusedNow
+                                DpadFocusObserverRegistry.onNodeFocusChanged(
+                                    scope = DpadFocusScope.MAIN_NAVIGATION,
+                                    tag = "search_input_field",
+                                    isFocused = focusedNow
+                                )
+                            }
+                        }
                         .focusProperties {
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                             if (hasClearButton) {
@@ -415,18 +433,21 @@ fun NetflixTopBar(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
+                                    Key.DirectionUp -> if (isTvLayout) true else brandLogoFocusRequester.safeRequestFocus()
                                     Key.DirectionDown -> {
                                         keyboardController?.hide()
-                                        downToContentFocusRequester.safeRequestFocus()
+                                        if (!downToContentFocusRequester.safeRequestFocus()) true else true
                                     }
                                     Key.DirectionLeft -> {
+                                        keyboardController?.hide()
                                         navRailFocusRequester.safeRequestFocus()
                                     }
                                     Key.DirectionRight -> {
                                         if (hasClearButton) {
+                                            keyboardController?.hide()
                                             clearSearchFocusRequester.safeRequestFocus()
                                         } else {
-                                            false
+                                            true
                                         }
                                     }
                                     else -> false
@@ -454,11 +475,12 @@ fun NetflixTopBar(
                             .onPreviewKeyEvent { keyEvent ->
                                 if (keyEvent.type == KeyEventType.KeyDown) {
                                     when (keyEvent.key) {
+                                        Key.DirectionUp -> if (isTvLayout) true else brandLogoFocusRequester.safeRequestFocus()
                                         Key.DirectionLeft -> searchFocusRequester.safeRequestFocus()
                                         Key.DirectionRight -> true
                                         Key.DirectionDown -> {
                                             keyboardController?.hide()
-                                            downToContentFocusRequester.safeRequestFocus()
+                                            downToContentFocusRequester.safeRequestFocus() || true
                                         }
                                         else -> false
                                     }
@@ -470,7 +492,10 @@ fun NetflixTopBar(
                                 searchFocusRequester.takeIfAttached()?.let { left = it }
                                 downToContentFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            .tvFocusableControl(shape = CircleShape)
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusTag = "top_bar_search_clear"
+                            )
                             .testTag("top_bar_search_clear")
                     ) {
                         Icon(
@@ -491,10 +516,12 @@ fun NetflixTopBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
+                    .focusGroup()
                     .padding(vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                NavTab.entries.forEach { tab ->
+                val tabs = NavTab.entries
+                tabs.forEachIndexed { tabIdx, tab ->
                     val isSelected = selectedTab == tab
                     val pillBg = if (isSelected) NetflixRed else NetflixCardSurface.copy(alpha = 0.85f)
                     val pillBorder = if (isSelected) NetflixRed else NetflixElevatedSurface
@@ -506,9 +533,27 @@ fun NetflixTopBar(
                             color = pillBorder
                         ),
                         modifier = Modifier
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> brandLogoFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> resolvedDownTarget.safeRequestFocus()
+                                        Key.DirectionLeft -> if (tabIdx == 0) true else false
+                                        Key.DirectionRight -> if (tabIdx == tabs.lastIndex) true else false
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                brandLogoFocusRequester.takeIfAttached()?.let { up = it }
+                                resolvedDownTarget.takeIfAttached()?.let { down = it }
+                            }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(50),
                                 focusedBorderColor = NetflixWhite,
+                                focusTag = "nav_tab_${tab.name.lowercase()}",
                                 onClick = { onSelectTab(tab) }
                             )
                             .testTag("nav_tab_${tab.name.lowercase()}")
@@ -584,11 +629,37 @@ fun NetflixHeroBanner(
     val heroGenres = remember(item.genreIds) { TmdbGenreMap.namesFor(item.genreIds) }
     val heroHeight = if (isTvLayout) 340.dp else 500.dp
 
+    val watchScale by animateFloatAsState(
+        targetValue = if (watchFocused) 1.05f else 1f,
+        animationSpec = tween(durationMillis = 100, easing = LinearOutSlowInEasing),
+        label = "heroWatchScale"
+    )
+    val playScale by animateFloatAsState(
+        targetValue = if (playFocused) 1.06f else 1f,
+        animationSpec = tween(durationMillis = 100, easing = LinearOutSlowInEasing),
+        label = "heroPlayScale"
+    )
+    val infoScale by animateFloatAsState(
+        targetValue = if (infoFocused) 1.05f else 1f,
+        animationSpec = tween(durationMillis = 100, easing = LinearOutSlowInEasing),
+        label = "heroInfoScale"
+    )
+
     val handleHeroVerticalKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
         if (keyEvent.type == KeyEventType.KeyDown) {
             when (keyEvent.key) {
-                Key.DirectionDown -> (onDownKey?.invoke() == true) || firstRowFocusRequester.safeRequestFocus()
-                Key.DirectionUp -> (onUpKey?.invoke() == true) || topBarFocusRequester.safeRequestFocus()
+                Key.MediaPlay, Key.MediaPlayPause -> {
+                    onPlayClick()
+                    true
+                }
+                Key.DirectionDown -> {
+                    val moved = (onDownKey?.invoke() == true) || firstRowFocusRequester.safeRequestFocus()
+                    if (!moved && onDownKey == null && firstRowFocusRequester == null) true else moved
+                }
+                Key.DirectionUp -> {
+                    val moved = (onUpKey?.invoke() == true) || topBarFocusRequester.safeRequestFocus()
+                    if (!moved) true else true
+                }
                 else -> false
             }
         } else {
@@ -738,12 +809,20 @@ fun NetflixHeroBanner(
                     ),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = watchScale
+                            scaleY = watchScale
+                        }
                         .safeFocusRequester(watchFocusRequester)
                         .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                navRailFocusRequester.safeRequestFocus()
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionLeft -> navRailFocusRequester?.safeRequestFocus() ?: true
+                                    Key.DirectionRight -> resolvedPlayFocusRequester.safeRequestFocus()
+                                    else -> handleHeroVerticalKey(keyEvent)
+                                }
                             } else {
-                                handleHeroVerticalKey(keyEvent)
+                                false
                             }
                         }
                         .focusProperties {
@@ -790,8 +869,22 @@ fun NetflixHeroBanner(
                     ),
                     contentPadding = PaddingValues(horizontal = 24.dp, vertical = 11.dp),
                     modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = playScale
+                            scaleY = playScale
+                        }
                         .safeFocusRequester(resolvedPlayFocusRequester)
-                        .onPreviewKeyEvent(handleHeroVerticalKey)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionLeft -> watchFocusRequester.safeRequestFocus()
+                                    Key.DirectionRight -> infoFocusRequester.safeRequestFocus()
+                                    else -> handleHeroVerticalKey(keyEvent)
+                                }
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             watchFocusRequester.takeIfAttached()?.let { left = it }
                             infoFocusRequester.takeIfAttached()?.let { right = it }
@@ -844,8 +937,22 @@ fun NetflixHeroBanner(
                     ),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = infoScale
+                            scaleY = infoScale
+                        }
                         .safeFocusRequester(infoFocusRequester)
-                        .onPreviewKeyEvent(handleHeroVerticalKey)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionLeft -> resolvedPlayFocusRequester.safeRequestFocus()
+                                    Key.DirectionRight -> true
+                                    else -> handleHeroVerticalKey(keyEvent)
+                                }
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             resolvedPlayFocusRequester.takeIfAttached()?.let { left = it }
                             topBarFocusRequester.takeIfAttached()?.let { up = it }
@@ -987,9 +1094,16 @@ fun ContinueWatchingSection(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
-                                    Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                    Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
+                                    Key.DirectionDown -> {
+                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                        if (!moved && downFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionUp -> {
+                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                        if (!moved && upFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                    Key.DirectionRight -> if (index == safeEntries.lastIndex) true else false
                                     else -> false
                                 }
                             } else {
@@ -1259,9 +1373,16 @@ fun Top10Section(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
-                                    Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                    Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
+                                    Key.DirectionDown -> {
+                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                        if (!moved && downFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionUp -> {
+                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                        if (!moved && upFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                    Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
                                     else -> false
                                 }
                             } else {
@@ -1482,9 +1603,16 @@ fun MediaCatalogRow(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
-                                    Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                    Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester.safeRequestFocus() else false
+                                    Key.DirectionDown -> {
+                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                        if (!moved && downFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionUp -> {
+                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                        if (!moved && upFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                    Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
                                     else -> false
                                 }
                             } else {
@@ -1673,8 +1801,14 @@ fun MovieGenreChipBar(
     val handleGenreVerticalKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
         if (keyEvent.type == KeyEventType.KeyDown) {
             when (keyEvent.key) {
-                Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                Key.DirectionDown -> {
+                    val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                    if (!moved && downFocusRequester == null) true else moved
+                }
+                Key.DirectionUp -> {
+                    val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                    if (!moved && upFocusRequester == null) true else moved
+                }
                 else -> false
             }
         } else {
@@ -1715,10 +1849,14 @@ fun MovieGenreChipBar(
                 modifier = Modifier
                     .safeFocusRequester(chipRequester)
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                            navRailFocusRequester.safeRequestFocus()
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.DirectionLeft -> navRailFocusRequester?.safeRequestFocus() ?: true
+                                Key.DirectionRight -> if (safeGenres.isEmpty()) true else false
+                                else -> handleGenreVerticalKey(keyEvent)
+                            }
                         } else {
-                            handleGenreVerticalKey(keyEvent)
+                            false
                         }
                     }
                     .focusProperties {
@@ -1749,7 +1887,16 @@ fun MovieGenreChipBar(
                 onClick = { onSelectGenre(genre) },
                 modifier = Modifier
                     .safeFocusRequester(chipRequester)
-                    .onPreviewKeyEvent(handleGenreVerticalKey)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown &&
+                            keyEvent.key == Key.DirectionRight &&
+                            idx == safeGenres.lastIndex
+                        ) {
+                            true
+                        } else {
+                            handleGenreVerticalKey(keyEvent)
+                        }
+                    }
                     .focusProperties {
                         upFocusRequester.takeIfAttached()?.let { up = it }
                         downFocusRequester.takeIfAttached()?.let { down = it }
@@ -1882,12 +2029,16 @@ fun StreamingPlatformsStrip(
     val handlePlatformVerticalKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
         if (keyEvent.type == KeyEventType.KeyDown) {
             when (keyEvent.key) {
-                Key.DirectionDown -> (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                Key.DirectionDown -> {
+                    val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                    if (!moved && downFocusRequester == null) true else moved
+                }
                 Key.DirectionUp -> {
                     if (showHeader && selectedProvider != null && resetBadgeFocusRequester.safeRequestFocus()) {
                         true
                     } else {
-                        (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                        if (!moved && upFocusRequester == null) true else moved
                     }
                 }
                 else -> false
@@ -1947,8 +2098,12 @@ fun StreamingPlatformsStrip(
                                 if (keyEvent.type == KeyEventType.KeyDown) {
                                     when (keyEvent.key) {
                                         Key.DirectionDown -> firstItemFocusRequester.safeRequestFocus() || (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                        Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                        Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                        Key.DirectionUp -> {
+                                            val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                            if (!moved && upFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionLeft -> navRailFocusRequester?.safeRequestFocus() ?: true
+                                        Key.DirectionRight -> true
                                         else -> false
                                     }
                                 } else {
@@ -1963,6 +2118,10 @@ fun StreamingPlatformsStrip(
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(50),
                                 focusedBorderColor = NetflixWhite,
+                                focusTag = "platform_strip_reset_badge",
+                                onFocusChange = { focused ->
+                                    if (focused) onItemFocused?.invoke(resetBadgeFocusRequester)
+                                },
                                 onClick = { onSelectProvider(null) }
                             )
                             .testTag("platform_strip_reset_badge")
@@ -2028,13 +2187,14 @@ fun StreamingPlatformsStrip(
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
                         .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown &&
-                                keyEvent.key == Key.DirectionLeft &&
-                                index == 0
-                            ) {
-                                navRailFocusRequester.safeRequestFocus()
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                    Key.DirectionRight -> if (index == safeProviders.lastIndex) true else false
+                                    else -> handlePlatformVerticalKey(keyEvent)
+                                }
                             } else {
-                                handlePlatformVerticalKey(keyEvent)
+                                false
                             }
                         }
                         .focusProperties {

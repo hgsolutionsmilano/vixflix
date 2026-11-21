@@ -12,10 +12,9 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,6 +74,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -82,6 +82,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -110,6 +111,9 @@ import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.ui.PlaybackSession
+import com.example.ui.components.DpadFocusObserverRegistry
+import com.example.ui.components.DpadFocusScope
+import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.TvSeekTimeBar
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
@@ -202,13 +206,16 @@ fun VixPlayerScreen(
     val backButtonFocusRequester = remember { FocusRequester() }
     val audioLangFocusRequester = remember { FocusRequester() }
     val vixLinkFocusRequester = remember { FocusRequester() }
+    val replay10FocusRequester = remember { FocusRequester() }
     val playPauseFocusRequester = remember { FocusRequester() }
+    val forward10FocusRequester = remember { FocusRequester() }
     val timeBarFocusRequester = remember { FocusRequester() }
     val resizeFocusRequester = remember { FocusRequester() }
     val nextEpisodeFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
     val cancelLoadingFocusRequester = remember { FocusRequester() }
     val autoNextPlayFocusRequester = remember { FocusRequester() }
+    val autoNextCancelFocusRequester = remember { FocusRequester() }
     val rootFocusRequester = remember { FocusRequester() }
 
     val currentSeason = session.seasonNumber ?: 1
@@ -497,15 +504,68 @@ fun VixPlayerScreen(
         }
     }
 
+    DpadFocusScopeProvider(
+        scope = DpadFocusScope.VIDEO_PLAYER,
+        onRecoverFocus = {
+            when {
+                showAutoNext && autoNextPlayFocusRequester.safeRequestFocus() -> "auto_next_play_now_button"
+                currentError != null && !session.isResolvingStream && retryFocusRequester.safeRequestFocus() -> "player_retry_stream_button"
+                currentError != null && !session.isResolvingStream && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
+                (isBuffering || session.isResolvingStream) && cancelLoadingFocusRequester.safeRequestFocus() -> "loading_cancel_button"
+                (isBuffering || session.isResolvingStream) && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
+                controlsVisible && playPauseFocusRequester.safeRequestFocus() -> "exo_play_pause_button"
+                controlsVisible && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
+                rootFocusRequester.safeRequestFocus() -> "vix_player_root"
+                else -> null
+            }
+        }
+    ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .safeFocusRequester(rootFocusRequester)
+            .onFocusChanged { state ->
+                if (state.isFocused) {
+                    DpadFocusObserverRegistry.onNodeFocusChanged(
+                        scope = DpadFocusScope.VIDEO_PLAYER,
+                        tag = "vix_player_root",
+                        isFocused = true
+                    )
+                }
+            }
             .onPreviewKeyEvent { keyEvent ->
                 interactionTick++
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
+                        Key.Menu -> {
+                            if (!showAutoNext && currentError == null && !isBuffering && !session.isResolvingStream) {
+                                controlsVisible = !controlsVisible
+                                if (!controlsVisible && isTvDevice) {
+                                    rootFocusRequester.safeRequestFocus()
+                                }
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        Key.Escape -> {
+                            when {
+                                showAutoNext -> {
+                                    autoNextDismissed = true
+                                    if (isTvDevice) rootFocusRequester.safeRequestFocus()
+                                }
+                                controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
+                                    controlsVisible = false
+                                    if (isTvDevice) rootFocusRequester.safeRequestFocus()
+                                }
+                                else -> {
+                                    if (currentPositionMs > 0L) {
+                                        onProgressUpdate(currentPositionMs, durationMs)
+                                    }
+                                    onClose()
+                                }
+                            }
+                            return@onPreviewKeyEvent true
+                        }
                         Key.MediaPlayPause -> {
                             val willPlay = !exoPlayer.isPlaying
                             if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
@@ -590,7 +650,7 @@ fun VixPlayerScreen(
             .focusable()
             .testTag("vix_player_screen")
     ) {
-        // Vista nativa 100% Media3 ExoPlayer (isFocusable = false così i tasti telecomando restano ai controlli Compose)
+        // Vista nativa 100% Media3 ExoPlayer (non focusabile così i tasti D-Pad non restano mai intrappolati sul video)
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
@@ -616,11 +676,13 @@ fun VixPlayerScreen(
             },
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    controlsVisible = !controlsVisible
+                .focusProperties { canFocus = false }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            controlsVisible = !controlsVisible
+                        }
+                    )
                 }
         )
 
@@ -665,11 +727,28 @@ fun VixPlayerScreen(
                     ),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
+                        .heightIn(min = 48.dp)
                         .safeFocusRequester(retryFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> backButtonFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             backButtonFocusRequester.takeIfAttached()?.let { up = it }
                         }
-                        .tvFocusableControl(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(8.dp),
+                            focusedScale = 1.06f,
+                            focusTag = "player_retry_stream_button"
+                        )
+                        .testTag("player_retry_stream_button")
                 ) {
                     Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
@@ -767,11 +846,27 @@ fun VixPlayerScreen(
                         modifier = Modifier
                             .size(48.dp)
                             .safeFocusRequester(backButtonFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp, Key.DirectionLeft -> true
+                                        Key.DirectionRight -> audioLangFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> topBarDownTarget?.safeRequestFocus() ?: true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
                                 audioLangFocusRequester.takeIfAttached()?.let { right = it }
                                 topBarDownTarget.takeIfAttached()?.let { down = it }
                             }
-                            .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusedScale = 1.12f,
+                                focusTag = "player_back_button"
+                            )
                             .testTag("player_back_button")
                     ) {
                         Icon(
@@ -820,7 +915,27 @@ fun VixPlayerScreen(
                         shape = RoundedCornerShape(6.dp),
                         border = BorderStroke(1.dp, NetflixElevatedSurface),
                         modifier = Modifier
+                            .heightIn(min = 48.dp)
                             .safeFocusRequester(audioLangFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> true
+                                        Key.DirectionLeft -> backButtonFocusRequester.safeRequestFocus()
+                                        Key.DirectionRight -> {
+                                            if (!vixEmbedUrl.isNullOrBlank()) {
+                                                vixLinkFocusRequester.safeRequestFocus()
+                                            } else {
+                                                true
+                                            }
+                                        }
+                                        Key.DirectionDown -> topBarDownTarget?.safeRequestFocus() ?: true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
                                 backButtonFocusRequester.takeIfAttached()?.let { left = it }
                                 if (!vixEmbedUrl.isNullOrBlank()) {
@@ -831,10 +946,12 @@ fun VixPlayerScreen(
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(6.dp),
                                 focusedScale = 1.08f,
+                                focusTag = "player_audio_lang_button",
                                 onClick = {
                                     onToggleLanguage(if (streamLang == "it") "en" else "it")
                                 }
                             )
+                            .testTag("player_audio_lang_button")
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -863,7 +980,20 @@ fun VixPlayerScreen(
                             shape = RoundedCornerShape(6.dp),
                             border = BorderStroke(1.dp, NetflixElevatedSurface),
                             modifier = Modifier
+                                .heightIn(min = 48.dp)
                                 .safeFocusRequester(vixLinkFocusRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp, Key.DirectionRight -> true
+                                            Key.DirectionLeft -> audioLangFocusRequester.safeRequestFocus()
+                                            Key.DirectionDown -> topBarDownTarget?.safeRequestFocus() ?: true
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
                                 .focusProperties {
                                     audioLangFocusRequester.takeIfAttached()?.let { left = it }
                                     topBarDownTarget.takeIfAttached()?.let { down = it }
@@ -871,6 +1001,7 @@ fun VixPlayerScreen(
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(6.dp),
                                     focusedScale = 1.08f,
+                                    focusTag = "open_external_vixsrc_button",
                                     onClick = {
                                         runCatching {
                                             val liveUrl = vixSrcResolver.buildVixSrcApiUrl(
@@ -947,13 +1078,33 @@ fun VixPlayerScreen(
                         },
                         modifier = Modifier
                             .size(54.dp)
+                            .safeFocusRequester(replay10FocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionLeft -> true
+                                        Key.DirectionRight -> playPauseFocusRequester.safeRequestFocus()
+                                        Key.DirectionUp -> backButtonFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> timeBarFocusRequester.safeRequestFocus()
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
+                                playPauseFocusRequester.takeIfAttached()?.let { right = it }
                                 backButtonFocusRequester.takeIfAttached()?.let { up = it }
                                 timeBarFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusedScale = 1.14f,
+                                focusTag = "player_replay_10_button"
+                            )
                             .clip(CircleShape)
                             .background(NetflixBlack.copy(alpha = 0.65f))
+                            .testTag("player_replay_10_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Replay10,
@@ -970,11 +1121,30 @@ fun VixPlayerScreen(
                         modifier = Modifier
                             .size(70.dp)
                             .safeFocusRequester(playPauseFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionLeft -> replay10FocusRequester.safeRequestFocus()
+                                        Key.DirectionRight -> forward10FocusRequester.safeRequestFocus()
+                                        Key.DirectionUp -> backButtonFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> timeBarFocusRequester.safeRequestFocus()
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
+                                replay10FocusRequester.takeIfAttached()?.let { left = it }
+                                forward10FocusRequester.takeIfAttached()?.let { right = it }
                                 backButtonFocusRequester.takeIfAttached()?.let { up = it }
                                 timeBarFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusedScale = 1.14f,
+                                focusTag = "exo_play_pause_button"
+                            )
                             .clip(CircleShape)
                             .background(NetflixRed)
                             .testTag("exo_play_pause_button")
@@ -996,13 +1166,34 @@ fun VixPlayerScreen(
                         },
                         modifier = Modifier
                             .size(54.dp)
+                            .safeFocusRequester(forward10FocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionLeft -> playPauseFocusRequester.safeRequestFocus()
+                                        Key.DirectionRight -> true
+                                        Key.DirectionUp ->
+                                            audioLangFocusRequester.safeRequestFocus() || backButtonFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> timeBarFocusRequester.safeRequestFocus()
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
                             .focusProperties {
-                                backButtonFocusRequester.takeIfAttached()?.let { up = it }
+                                playPauseFocusRequester.takeIfAttached()?.let { left = it }
+                                (audioLangFocusRequester.takeIfAttached() ?: backButtonFocusRequester.takeIfAttached())?.let { up = it }
                                 timeBarFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            .tvFocusableControl(shape = CircleShape, focusedScale = 1.14f)
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusedScale = 1.14f,
+                                focusTag = "player_forward_10_button"
+                            )
                             .clip(CircleShape)
                             .background(NetflixBlack.copy(alpha = 0.65f))
+                            .testTag("player_forward_10_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Forward10,
@@ -1098,13 +1289,36 @@ fun VixPlayerScreen(
                                 modifier = Modifier
                                     .size(48.dp)
                                     .safeFocusRequester(resizeFocusRequester)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.key) {
+                                                Key.DirectionLeft, Key.DirectionDown -> true
+                                                Key.DirectionUp -> timeBarFocusRequester.safeRequestFocus()
+                                                Key.DirectionRight -> {
+                                                    if (session.mediaItem.isSeries) {
+                                                        nextEpisodeFocusRequester.safeRequestFocus()
+                                                    } else {
+                                                        true
+                                                    }
+                                                }
+                                                else -> false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .focusProperties {
                                         timeBarFocusRequester.takeIfAttached()?.let { up = it }
                                         if (session.mediaItem.isSeries) {
                                             nextEpisodeFocusRequester.takeIfAttached()?.let { right = it }
                                         }
                                     }
-                                    .tvFocusableControl(shape = CircleShape, focusedScale = 1.12f)
+                                    .tvFocusableControl(
+                                        shape = CircleShape,
+                                        focusedScale = 1.12f,
+                                        focusTag = "player_resize_button"
+                                    )
+                                    .testTag("player_resize_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.AspectRatio,
@@ -1125,6 +1339,18 @@ fun VixPlayerScreen(
                                     modifier = Modifier
                                         .heightIn(min = 48.dp)
                                         .safeFocusRequester(nextEpisodeFocusRequester)
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                                when (keyEvent.key) {
+                                                    Key.DirectionRight, Key.DirectionDown -> true
+                                                    Key.DirectionLeft -> resizeFocusRequester.safeRequestFocus()
+                                                    Key.DirectionUp -> timeBarFocusRequester.safeRequestFocus()
+                                                    else -> false
+                                                }
+                                            } else {
+                                                false
+                                            }
+                                        }
                                         .focusProperties {
                                             timeBarFocusRequester.takeIfAttached()?.let { up = it }
                                             resizeFocusRequester.takeIfAttached()?.let { left = it }
@@ -1132,7 +1358,8 @@ fun VixPlayerScreen(
                                         .tvFocusableControl(
                                             shape = RoundedCornerShape(6.dp),
                                             focusedBorderColor = NetflixRed,
-                                            focusedScale = 1.06f
+                                            focusedScale = 1.06f,
+                                            focusTag = "next_episode_button"
                                         )
                                         .testTag("next_episode_button")
                                 ) {
@@ -1265,10 +1492,25 @@ fun VixPlayerScreen(
                                 .weight(1f)
                                 .heightIn(min = 48.dp)
                                 .safeFocusRequester(autoNextPlayFocusRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft -> true
+                                            Key.DirectionRight -> autoNextCancelFocusRequester.safeRequestFocus()
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .focusProperties {
+                                    autoNextCancelFocusRequester.takeIfAttached()?.let { right = it }
+                                }
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(10.dp),
                                     focusedBorderColor = NetflixRed,
-                                    focusedScale = 1.04f
+                                    focusedScale = 1.04f,
+                                    focusTag = "auto_next_play_now_button"
                                 )
                                 .testTag("auto_next_play_now_button")
                         ) {
@@ -1284,10 +1526,26 @@ fun VixPlayerScreen(
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .heightIn(min = 48.dp)
+                                .safeFocusRequester(autoNextCancelFocusRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp, Key.DirectionDown, Key.DirectionRight -> true
+                                            Key.DirectionLeft -> autoNextPlayFocusRequester.safeRequestFocus()
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .focusProperties {
+                                    autoNextPlayFocusRequester.takeIfAttached()?.let { left = it }
+                                }
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(10.dp),
                                     focusedBorderColor = NetflixWhite,
-                                    focusedScale = 1.04f
+                                    focusedScale = 1.04f,
+                                    focusTag = "auto_next_cancel_button"
                                 )
                                 .testTag("auto_next_cancel_button")
                         ) {
@@ -1297,6 +1555,7 @@ fun VixPlayerScreen(
                 }
             }
         }
+    }
     }
 }
 
@@ -1549,13 +1808,25 @@ private fun VixStreamLoadingPopup(
                     modifier = Modifier
                         .heightIn(min = 48.dp)
                         .safeFocusRequester(cancelFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> upFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
                         .focusProperties {
                             upFocusRequester.takeIfAttached()?.let { up = it }
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(8.dp),
                             focusedBorderColor = NetflixRed,
-                            focusedScale = 1.04f
+                            focusedScale = 1.04f,
+                            focusTag = "loading_cancel_button"
                         )
                         .testTag("loading_cancel_button")
                 ) {

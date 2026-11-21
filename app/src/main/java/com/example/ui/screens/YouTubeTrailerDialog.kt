@@ -635,7 +635,14 @@ fun YouTubeTrailerDialog(
                                     .onPreviewKeyEvent { keyEvent ->
                                         if (keyEvent.type == KeyEventType.KeyDown) {
                                             when (keyEvent.key) {
-                                                Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight -> true
+                                                Key.DirectionUp, Key.DirectionRight -> true
+                                                Key.DirectionLeft -> {
+                                                    if (isShowingSafePreview) {
+                                                        safePreviewOpenFocusRequester.safeRequestFocus()
+                                                    } else {
+                                                        true
+                                                    }
+                                                }
                                                 Key.DirectionDown -> {
                                                     when {
                                                         !playbackError.isNullOrBlank() ->
@@ -654,6 +661,9 @@ fun YouTubeTrailerDialog(
                                         }
                                     }
                                     .focusProperties {
+                                        if (isShowingSafePreview) {
+                                            safePreviewOpenFocusRequester.takeIfAttached()?.let { left = it }
+                                        }
                                         if (!playbackError.isNullOrBlank()) {
                                             retryFocusRequester.takeIfAttached()?.let { down = it }
                                         } else if (uniqueTrailers.isNotEmpty()) {
@@ -990,6 +1000,7 @@ fun YouTubeTrailerDialog(
                                                         focusedScale = 1.06f,
                                                         focusTag = "error_close_trailer_button"
                                                     )
+                                                    .testTag("error_close_trailer_button")
                                             ) {
                                                 Text("Chiudi")
                                             }
@@ -1158,10 +1169,10 @@ fun YouTubeTrailerDialog(
                                                             }
                                                             Key.DirectionDown -> true // Blocca uscita in basso
                                                             Key.DirectionUp -> {
-                                                                val upTarget = if (!playbackError.isNullOrBlank()) {
-                                                                    retryFocusRequester.takeIfAttached() ?: closeFocusRequester
-                                                                } else {
-                                                                    closeFocusRequester
+                                                                val upTarget = when {
+                                                                    !playbackError.isNullOrBlank() ->
+                                                                        retryFocusRequester.takeIfAttached() ?: closeFocusRequester
+                                                                    else -> closeFocusRequester
                                                                 }
                                                                 modalFocusTracker.userNavigatedToPlaylist = false
                                                                 upTarget.safeRequestFocus()
@@ -1174,10 +1185,9 @@ fun YouTubeTrailerDialog(
                                                     }
                                                 }
                                                 .focusProperties {
-                                                    val upTarget = if (!playbackError.isNullOrBlank()) {
-                                                        retryFocusRequester
-                                                    } else {
-                                                        closeFocusRequester
+                                                    val upTarget = when {
+                                                        !playbackError.isNullOrBlank() -> retryFocusRequester
+                                                        else -> closeFocusRequester
                                                     }
                                                     upTarget.takeIfAttached()?.let { up = it }
                                                 }

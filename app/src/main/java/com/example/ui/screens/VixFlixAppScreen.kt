@@ -107,6 +107,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
@@ -136,6 +137,8 @@ import com.example.ui.VixFlixViewModel
 import com.example.ui.components.ContinueWatchingSection
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
+import com.example.ui.components.DpadFocusScopeProvider
+import com.example.ui.components.GlobalDpadFocusObserverHost
 import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.MediaPosterCard
 import com.example.ui.components.MovieGenreChipBar
@@ -146,6 +149,7 @@ import com.example.ui.components.StreamingPlatformsStrip
 import com.example.ui.components.Top10Section
 import com.example.ui.components.VixFlixSplashScreen
 import com.example.ui.components.formatSecondsToMmSs
+import com.example.ui.components.recoverFocusFromCandidates
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
@@ -250,7 +254,18 @@ fun VixFlixAppScreen(
 
     val isDetailVisible = detailState != null
     val isPlayerVisible = playbackSession != null
+    val isUpdateDialogVisible = !isSplashVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
+    val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible
     val isCatalogInteractive = !isSplashVisible && !isDetailVisible && !isPlayerVisible
+    val activeDpadScope = when {
+        isSplashVisible -> DpadFocusScope.SPLASH
+        isPlayerVisible -> DpadFocusScope.VIDEO_PLAYER
+        isDetailVisible && detailState?.activeTrailer != null -> DpadFocusScope.MODAL_TRAILER_POPUP
+        isDetailVisible -> DpadFocusScope.DETAIL_SHEET
+        isQuickModalVisible -> DpadFocusScope.MODAL_QUICK_ACTION
+        else -> DpadFocusScope.MAIN_NAVIGATION
+    }
+    var wasQuickModalActive by remember { mutableStateOf(false) }
 
     val tabContentEntryFocusRequester: FocusRequester? = when (selectedTab) {
         NavTab.SETTINGS -> settingsFirstControlFocusRequester
@@ -371,6 +386,30 @@ fun VixFlixAppScreen(
             wasOverlayActive = !isCatalogInteractive
         }
 
+        // Ripristino deterministico del focus dopo la chiusura dei dialoghi rapidi TV o del dialogo aggiornamenti GitHub
+        LaunchedEffect(isQuickModalVisible, isCatalogInteractive, useTvNavigationRail) {
+            if (wasQuickModalActive && !isQuickModalVisible && isCatalogInteractive && useTvNavigationRail) {
+                val target = if (isSearchBarVisible) {
+                    lastFocusedContentRequester.takeIfAttached()
+                        ?: searchFirstItemFocusRequester.takeIfAttached()
+                        ?: searchInputFocusRequester.takeIfAttached()
+                } else {
+                    lastFocusedContentRequester.takeIfAttached()
+                        ?: tabContentEntryFocusRequester.takeIfAttached()
+                        ?: navRailSelectedFocusRequester.takeIfAttached()
+                }
+                if (target != null) {
+                    for (attempt in 1..4) {
+                        androidx.compose.runtime.withFrameNanos { }
+                        if (target.safeRequestFocus()) break
+                    }
+                    delay(60L)
+                    target.safeRequestFocus()
+                }
+            }
+            wasQuickModalActive = isQuickModalVisible
+        }
+
         // Gestione tasto INDIETRO ottimale per Android TV / Google TV / Layout Orizzontale nel catalogo principale:
         // 1. Chiude menu rapido o ricerca se aperti
         // 2. Sposta prima il fuoco sulla barra laterale compatta (sulla voce attiva) se l'utente è sui contenuti
@@ -413,6 +452,11 @@ fun VixFlixAppScreen(
             }
         }
 
+        GlobalDpadFocusObserverHost(
+            activeScope = activeDpadScope,
+            isTvOrDpadActive = useTvNavigationRail,
+            modifier = Modifier.fillMaxSize()
+        ) {
         // 1. LIVELLO BASE: Catalogo Principale (entra con dissolvenza dopo lo splash iniziale)
         AnimatedVisibility(
             visible = !isSplashVisible,
@@ -420,12 +464,46 @@ fun VixFlixAppScreen(
             exit = ExitTransition.None,
             modifier = Modifier.fillMaxSize()
         ) {
+        DpadFocusScopeProvider(
+            scope = DpadFocusScope.MAIN_NAVIGATION,
+            onRecoverFocus = {
+                if (isSearchBarVisible) {
+                    recoverFocusFromCandidates(
+                        "last_focused_content" to lastFocusedContentRequester,
+                        "search_input_field" to searchInputFocusRequester,
+                        "search_first_item" to searchFirstItemFocusRequester,
+                        "tv_rail_selected" to navRailSelectedFocusRequester
+                    )
+                } else {
+                    recoverFocusFromCandidates(
+                        "last_focused_content" to lastFocusedContentRequester,
+                        "tab_content_entry" to tabContentEntryFocusRequester,
+                        "hero_play_button" to heroPlayFocusRequester,
+                        "first_row_entry" to firstRowFocusRequester,
+                        "tv_rail_selected" to navRailSelectedFocusRequester
+                    )
+                }
+            }
+        ) {
         Scaffold(
             containerColor = NetflixBlack,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             modifier = Modifier
                 .fillMaxSize()
-                .focusProperties { canFocus = isCatalogInteractive },
+                .focusProperties { canFocus = isCatalogInteractive && !isQuickModalVisible }
+                .onKeyEvent { keyEvent ->
+                    if (isCatalogInteractive &&
+                        !isQuickModalVisible &&
+                        useTvNavigationRail &&
+                        !isRailFocused &&
+                        keyEvent.type == KeyEventType.KeyDown &&
+                        keyEvent.key == Key.Menu
+                    ) {
+                        navRailSelectedFocusRequester.safeRequestFocus()
+                    } else {
+                        false
+                    }
+                },
             bottomBar = {
                 if (!useTvNavigationRail) {
                     NavigationBar(
@@ -458,7 +536,23 @@ fun VixFlixAppScreen(
                                     unselectedTextColor = if (navFocused) NetflixWhite else NetflixMutedGray
                                 ),
                                 modifier = Modifier
-                                    .onFocusChanged { navFocused = it.isFocused }
+                                    .then(
+                                        if (navFocused) {
+                                            Modifier.border(2.dp, NetflixWhite, RoundedCornerShape(12.dp))
+                                        } else {
+                                            Modifier
+                                        }
+                                    )
+                                    .onFocusChanged { state ->
+                                        if (navFocused != state.isFocused) {
+                                            navFocused = state.isFocused
+                                            DpadFocusObserverRegistry.onNodeFocusChanged(
+                                                scope = DpadFocusScope.MAIN_NAVIGATION,
+                                                tag = "bottom_nav_${tab.name.lowercase()}",
+                                                isFocused = state.isFocused
+                                            )
+                                        }
+                                    }
                                     .testTag("bottom_nav_${tab.name.lowercase()}")
                             )
                         }
@@ -527,6 +621,10 @@ fun VixFlixAppScreen(
                                 firstItemFocusRequester = sectionSearchFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = searchInputFocusRequester,
+                                onClearSearch = {
+                                    viewModel.onSearchQueryChange("")
+                                    searchInputFocusRequester.safeRequestFocus()
+                                },
                                 onItemFocused = { if (isSectionActive) lastFocusedContentRequester = it },
                                 onItemQuickPlay = { item -> viewModel.startPlayback(item) },
                                 onItemLongClick = { item -> tvQuickActionItem = item },
@@ -647,31 +745,45 @@ fun VixFlixAppScreen(
                                                 color = NetflixLightGray,
                                                 textAlign = TextAlign.Center
                                             )
-                                            var retryFocused by remember { mutableStateOf(false) }
                                             Button(
                                                 onClick = viewModel::loadCatalog,
-                                                border = if (retryFocused) BorderStroke(2.5.dp, NetflixWhite) else null,
                                                 colors = ButtonDefaults.buttonColors(
                                                     containerColor = NetflixRed,
                                                     contentColor = NetflixWhite
                                                 ),
                                                 shape = RoundedCornerShape(8.dp),
                                                 modifier = Modifier
+                                                    .heightIn(min = 48.dp)
                                                     .safeFocusRequester(sectionRetryFocus)
                                                     .onPreviewKeyEvent { keyEvent ->
-                                                        if (keyEvent.type == KeyEventType.KeyDown &&
-                                                            keyEvent.key == Key.DirectionLeft
-                                                        ) {
-                                                            navRailSelectedFocusRequester.safeRequestFocus()
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionLeft -> navRailSelectedFocusRequester.safeRequestFocus()
+                                                                Key.DirectionUp -> if (useTvNavigationRail) true else topBarBrandFocusRequester.safeRequestFocus()
+                                                                Key.DirectionRight, Key.DirectionDown -> true
+                                                                else -> false
+                                                            }
                                                         } else {
                                                             false
                                                         }
                                                     }
                                                     .focusProperties {
                                                         navRailSelectedFocusRequester.takeIfAttached()?.let { left = it }
-                                                        topBarBrandFocusRequester.takeIfAttached()?.let { up = it }
+                                                        if (!useTvNavigationRail) {
+                                                            topBarBrandFocusRequester.takeIfAttached()?.let { up = it }
+                                                        }
                                                     }
-                                                    .onFocusChanged { retryFocused = it.isFocused }
+                                                    .tvFocusableControl(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        focusedScale = 1.06f,
+                                                        focusedBorderColor = NetflixWhite,
+                                                        focusTag = "retry_tmdb_button",
+                                                        onFocusChange = { focused ->
+                                                            if (focused && isSectionActive) {
+                                                                lastFocusedContentRequester = sectionRetryFocus
+                                                            }
+                                                        }
+                                                    )
                                                     .testTag("retry_tmdb_button")
                                             ) {
                                                 Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
@@ -887,6 +999,7 @@ fun VixFlixAppScreen(
                 }
             }
         }
+        }
 
         // Menu Rapido TV (Long-Press OK su "Continua a guardare")
         tvQuickActionEntry?.let { entry ->
@@ -1058,6 +1171,7 @@ fun VixFlixAppScreen(
                 isCatalogLoading = catalogState is CatalogUiState.Loading
             )
         }
+        }
     }
 }
 
@@ -1102,12 +1216,13 @@ private fun TvExpandableNavigationRail(
             }
             .testTag("tv_navigation_rail")
     ) {
-        // Mini badge brand in cima alla barra laterale: al click quando il menu non è selezionato porta subito sulla voce attiva
+        // Mini badge brand in cima alla barra laterale (escluso dal focus D-Pad per evitare duplicati nel rail)
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = if (isExpanded) Arrangement.Start else Arrangement.Center,
             modifier = Modifier
                 .fillMaxWidth()
+                .focusProperties { canFocus = false }
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
@@ -1492,106 +1607,212 @@ private fun TvContinueWatchingQuickDialog(
     onRestart: () -> Unit,
     onRemove: () -> Unit
 ) {
-    val firstFocus = remember { FocusRequester() }
+    val resumeFocus = remember { FocusRequester() }
+    val detailsFocus = remember { FocusRequester() }
+    val restartFocus = remember { FocusRequester() }
+    val removeFocus = remember { FocusRequester() }
+
     LaunchedEffect(entry.id) {
+        for (attempt in 1..4) {
+            androidx.compose.runtime.withFrameNanos { }
+            if (resumeFocus.safeRequestFocus()) break
+        }
         delay(60L)
-        firstFocus.safeRequestFocus()
+        resumeFocus.safeRequestFocus()
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-            border = BorderStroke(1.5.dp, NetflixElevatedSurface),
-            modifier = Modifier
-                .widthIn(max = 420.dp)
-                .fillMaxWidth()
-        ) {
-            Column(
+    DpadFocusScopeProvider(
+        scope = DpadFocusScope.MODAL_QUICK_ACTION,
+        onRecoverFocus = {
+            recoverFocusFromCandidates(
+                "quick_cw_resume_button" to resumeFocus,
+                "quick_cw_details_button" to detailsFocus,
+                "quick_cw_restart_button" to restartFocus,
+                "quick_cw_remove_button" to removeFocus
+            )
+        }
+    ) {
+        Dialog(onDismissRequest = onDismiss) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+                border = BorderStroke(1.5.dp, NetflixElevatedSurface),
                 modifier = Modifier
-                    .padding(20.dp)
-                    .focusGroup(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .widthIn(max = 420.dp)
+                    .fillMaxWidth()
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
+                            onDismiss()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    .testTag("quick_cw_dialog")
             ) {
-                Text(
-                    text = entry.title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = NetflixWhite,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                val subtitle = if (entry.mediaType == "tv" && entry.seasonNumber != null && entry.episodeNumber != null) {
-                    "S${entry.seasonNumber}:E${entry.episodeNumber} • Fermo a ${formatSecondsToMmSs(entry.startSeconds)}"
-                } else {
-                    "Fermo a ${formatSecondsToMmSs(entry.startSeconds)}"
-                }
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = NetflixMatchGreen
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Button(
-                    onClick = onResume,
-                    colors = ButtonDefaults.buttonColors(containerColor = NetflixWhite, contentColor = NetflixBlack),
-                    shape = RoundedCornerShape(10.dp),
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .safeFocusRequester(firstFocus)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedBorderColor = NetflixRed, focusedScale = 1.03f)
+                        .padding(20.dp)
+                        .focusGroup(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Riprendi da ${formatSecondsToMmSs(entry.startSeconds)}", fontWeight = FontWeight.Bold)
-                }
+                    Text(
+                        text = entry.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = NetflixWhite,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    val subtitle = if (entry.mediaType == "tv" && entry.seasonNumber != null && entry.episodeNumber != null) {
+                        "S${entry.seasonNumber}:E${entry.episodeNumber} • Fermo a ${formatSecondsToMmSs(entry.startSeconds)}"
+                    } else {
+                        "Fermo a ${formatSecondsToMmSs(entry.startSeconds)}"
+                    }
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NetflixMatchGreen
+                    )
 
-                OutlinedButton(
-                    onClick = onOpenDetails,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
-                ) {
-                    Icon(imageVector = Icons.Outlined.Info, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Scheda Dettagli & Episodi")
-                }
+                    Spacer(modifier = Modifier.height(4.dp))
 
-                OutlinedButton(
-                    onClick = onRestart,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
-                ) {
-                    Icon(imageVector = Icons.Default.Replay, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Ricomincia dall'inizio")
-                }
+                    Button(
+                        onClick = onResume,
+                        colors = ButtonDefaults.buttonColors(containerColor = NetflixWhite, contentColor = NetflixBlack),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .safeFocusRequester(resumeFocus)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown -> detailsFocus.safeRequestFocus()
+                                        Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusProperties {
+                                detailsFocus.takeIfAttached()?.let { down = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedBorderColor = NetflixRed,
+                                focusedScale = 1.03f,
+                                focusTag = "quick_cw_resume_button"
+                            )
+                            .testTag("quick_cw_resume_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Riprendi da ${formatSecondsToMmSs(entry.startSeconds)}", fontWeight = FontWeight.Bold)
+                    }
 
-                OutlinedButton(
-                    onClick = onRemove,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixRed),
-                    border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.6f)),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedBorderColor = NetflixRed, focusedScale = 1.03f)
-                ) {
-                    Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Rimuovi da Continua a guardare")
+                    OutlinedButton(
+                        onClick = onOpenDetails,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .safeFocusRequester(detailsFocus)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> resumeFocus.safeRequestFocus()
+                                        Key.DirectionDown -> restartFocus.safeRequestFocus()
+                                        Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusProperties {
+                                resumeFocus.takeIfAttached()?.let { up = it }
+                                restartFocus.takeIfAttached()?.let { down = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.03f,
+                                focusTag = "quick_cw_details_button"
+                            )
+                            .testTag("quick_cw_details_button")
+                    ) {
+                        Icon(imageVector = Icons.Outlined.Info, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Scheda Dettagli & Episodi")
+                    }
+
+                    OutlinedButton(
+                        onClick = onRestart,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .safeFocusRequester(restartFocus)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> detailsFocus.safeRequestFocus()
+                                        Key.DirectionDown -> removeFocus.safeRequestFocus()
+                                        Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusProperties {
+                                detailsFocus.takeIfAttached()?.let { up = it }
+                                removeFocus.takeIfAttached()?.let { down = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.03f,
+                                focusTag = "quick_cw_restart_button"
+                            )
+                            .testTag("quick_cw_restart_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.Replay, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Ricomincia dall'inizio")
+                    }
+
+                    OutlinedButton(
+                        onClick = onRemove,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixRed),
+                        border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.6f)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .safeFocusRequester(removeFocus)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> restartFocus.safeRequestFocus()
+                                        Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusProperties {
+                                restartFocus.takeIfAttached()?.let { up = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedBorderColor = NetflixRed,
+                                focusedScale = 1.03f,
+                                focusTag = "quick_cw_remove_button"
+                            )
+                            .testTag("quick_cw_remove_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Rimuovi da Continua a guardare")
+                    }
                 }
             }
         }
@@ -1607,91 +1828,174 @@ private fun TvPosterQuickActionDialog(
     onQuickPlay: () -> Unit,
     onToggleWatchlist: () -> Unit
 ) {
-    val firstFocus = remember { FocusRequester() }
+    val playFocus = remember { FocusRequester() }
+    val detailsFocus = remember { FocusRequester() }
+    val watchlistFocus = remember { FocusRequester() }
+
     LaunchedEffect(item.uniqueKey) {
+        for (attempt in 1..4) {
+            androidx.compose.runtime.withFrameNanos { }
+            if (playFocus.safeRequestFocus()) break
+        }
         delay(60L)
-        firstFocus.safeRequestFocus()
+        playFocus.safeRequestFocus()
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-            border = BorderStroke(1.5.dp, NetflixElevatedSurface),
-            modifier = Modifier
-                .widthIn(max = 400.dp)
-                .fillMaxWidth()
-        ) {
-            Column(
+    DpadFocusScopeProvider(
+        scope = DpadFocusScope.MODAL_QUICK_ACTION,
+        onRecoverFocus = {
+            recoverFocusFromCandidates(
+                "quick_poster_play_button" to playFocus,
+                "quick_poster_details_button" to detailsFocus,
+                "quick_poster_watchlist_button" to watchlistFocus
+            )
+        }
+    ) {
+        Dialog(onDismissRequest = onDismiss) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+                border = BorderStroke(1.5.dp, NetflixElevatedSurface),
                 modifier = Modifier
-                    .padding(20.dp)
-                    .focusGroup(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .widthIn(max = 400.dp)
+                    .fillMaxWidth()
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
+                            onDismiss()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    .testTag("quick_poster_dialog")
             ) {
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = NetflixWhite,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "${if (item.isSeries) "Serie TV" else "Film"} • ${item.releaseYear}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = NetflixLightGray
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Button(
-                    onClick = onQuickPlay,
-                    colors = ButtonDefaults.buttonColors(containerColor = NetflixWhite, contentColor = NetflixBlack),
-                    shape = RoundedCornerShape(10.dp),
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .safeFocusRequester(firstFocus)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedBorderColor = NetflixRed, focusedScale = 1.03f)
+                        .padding(20.dp)
+                        .focusGroup(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Riproduci Subito", fontWeight = FontWeight.Bold)
-                }
-
-                OutlinedButton(
-                    onClick = onOpenDetails,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
-                ) {
-                    Icon(imageVector = Icons.Outlined.Info, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Apri Scheda & Episodi")
-                }
-
-                OutlinedButton(
-                    onClick = onToggleWatchlist,
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
-                    ),
-                    border = BorderStroke(1.dp, NetflixElevatedSurface),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .tvFocusableControl(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
-                ) {
-                    Icon(
-                        imageVector = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
-                        contentDescription = null
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = NetflixWhite,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (isInWatchlist) "Rimuovi da La Mia Lista" else "Aggiungi a La Mia Lista")
+                    Text(
+                        text = "${if (item.isSeries) "Serie TV" else "Film"} • ${item.releaseYear}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NetflixLightGray
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Button(
+                        onClick = onQuickPlay,
+                        colors = ButtonDefaults.buttonColors(containerColor = NetflixWhite, contentColor = NetflixBlack),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .safeFocusRequester(playFocus)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown -> detailsFocus.safeRequestFocus()
+                                        Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusProperties {
+                                detailsFocus.takeIfAttached()?.let { down = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedBorderColor = NetflixRed,
+                                focusedScale = 1.03f,
+                                focusTag = "quick_poster_play_button"
+                            )
+                            .testTag("quick_poster_play_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Riproduci Subito", fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = onOpenDetails,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .safeFocusRequester(detailsFocus)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> playFocus.safeRequestFocus()
+                                        Key.DirectionDown -> watchlistFocus.safeRequestFocus()
+                                        Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusProperties {
+                                playFocus.takeIfAttached()?.let { up = it }
+                                watchlistFocus.takeIfAttached()?.let { down = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.03f,
+                                focusTag = "quick_poster_details_button"
+                            )
+                            .testTag("quick_poster_details_button")
+                    ) {
+                        Icon(imageVector = Icons.Outlined.Info, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Apri Scheda & Episodi")
+                    }
+
+                    OutlinedButton(
+                        onClick = onToggleWatchlist,
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
+                        ),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .safeFocusRequester(watchlistFocus)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> detailsFocus.safeRequestFocus()
+                                        Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusProperties {
+                                detailsFocus.takeIfAttached()?.let { up = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.03f,
+                                focusTag = "quick_poster_watchlist_button"
+                            )
+                            .testTag("quick_poster_watchlist_button")
+                    ) {
+                        Icon(
+                            imageVector = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
+                            contentDescription = null
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(if (isInWatchlist) "Rimuovi da La Mia Lista" else "Aggiungi a La Mia Lista")
+                    }
                 }
             }
         }
@@ -2034,7 +2338,13 @@ private fun CatalogFeedContent(
                             )
                         }
                         platformState.displayedTitles.isEmpty() -> {
-                            nextLazyIdx++ // platform_titles_empty
+                            navTargets.add(
+                                CatalogNavTarget(
+                                    key = "platform_titles_empty",
+                                    lazyIndex = nextLazyIdx++,
+                                    requester = firstRowFocusRequester
+                                )
+                            )
                         }
                         else -> {
                             val hasBothPlatformRows = platformState.mediaTypeFilter == PlatformFilterMediaType.ALL &&
@@ -2125,7 +2435,13 @@ private fun CatalogFeedContent(
                             )
                         }
                         movieGenreState.movies.isEmpty() -> {
-                            nextLazyIdx++ // movies_genre_empty
+                            navTargets.add(
+                                CatalogNavTarget(
+                                    key = "movies_genre_empty",
+                                    lazyIndex = nextLazyIdx++,
+                                    requester = firstRowFocusRequester
+                                )
+                            )
                         }
                         else -> {
                             for (rowIdx in 0 until genreRows.size) {
@@ -2392,18 +2708,58 @@ private fun CatalogFeedContent(
 
                             platformState.displayedTitles.isEmpty() -> {
                                 item(key = "platform_titles_empty", contentType = "status") {
+                                    val prev = prevTargetFor("platform_titles_empty")
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(horizontal = 24.dp, vertical = 48.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = "Nessun titolo trovato su TMDB per ${activePlatform.displayName}.",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = NetflixLightGray,
-                                            textAlign = TextAlign.Center
-                                        )
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                                        ) {
+                                            Text(
+                                                text = "Nessun titolo trovato su TMDB per ${activePlatform.displayName}.",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = NetflixLightGray,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            OutlinedButton(
+                                                onClick = { onSelectStreamingPlatform(null) },
+                                                shape = RoundedCornerShape(8.dp),
+                                                border = BorderStroke(1.dp, NetflixElevatedSurface),
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                                                modifier = Modifier
+                                                    .heightIn(min = 48.dp)
+                                                    .safeFocusRequester(firstRowFocusRequester)
+                                                    .onPreviewKeyEvent { keyEvent ->
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
+                                                                Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                                                Key.DirectionRight, Key.DirectionDown -> true
+                                                                else -> false
+                                                            }
+                                                        } else false
+                                                    }
+                                                    .focusProperties {
+                                                        navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                                        (prev?.requester ?: platformStripFocusRequester).takeIfAttached()?.let { up = it }
+                                                    }
+                                                    .tvFocusableControl(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        focusedBorderColor = NetflixWhite,
+                                                        focusTag = "clear_platform_filter_button",
+                                                        onFocusChange = { focused ->
+                                                            if (focused) onRememberContentFocus(firstRowFocusRequester)
+                                                        }
+                                                    )
+                                                    .testTag("clear_platform_filter_button")
+                                            ) {
+                                                Text("Mostra Home completa")
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2562,7 +2918,7 @@ private fun CatalogFeedContent(
                                                                             }
                                                                             navigateToTarget(downCellTarget)
                                                                         } else {
-                                                                            false
+                                                                            true
                                                                         }
                                                                     }
                                                                     Key.DirectionUp -> {
@@ -2822,18 +3178,58 @@ private fun CatalogFeedContent(
 
                             movieGenreState.movies.isEmpty() -> {
                                 item(key = "movies_genre_empty", contentType = "status") {
+                                    val prev = prevTargetFor("movies_genre_empty")
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(horizontal = 24.dp, vertical = 48.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = "Nessun film trovato su TMDB per \"${activeMovieGenre.name}\".",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = NetflixLightGray,
-                                            textAlign = TextAlign.Center
-                                        )
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                                        ) {
+                                            Text(
+                                                text = "Nessun film trovato su TMDB per \"${activeMovieGenre.name}\".",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = NetflixLightGray,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            OutlinedButton(
+                                                onClick = { onSelectMovieGenre(null) },
+                                                shape = RoundedCornerShape(8.dp),
+                                                border = BorderStroke(1.dp, NetflixElevatedSurface),
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                                                modifier = Modifier
+                                                    .heightIn(min = 48.dp)
+                                                    .safeFocusRequester(firstRowFocusRequester)
+                                                    .onPreviewKeyEvent { keyEvent ->
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionUp -> if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp()
+                                                                Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                                                Key.DirectionRight, Key.DirectionDown -> true
+                                                                else -> false
+                                                            }
+                                                        } else false
+                                                    }
+                                                    .focusProperties {
+                                                        navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                                        movieGenreBarFocusRequester.takeIfAttached()?.let { up = it }
+                                                    }
+                                                    .tvFocusableControl(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        focusedBorderColor = NetflixWhite,
+                                                        focusTag = "empty_genre_reset_button",
+                                                        onFocusChange = { focused ->
+                                                            if (focused) onRememberContentFocus(firstRowFocusRequester)
+                                                        }
+                                                    )
+                                                    .testTag("empty_genre_reset_button")
+                                            ) {
+                                                Text("Torna a tutti i film")
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2933,7 +3329,7 @@ private fun CatalogFeedContent(
                                                                             }
                                                                             navigateToTarget(downCellTarget)
                                                                         } else {
-                                                                            false
+                                                                            true
                                                                         }
                                                                     }
                                                                     Key.DirectionUp -> {
@@ -3057,6 +3453,7 @@ private fun SearchResultsGrid(
     firstItemFocusRequester: FocusRequester,
     navRailFocusRequester: FocusRequester,
     upFocusRequester: FocusRequester,
+    onClearSearch: () -> Unit = {},
     onItemFocused: (FocusRequester) -> Unit = {},
     onItemQuickPlay: (MediaItem) -> Unit = {},
     onItemLongClick: (MediaItem) -> Unit = {},
@@ -3081,12 +3478,51 @@ private fun SearchResultsGrid(
                 .padding(32.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "Nessun risultato trovato su TMDB per \"$query\"",
-                style = MaterialTheme.typography.titleMedium,
-                color = NetflixLightGray,
-                textAlign = TextAlign.Center
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "Nessun risultato trovato su TMDB per \"$query\"",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = NetflixLightGray,
+                    textAlign = TextAlign.Center
+                )
+                OutlinedButton(
+                    onClick = onClearSearch,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .safeFocusRequester(firstItemFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> upFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                    Key.DirectionRight, Key.DirectionDown -> true
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusProperties {
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(8.dp),
+                            focusedBorderColor = NetflixWhite,
+                            focusTag = "search_empty_clear_button",
+                            onFocusChange = { focused ->
+                                if (focused) onItemFocused(firstItemFocusRequester)
+                            }
+                        )
+                        .testTag("search_empty_clear_button")
+                ) {
+                    Text("Cancella e cerca ancora")
+                }
+            }
         }
         return
     }
@@ -3195,7 +3631,7 @@ private fun SearchResultsGrid(
                                         if (downIndex >= 0) {
                                             navigateToGridIndex(downIndex, false)
                                         } else {
-                                            false
+                                            true
                                         }
                                     }
                                     Key.DirectionLeft -> {
@@ -3204,6 +3640,10 @@ private fun SearchResultsGrid(
                                         } else {
                                             false
                                         }
+                                    }
+                                    Key.DirectionRight -> {
+                                        val isLastInRow = (index % gridColumns) == gridColumns - 1 || index == safeResults.lastIndex
+                                        if (isLastInRow) true else false
                                     }
                                     else -> false
                                 }
@@ -3410,8 +3850,9 @@ private fun MyListScreen(
                                 .onPreviewKeyEvent { keyEvent ->
                                     if (keyEvent.type == KeyEventType.KeyDown) {
                                         when (keyEvent.key) {
-                                            Key.DirectionUp -> handleTopBoundaryUp()
+                                            Key.DirectionUp -> handleTopBoundaryUp() || true
                                             Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                            Key.DirectionRight, Key.DirectionDown -> true
                                             else -> false
                                         }
                                     } else {
@@ -3424,7 +3865,11 @@ private fun MyListScreen(
                                 }
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(8.dp),
-                                    focusedScale = 1.05f
+                                    focusedScale = 1.05f,
+                                    focusTag = "browse_catalog_from_empty_list_button",
+                                    onFocusChange = { focused ->
+                                        if (focused) onRememberContentFocus(firstRowFocusRequester)
+                                    }
                                 )
                                 .testTag("browse_catalog_from_empty_list_button")
                         ) {

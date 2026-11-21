@@ -147,7 +147,7 @@ object DpadFocusObserverRegistry {
         synchronized(lock) {
             val wasFocused = rootHasFocus
             rootHasFocus = hasFocus
-            if (!hasFocus) {
+            if (!hasFocus && activeScope != DpadFocusScope.MODAL_QUICK_ACTION) {
                 currentFocusedScope = null
                 currentFocusedTag = null
             }
@@ -382,11 +382,17 @@ fun GlobalDpadFocusObserverHost(
             }
             .onPreviewKeyEvent { keyEvent: KeyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown && isDpadNavigationOrConfirmKey(keyEvent.key)) {
-                    if (DpadFocusObserverRegistry.isFocusStuckOrOrphaned(activeScope)) {
-                        DpadFocusObserverRegistry.recoverFocusForScope(
+                    val focusedScope = DpadFocusObserverRegistry.currentFocusedScope
+                    val isGenuineOrphanOrLeak = !DpadFocusObserverRegistry.rootHasFocus ||
+                        (focusedScope != null && focusedScope != activeScope)
+                    if (isGenuineOrphanOrLeak && DpadFocusObserverRegistry.isFocusStuckOrOrphaned(activeScope)) {
+                        val recovered = DpadFocusObserverRegistry.recoverFocusForScope(
                             scope = activeScope,
                             reason = "orphan_dpad_key_${keyEvent.key}"
                         )
+                        if (recovered) {
+                            return@onPreviewKeyEvent true
+                        }
                     }
                 }
                 false

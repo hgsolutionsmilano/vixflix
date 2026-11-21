@@ -93,6 +93,8 @@ import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbVideoDto
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.ui.DetailUiState
+import com.example.ui.components.DpadFocusScope
+import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.animatedPosterShowcase
 import com.example.ui.components.formatSecondsToMmSs
@@ -409,28 +411,31 @@ fun MediaDetailScreen(
             val handleActionDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
                 if (isTvDevice &&
                     keyEvent.type == KeyEventType.KeyDown &&
-                    keyEvent.key == Key.DirectionDown &&
-                    hasBelowFoldContent
+                    keyEvent.key == Key.DirectionDown
                 ) {
-                    focusTracker.userMovedFocus = true
-                    focusTracker.heroStageLockActive = false
-                    coroutineScope.launch {
-                        runCatching {
-                            if (listState.firstVisibleItemIndex == 0 &&
-                                listState.firstVisibleItemScrollOffset < revealBelowFoldOffsetPx
-                            ) {
-                                listState.scrollToItem(0, revealBelowFoldOffsetPx)
+                    if (!hasBelowFoldContent) {
+                        true
+                    } else {
+                        focusTracker.userMovedFocus = true
+                        focusTracker.heroStageLockActive = false
+                        coroutineScope.launch {
+                            runCatching {
+                                if (listState.firstVisibleItemIndex == 0 &&
+                                    listState.firstVisibleItemScrollOffset < revealBelowFoldOffsetPx
+                                ) {
+                                    listState.scrollToItem(0, revealBelowFoldOffsetPx)
+                                }
+                            }
+                            repeat(2) { androidx.compose.runtime.withFrameNanos { } }
+                            val focusedOnFirstTry = downTargetFromActions?.safeRequestFocus() == true
+                            if (!focusedOnFirstTry) {
+                                runCatching { listState.scrollToItem(1, 0) }
+                                repeat(2) { androidx.compose.runtime.withFrameNanos { } }
+                                downTargetFromActions?.safeRequestFocus()
                             }
                         }
-                        repeat(2) { androidx.compose.runtime.withFrameNanos { } }
-                        val focusedOnFirstTry = downTargetFromActions?.safeRequestFocus() == true
-                        if (!focusedOnFirstTry) {
-                            runCatching { listState.scrollToItem(1, 0) }
-                            repeat(2) { androidx.compose.runtime.withFrameNanos { } }
-                            downTargetFromActions?.safeRequestFocus()
-                        }
+                        true
                     }
-                    true
                 } else {
                     false
                 }
@@ -453,7 +458,42 @@ fun MediaDetailScreen(
             val watchlistBorder = if (isInWatchlist) NetflixMatchGreen else NetflixElevatedSurface
             val watchlistTint = if (isInWatchlist) NetflixMatchGreen else NetflixWhite
 
-            Box(modifier = Modifier.fillMaxSize()) {
+            DpadFocusScopeProvider(
+                scope = DpadFocusScope.DETAIL_SHEET,
+                onRecoverFocus = {
+                    if (isCurrentActive && isInteractive && !isTrailerOpen) {
+                        when {
+                            detailPlayFocusRequester.safeRequestFocus() -> "detail_play_button"
+                            detailTrailerFocusRequester.safeRequestFocus() -> "detail_watch_trailer_button"
+                            detailCloseFocusRequester.safeRequestFocus() -> "detail_close_button"
+                            else -> null
+                        }
+                    } else {
+                        null
+                    }
+                }
+            ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (isInteractive && isCurrentActive && !isTrailerOpen && keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.MediaPlay, Key.MediaPlayPause -> {
+                                    onPlayMain(false)
+                                    true
+                                }
+                                Key.Escape -> {
+                                    handleDetailBack()
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+            ) {
                 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
                 androidx.compose.runtime.CompositionLocalProvider(
                     androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides detailBringIntoViewSpec
@@ -1253,7 +1293,15 @@ fun MediaDetailScreen(
                                                     if (keyEvent.type == KeyEventType.KeyDown) {
                                                         when (keyEvent.key) {
                                                             Key.DirectionUp -> returnToHeroStage()
-                                                            Key.DirectionDown -> navigateBelowFold(downFromTrailers, true)
+                                                            Key.DirectionDown -> {
+                                                                if (downFromTrailers != null) {
+                                                                    navigateBelowFold(downFromTrailers, true)
+                                                                } else {
+                                                                    true
+                                                                }
+                                                            }
+                                                            Key.DirectionLeft -> index == 0
+                                                            Key.DirectionRight -> index == trailers.lastIndex
                                                             else -> false
                                                         }
                                                     } else {
@@ -1316,7 +1364,15 @@ fun MediaDetailScreen(
                                                                 returnToHeroStage()
                                                             }
                                                         }
-                                                        Key.DirectionDown -> navigateBelowFold(downFromCast, true)
+                                                        Key.DirectionDown -> {
+                                                            if (downFromCast != null) {
+                                                                navigateBelowFold(downFromCast, true)
+                                                            } else {
+                                                                true
+                                                            }
+                                                        }
+                                                        Key.DirectionLeft -> index == 0
+                                                        Key.DirectionRight -> index == castList.lastIndex
                                                         else -> false
                                                     }
                                                 } else {
@@ -1394,7 +1450,15 @@ fun MediaDetailScreen(
                                                                         returnToHeroStage()
                                                                     }
                                                                 }
-                                                                Key.DirectionDown -> navigateBelowFold(downFromSeasons, true)
+                                                                Key.DirectionDown -> {
+                                                                    if (downFromSeasons != null) {
+                                                                        navigateBelowFold(downFromSeasons, true)
+                                                                    } else {
+                                                                        true
+                                                                    }
+                                                                }
+                                                                Key.DirectionLeft -> sIndex == 0
+                                                                Key.DirectionRight -> sIndex == seasons.lastIndex
                                                                 else -> false
                                                             }
                                                         } else {
@@ -1408,6 +1472,7 @@ fun MediaDetailScreen(
                                                     .tvFocusableControl(
                                                         shape = RoundedCornerShape(8.dp),
                                                         focusedScale = 1.06f,
+                                                        focusTag = "detail_season_chip_${season.seasonNumber}",
                                                         onFocusChange = { focused ->
                                                             if (focused) focusTracker.userMovedFocus = true
                                                         },
@@ -1474,6 +1539,7 @@ fun MediaDetailScreen(
                                         .onPreviewKeyEvent { keyEvent ->
                                             if (keyEvent.type == KeyEventType.KeyDown) {
                                                 when {
+                                                    keyEvent.key == Key.DirectionLeft || keyEvent.key == Key.DirectionRight -> true
                                                     isFirstEp && keyEvent.key == Key.DirectionUp -> {
                                                         if (upFromFirstEp != null) {
                                                             navigateBelowFold(upFromFirstEp, false)
@@ -1487,8 +1553,12 @@ fun MediaDetailScreen(
                                                     !isLastEp && keyEvent.key == Key.DirectionDown && nextEpRequester != null -> {
                                                         navigateBelowFold(nextEpRequester, true)
                                                     }
-                                                    isLastEp && keyEvent.key == Key.DirectionDown && similarList.isNotEmpty() -> {
-                                                        navigateBelowFold(firstSimilarFocus, true)
+                                                    isLastEp && keyEvent.key == Key.DirectionDown -> {
+                                                        if (similarList.isNotEmpty()) {
+                                                            navigateBelowFold(firstSimilarFocus, true)
+                                                        } else {
+                                                            true
+                                                        }
                                                     }
                                                     else -> false
                                                 }
@@ -1579,8 +1649,13 @@ fun MediaDetailScreen(
                             modifier = Modifier
                                 .safeFocusRequester(detailBackFocusRequester)
                                 .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
-                                        returnToHeroStage()
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp, Key.DirectionLeft -> true
+                                            Key.DirectionRight -> detailCloseFocusRequester.safeRequestFocus()
+                                            Key.DirectionDown -> returnToHeroStage()
+                                            else -> false
+                                        }
                                     } else {
                                         false
                                     }
@@ -1593,6 +1668,7 @@ fun MediaDetailScreen(
                                     shape = RoundedCornerShape(50),
                                     focusedBorderColor = NetflixWhite,
                                     focusedScale = 1.08f,
+                                    focusTag = "detail_back_button",
                                     onFocusChange = { focused ->
                                         if (focused) {
                                             focusTracker.userMovedFocus = true
@@ -1629,11 +1705,22 @@ fun MediaDetailScreen(
                     IconButton(
                         onClick = onClose,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(48.dp)
                             .safeFocusRequester(detailCloseFocusRequester)
                             .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
-                                    returnToHeroStage()
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp, Key.DirectionRight -> true
+                                        Key.DirectionLeft -> {
+                                            if (detailStackDepth > 1) {
+                                                detailBackFocusRequester.safeRequestFocus()
+                                            } else {
+                                                true
+                                            }
+                                        }
+                                        Key.DirectionDown -> returnToHeroStage()
+                                        else -> false
+                                    }
                                 } else {
                                     false
                                 }
@@ -1647,6 +1734,7 @@ fun MediaDetailScreen(
                             .tvFocusableControl(
                                 shape = CircleShape,
                                 focusedScale = 1.12f,
+                                focusTag = "detail_close_button",
                                 onFocusChange = { focused ->
                                     if (focused) {
                                         focusTracker.userMovedFocus = true
@@ -1665,6 +1753,7 @@ fun MediaDetailScreen(
                         )
                     }
                 }
+            }
             }
         }
 
@@ -1703,6 +1792,8 @@ private fun DetailRoundActionButton(
     testTag: String,
     onClick: () -> Unit
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -1719,7 +1810,14 @@ private fun DetailRoundActionButton(
                 .onPreviewKeyEvent { keyEvent ->
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
-                            Key.DirectionDown -> onDownKey?.invoke(keyEvent) == true
+                            Key.DirectionUp -> upFocusRequester.safeRequestFocus()
+                            Key.DirectionDown -> {
+                                if (onDownKey != null) {
+                                    onDownKey.invoke(keyEvent)
+                                } else {
+                                    downFocusRequester?.safeRequestFocus() ?: true
+                                }
+                            }
                             Key.DirectionLeft -> {
                                 if (leftFocusRequester != null) {
                                     leftFocusRequester.safeRequestFocus()
@@ -1752,7 +1850,11 @@ private fun DetailRoundActionButton(
                     shape = CircleShape,
                     focusedScale = 1.12f,
                     focusedBorderColor = focusedBorderColor,
-                    onFocusChange = onFocusChange,
+                    focusTag = testTag,
+                    onFocusChange = { focused ->
+                        isFocused = focused
+                        onFocusChange?.invoke(focused)
+                    },
                     onClick = onClick
                 )
                 .testTag(testTag)
@@ -1773,7 +1875,8 @@ private fun DetailRoundActionButton(
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = NetflixLightGray,
+            fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
+            color = if (isFocused) NetflixWhite else NetflixLightGray,
             textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -1925,7 +2028,8 @@ private fun CastCard(
             .tvFocusableControl(
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.06f,
-                focusedBorderColor = NetflixWhite
+                focusedBorderColor = NetflixWhite,
+                focusTag = "cast_card_${actor.id}"
             )
             .padding(vertical = 4.dp)
             .testTag("cast_card_${actor.id}"),
@@ -1987,6 +2091,7 @@ private fun EpisodeRowItem(
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.02f,
                 focusedBorderColor = NetflixWhite,
+                focusTag = "episode_card_${episode.seasonNumber}_${episode.episodeNumber}",
                 onFocusChange = { isFocused = it },
                 onClick = onPlayEpisode
             )
