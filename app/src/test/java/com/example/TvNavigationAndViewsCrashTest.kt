@@ -1928,6 +1928,85 @@ class TvNavigationAndViewsCrashTest {
         composeRule.onNodeWithTag("poster_card_tv_502", useUnmergedTree = true).assertIsFocused()
     }
 
+    @Test
+    fun `streaming platform grid keeps standard poster width and reset returns to Home call site`() {
+        launchTvApp()
+
+        // 1. Dalla Home scendi con D-Pad fino alla striscia Piattaforme Streaming (Hero -> Continua a guardare -> Piattaforme)
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("platform_card_337", useUnmergedTree = true).assertIsFocused()
+        val homeStripTopBeforePlatform = composeRule.onNodeWithTag("streaming_platforms_strip", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+
+        // 2. Seleziona Disney+ (provider 337)
+        composeRule.onNodeWithTag("platform_card_337", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.platformState.value.selectedProvider?.providerId == 337 &&
+                !viewModel.platformState.value.isLoading &&
+                viewModel.platformState.value.displayedTitles.isNotEmpty()
+        }
+        composeRule.waitForIdle()
+
+        // 3. Verifica che la larghezza delle locandine nella riga 1 (MediaCatalogRow) e nella griglia (dopo la 2a riga) sia identica (standard 130dp)
+        val firstPlatformMovie = viewModel.platformState.value.movies.first()
+        val firstPlatformMovieTag = "poster_card_${firstPlatformMovie.uniqueKey}"
+
+        // Riga 1 (Film Popolari)
+        val row1PosterWidth = composeRule.onAllNodesWithTag(firstPlatformMovieTag, useUnmergedTree = true)
+            .fetchSemanticsNodes().first().boundsInRoot.width
+
+        // Scendi nella griglia "Tutti i Titoli su Disney+" (dopo la 2a riga)
+        composeRule.onNodeWithTag("catalog_lazy_column", useUnmergedTree = true)
+            .performScrollToKey("platform_337_ALL_row_0")
+        composeRule.waitForIdle()
+
+        val allMatchingPosters = composeRule.onAllNodesWithTag(firstPlatformMovieTag, useUnmergedTree = true)
+            .fetchSemanticsNodes()
+        assertTrue("Expected at least one grid poster node for $firstPlatformMovieTag", allMatchingPosters.isNotEmpty())
+        allMatchingPosters.forEach { node ->
+            val widthDiff = kotlin.math.abs(node.boundsInRoot.width - row1PosterWidth)
+            assertTrue(
+                "Platform grid poster must keep standard 130dp width ($row1PosterWidth px), but was ${node.boundsInRoot.width} px",
+                widthDiff < 2f
+            )
+        }
+
+        // 4. Torna in cima alla vista piattaforma e clicca "x Mostra Home completa"
+        composeRule.onNodeWithTag("catalog_lazy_column", useUnmergedTree = true)
+            .performScrollToIndex(0)
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("platform_strip_reset_badge", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.platformState.value.selectedProvider == null
+        }
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(150L)
+        composeRule.waitForIdle()
+
+        // 5. Deve tornare al punto della chiamata sulla Home (striscia Piattaforme Streaming visibile nella stessa posizione e con focus)
+        assertTrue(
+            "Streaming platforms strip must be visible at Home call-site after Mostra Home completa",
+            composeRule.onAllNodesWithTag("streaming_platforms_strip", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+        val homeStripTopAfterReset = composeRule.onNodeWithTag("streaming_platforms_strip", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(
+            "Home should return to call-site scroll position (before=$homeStripTopBeforePlatform, after=$homeStripTopAfterReset)",
+            kotlin.math.abs(homeStripTopAfterReset - homeStripTopBeforePlatform) < 40f
+        )
+        composeRule.onNodeWithTag("platform_card_337", useUnmergedTree = true).assertIsFocused()
+    }
+
     private class FullMockTmdbServer {
         private var socket: ServerSocket? = null
         private val executor = Executors.newCachedThreadPool()

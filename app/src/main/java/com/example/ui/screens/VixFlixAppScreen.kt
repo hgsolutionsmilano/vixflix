@@ -1741,6 +1741,27 @@ private fun CatalogFeedContent(
     val continueWatchingFocusRequester = remember { FocusRequester() }
     val catalogListState = rememberLazyListState()
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+    var previousTab by remember { mutableStateOf(selectedTab) }
+    var previousPlatformId by remember { mutableStateOf(activePlatform?.providerId) }
+    var previousScrollResetNonce by remember { mutableIntStateOf(tabScrollResetNonce) }
+    var savedHomeScrollBeforePlatform by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var savedHomeStripLazyIdxBeforePlatform by remember { mutableStateOf<Int?>(null) }
+    val homeStripLazyIndex = remember(selectedTab, filteredContinueWatching.isNotEmpty()) {
+        if (selectedTab == NavTab.HOME) {
+            1 + if (filteredContinueWatching.isNotEmpty()) 1 else 0
+        } else {
+            0
+        }
+    }
+
+    val handleSelectStreamingPlatform: (TmdbWatchProviderDto?) -> Unit = { provider ->
+        if (selectedTab == NavTab.HOME && activePlatform == null && provider != null) {
+            savedHomeScrollBeforePlatform =
+                catalogListState.firstVisibleItemIndex to catalogListState.firstVisibleItemScrollOffset
+            savedHomeStripLazyIdxBeforePlatform = homeStripLazyIndex
+        }
+        onSelectStreamingPlatform(provider)
+    }
 
     LaunchedEffect(
         selectedTab,
@@ -1749,7 +1770,50 @@ private fun CatalogFeedContent(
         platformState.mediaTypeFilter,
         tabScrollResetNonce
     ) {
-        runCatching { catalogListState.scrollToItem(0, 0) }
+        val currentPlatformId = activePlatform?.providerId
+        val resetNonceChanged = tabScrollResetNonce != previousScrollResetNonce
+        val isExitingPlatformToHome = selectedTab == NavTab.HOME &&
+            previousTab == NavTab.HOME &&
+            previousPlatformId != null &&
+            currentPlatformId == null &&
+            !resetNonceChanged
+
+        previousTab = selectedTab
+        previousPlatformId = currentPlatformId
+        previousScrollResetNonce = tabScrollResetNonce
+
+        if (isExitingPlatformToHome) {
+            val savedScroll = savedHomeScrollBeforePlatform
+            val savedStripIdx = savedHomeStripLazyIdxBeforePlatform
+            savedHomeScrollBeforePlatform = null
+            savedHomeStripLazyIdxBeforePlatform = null
+
+            val (targetIdx, targetOffset) = if (savedScroll != null) {
+                val stripDelta = if (savedStripIdx != null) {
+                    homeStripLazyIndex - savedStripIdx
+                } else {
+                    0
+                }
+                (savedScroll.first + stripDelta).coerceAtLeast(0) to savedScroll.second.coerceAtLeast(0)
+            } else {
+                homeStripLazyIndex to 0
+            }
+
+            runCatching { catalogListState.scrollToItem(targetIdx, targetOffset) }
+            for (attempt in 1..6) {
+                androidx.compose.runtime.withFrameNanos { }
+                if (platformStripFocusRequester.safeRequestFocus()) {
+                    onRememberContentFocus(platformStripFocusRequester)
+                    break
+                }
+            }
+        } else {
+            if (selectedTab != NavTab.HOME || resetNonceChanged || currentPlatformId == null) {
+                savedHomeScrollBeforePlatform = null
+                savedHomeStripLazyIdxBeforePlatform = null
+            }
+            runCatching { catalogListState.scrollToItem(0, 0) }
+        }
     }
 
     val dynamicRowRequesters = remember(
@@ -1867,16 +1931,22 @@ private fun CatalogFeedContent(
             else -> 2
         }
 
+        val standardPosterWidth = 130.dp
+        val platformPosterGap = 12.dp
+        val platformGridColumns = ((maxWidth - 48.dp + platformPosterGap) / (standardPosterWidth + platformPosterGap))
+            .toInt()
+            .coerceAtLeast(1)
+
         val genreRows = remember(movieGenreState.movies, gridColumns) {
             movieGenreState.movies
                 .distinctBy { it.uniqueKey }
                 .chunked(gridColumns)
         }
 
-        val platformRows = remember(platformState.displayedTitles, gridColumns) {
+        val platformRows = remember(platformState.displayedTitles, platformGridColumns) {
             platformState.displayedTitles
                 .distinctBy { it.uniqueKey }
-                .chunked(gridColumns)
+                .chunked(platformGridColumns)
         }
 
         val homeCatalogRows = remember(feed) {
@@ -2263,7 +2333,7 @@ private fun CatalogFeedContent(
                         StreamingPlatformsStrip(
                             providers = platformState.providers,
                             selectedProvider = activePlatform,
-                            onSelectProvider = onSelectStreamingPlatform,
+                            onSelectProvider = handleSelectStreamingPlatform,
                             showHeader = true,
                             firstItemFocusRequester = platformStripFocusRequester,
                             upFocusRequester = prev?.requester ?: topBarFocusRequester,
@@ -2382,7 +2452,7 @@ private fun CatalogFeedContent(
                                                 textAlign = TextAlign.Center
                                             )
                                             OutlinedButton(
-                                                onClick = { onSelectStreamingPlatform(null) },
+                                                onClick = { handleSelectStreamingPlatform(null) },
                                                 shape = RoundedCornerShape(8.dp),
                                                 border = BorderStroke(1.dp, NetflixElevatedSurface),
                                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
@@ -2491,125 +2561,120 @@ private fun CatalogFeedContent(
                                     val rowItems = platformRows[rowIdx]
                                     val rowZeroColZero = if (!hasBothPlatformRows && rowIdx == 0) firstRowFocusRequester else null
                                     Row(
-                                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(platformPosterGap),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 24.dp, vertical = 8.dp)
+                                            .padding(horizontal = 24.dp, vertical = 10.dp)
                                             .focusGroup()
                                     ) {
-                                        for (colIdx in 0 until gridColumns) {
-                                            if (colIdx < rowItems.size) {
-                                                val item = rowItems[colIdx]
-                                                val itemFocusRequester = gridCellRequester(
+                                        for (colIdx in rowItems.indices) {
+                                            val item = rowItems[colIdx]
+                                            val itemFocusRequester = gridCellRequester(
+                                                rowKey = rowKey,
+                                                colIdx = colIdx,
+                                                rowZeroColZeroRequester = rowZeroColZero
+                                            )
+                                            val leftColRequester = if (colIdx > 0) {
+                                                gridCellRequester(
                                                     rowKey = rowKey,
-                                                    colIdx = colIdx,
+                                                    colIdx = colIdx - 1,
                                                     rowZeroColZeroRequester = rowZeroColZero
                                                 )
-                                                val leftColRequester = if (colIdx > 0) {
-                                                    gridCellRequester(
-                                                        rowKey = rowKey,
-                                                        colIdx = colIdx - 1,
-                                                        rowZeroColZeroRequester = rowZeroColZero
-                                                    )
-                                                } else {
-                                                    navRailFocusRequester
-                                                }
-                                                val rightColRequester = if (colIdx + 1 < rowItems.size) {
-                                                    gridCellRequester(
-                                                        rowKey = rowKey,
-                                                        colIdx = colIdx + 1,
-                                                        rowZeroColZeroRequester = rowZeroColZero
-                                                    )
-                                                } else {
-                                                    null
-                                                }
-                                                val downCellTarget: CatalogNavTarget? = if (next != null && rowIdx + 1 < platformRows.size) {
-                                                    val nextRowKey = "platform_grid_row_${rowIdx + 1}"
-                                                    val nextRowCol = colIdx.coerceAtMost(platformRows[rowIdx + 1].lastIndex)
-                                                    next.copy(
-                                                        requester = gridCellRequester(
-                                                            rowKey = nextRowKey,
-                                                            colIdx = nextRowCol,
-                                                            rowZeroColZeroRequester = null
-                                                        )
-                                                    )
-                                                } else {
-                                                    next
-                                                }
-                                                val upCellTarget: CatalogNavTarget? = if (prev != null && rowIdx > 0) {
-                                                    val prevRowKey = "platform_grid_row_${rowIdx - 1}"
-                                                    val prevRowCol = colIdx.coerceAtMost(platformRows[rowIdx - 1].lastIndex)
-                                                    val prevRowZeroColZero = if (!hasBothPlatformRows && rowIdx - 1 == 0) firstRowFocusRequester else null
-                                                    prev.copy(
-                                                        requester = gridCellRequester(
-                                                            rowKey = prevRowKey,
-                                                            colIdx = prevRowCol,
-                                                            rowZeroColZeroRequester = prevRowZeroColZero
-                                                        )
-                                                    )
-                                                } else {
-                                                    prev
-                                                }
-                                                MediaPosterCard(
-                                                    item = item,
-                                                    itemIndex = rowIdx * gridColumns + colIdx,
-                                                    onClick = {
-                                                        gridRowLastCol[rowKey] = colIdx
-                                                        onRememberContentFocus(itemFocusRequester)
-                                                        onOpenDetails(item)
-                                                    },
-                                                    onQuickPlay = { onPlayItem(item) },
-                                                    onLongClick = { onTvLongPressPoster(item) },
-                                                    onFocused = {
-                                                        gridRowLastCol[rowKey] = colIdx
-                                                        onRememberContentFocus(itemFocusRequester)
-                                                    },
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .safeFocusRequester(itemFocusRequester)
-                                                        .onPreviewKeyEvent { keyEvent ->
-                                                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                                                when (keyEvent.key) {
-                                                                    Key.DirectionDown -> {
-                                                                        if (downCellTarget != null) {
-                                                                            if (rowIdx + 1 < platformRows.size) {
-                                                                                gridRowLastCol["platform_grid_row_${rowIdx + 1}"] =
-                                                                                    colIdx.coerceAtMost(platformRows[rowIdx + 1].lastIndex)
-                                                                            }
-                                                                            navigateToTarget(downCellTarget)
-                                                                        } else {
-                                                                            true
-                                                                        }
-                                                                    }
-                                                                    Key.DirectionUp -> {
-                                                                        if (upCellTarget != null) {
-                                                                            if (rowIdx > 0) {
-                                                                                gridRowLastCol["platform_grid_row_${rowIdx - 1}"] =
-                                                                                    colIdx.coerceAtMost(platformRows[rowIdx - 1].lastIndex)
-                                                                            }
-                                                                            navigateToTarget(upCellTarget)
-                                                                        } else {
-                                                                            handleTopBoundaryUp()
-                                                                        }
-                                                                    }
-                                                                    Key.DirectionLeft -> leftColRequester.safeRequestFocus()
-                                                                    Key.DirectionRight -> rightColRequester?.safeRequestFocus() ?: true
-                                                                    else -> false
-                                                                }
-                                                            } else {
-                                                                false
-                                                            }
-                                                        }
-                                                        .focusProperties {
-                                                            leftColRequester.takeIfAttached()?.let { left = it }
-                                                            rightColRequester?.takeIfAttached()?.let { right = it }
-                                                            upCellTarget?.requester?.takeIfAttached()?.let { up = it }
-                                                            downCellTarget?.requester?.takeIfAttached()?.let { down = it }
-                                                        }
+                                            } else {
+                                                navRailFocusRequester
+                                            }
+                                            val rightColRequester = if (colIdx + 1 < rowItems.size) {
+                                                gridCellRequester(
+                                                    rowKey = rowKey,
+                                                    colIdx = colIdx + 1,
+                                                    rowZeroColZeroRequester = rowZeroColZero
                                                 )
                                             } else {
-                                                Spacer(modifier = Modifier.weight(1f))
+                                                null
                                             }
+                                            val downCellTarget: CatalogNavTarget? = if (next != null && rowIdx + 1 < platformRows.size) {
+                                                val nextRowKey = "platform_grid_row_${rowIdx + 1}"
+                                                val nextRowCol = colIdx.coerceAtMost(platformRows[rowIdx + 1].lastIndex)
+                                                next.copy(
+                                                    requester = gridCellRequester(
+                                                        rowKey = nextRowKey,
+                                                        colIdx = nextRowCol,
+                                                        rowZeroColZeroRequester = null
+                                                    )
+                                                )
+                                            } else {
+                                                next
+                                            }
+                                            val upCellTarget: CatalogNavTarget? = if (prev != null && rowIdx > 0) {
+                                                val prevRowKey = "platform_grid_row_${rowIdx - 1}"
+                                                val prevRowCol = colIdx.coerceAtMost(platformRows[rowIdx - 1].lastIndex)
+                                                val prevRowZeroColZero = if (!hasBothPlatformRows && rowIdx - 1 == 0) firstRowFocusRequester else null
+                                                prev.copy(
+                                                    requester = gridCellRequester(
+                                                        rowKey = prevRowKey,
+                                                        colIdx = prevRowCol,
+                                                        rowZeroColZeroRequester = prevRowZeroColZero
+                                                    )
+                                                )
+                                            } else {
+                                                prev
+                                            }
+                                            MediaPosterCard(
+                                                item = item,
+                                                itemIndex = rowIdx * platformGridColumns + colIdx,
+                                                onClick = {
+                                                    gridRowLastCol[rowKey] = colIdx
+                                                    onRememberContentFocus(itemFocusRequester)
+                                                    onOpenDetails(item)
+                                                },
+                                                onQuickPlay = { onPlayItem(item) },
+                                                onLongClick = { onTvLongPressPoster(item) },
+                                                onFocused = {
+                                                    gridRowLastCol[rowKey] = colIdx
+                                                    onRememberContentFocus(itemFocusRequester)
+                                                },
+                                                modifier = Modifier
+                                                    .safeFocusRequester(itemFocusRequester)
+                                                    .onPreviewKeyEvent { keyEvent ->
+                                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                                            when (keyEvent.key) {
+                                                                Key.DirectionDown -> {
+                                                                    if (downCellTarget != null) {
+                                                                        if (rowIdx + 1 < platformRows.size) {
+                                                                            gridRowLastCol["platform_grid_row_${rowIdx + 1}"] =
+                                                                                colIdx.coerceAtMost(platformRows[rowIdx + 1].lastIndex)
+                                                                        }
+                                                                        navigateToTarget(downCellTarget)
+                                                                    } else {
+                                                                        true
+                                                                    }
+                                                                }
+                                                                Key.DirectionUp -> {
+                                                                    if (upCellTarget != null) {
+                                                                        if (rowIdx > 0) {
+                                                                            gridRowLastCol["platform_grid_row_${rowIdx - 1}"] =
+                                                                                colIdx.coerceAtMost(platformRows[rowIdx - 1].lastIndex)
+                                                                        }
+                                                                        navigateToTarget(upCellTarget)
+                                                                    } else {
+                                                                        handleTopBoundaryUp()
+                                                                    }
+                                                                }
+                                                                Key.DirectionLeft -> leftColRequester.safeRequestFocus()
+                                                                Key.DirectionRight -> rightColRequester?.safeRequestFocus() ?: true
+                                                                else -> false
+                                                            }
+                                                        } else {
+                                                            false
+                                                        }
+                                                    }
+                                                    .focusProperties {
+                                                        leftColRequester.takeIfAttached()?.let { left = it }
+                                                        rightColRequester?.takeIfAttached()?.let { right = it }
+                                                        upCellTarget?.requester?.takeIfAttached()?.let { up = it }
+                                                        downCellTarget?.requester?.takeIfAttached()?.let { down = it }
+                                                    }
+                                            )
                                         }
                                     }
                                 }
