@@ -119,6 +119,54 @@ interface TmdbApiService {
         @Query("page") page: Int = 1
     ): TmdbPagedResponse<TmdbMediaItemDto>
 
+    @GET("search/person")
+    suspend fun searchPerson(
+        @Query("query") query: String,
+        @Query("language") language: String = "it-IT",
+        @Query("include_adult") includeAdult: Boolean = false,
+        @Query("page") page: Int = 1
+    ): TmdbPagedResponse<TmdbPersonSearchDto>
+
+    @GET("person/{person_id}/combined_credits")
+    suspend fun getPersonCombinedCredits(
+        @Path("person_id") personId: Int,
+        @Query("language") language: String = "it-IT"
+    ): TmdbPersonCombinedCreditsDto
+
+    @GET("search/keyword")
+    suspend fun searchKeywords(
+        @Query("query") query: String,
+        @Query("page") page: Int = 1
+    ): TmdbPagedResponse<TmdbKeywordDto>
+
+    @GET("search/company")
+    suspend fun searchCompanies(
+        @Query("query") query: String,
+        @Query("page") page: Int = 1
+    ): TmdbPagedResponse<TmdbCompanyDto>
+
+    @GET("discover/movie")
+    suspend fun discoverMoviesExtended(
+        @Query("with_genres") genreIds: String? = null,
+        @Query("with_keywords") keywordIds: String? = null,
+        @Query("with_companies") companyIds: String? = null,
+        @Query("primary_release_year") releaseYear: Int? = null,
+        @Query("sort_by") sortBy: String = "popularity.desc",
+        @Query("language") language: String = "it-IT",
+        @Query("page") page: Int = 1
+    ): TmdbPagedResponse<TmdbMediaItemDto>
+
+    @GET("discover/tv")
+    suspend fun discoverTvExtended(
+        @Query("with_genres") genreIds: String? = null,
+        @Query("with_keywords") keywordIds: String? = null,
+        @Query("with_companies") companyIds: String? = null,
+        @Query("first_air_date_year") firstAirDateYear: Int? = null,
+        @Query("sort_by") sortBy: String = "popularity.desc",
+        @Query("language") language: String = "it-IT",
+        @Query("page") page: Int = 1
+    ): TmdbPagedResponse<TmdbMediaItemDto>
+
     @GET("watch/providers/movie")
     suspend fun getMovieWatchProviders(
         @Query("language") language: String = "it-IT",

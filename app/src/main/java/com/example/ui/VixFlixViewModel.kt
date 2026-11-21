@@ -282,6 +282,9 @@ class VixFlixViewModel @JvmOverloads constructor(
     private val _searchResults = MutableStateFlow<List<MediaItem>>(emptyList())
     val searchResults: StateFlow<List<MediaItem>> = _searchResults.asStateFlow()
 
+    private val _searchMatchedCategories = MutableStateFlow<List<String>>(emptyList())
+    val searchMatchedCategories: StateFlow<List<String>> = _searchMatchedCategories.asStateFlow()
+
     private val _detailBackStack = MutableStateFlow<List<DetailUiState>>(emptyList())
 
     private val _detailState = MutableStateFlow<DetailUiState?>(null)
@@ -837,15 +840,17 @@ class VixFlixViewModel @JvmOverloads constructor(
         searchJob?.cancel()
         if (newQuery.isBlank()) {
             _searchResults.value = emptyList()
+            _searchMatchedCategories.value = emptyList()
             _isSearching.value = false
             return
         }
         searchJob = viewModelScope.launch {
             _isSearching.value = true
             delay(320)
-            repository.searchTmdb(newQuery).fold(
-                onSuccess = { items ->
-                    _searchResults.value = items
+            repository.searchTmdbExtended(newQuery).fold(
+                onSuccess = { extended ->
+                    _searchResults.value = extended.items
+                    _searchMatchedCategories.value = extended.matchedCategories
                     _isSearching.value = false
                 },
                 onFailure = {
@@ -858,6 +863,7 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun clearSearch() {
         _searchQuery.value = ""
         _searchResults.value = emptyList()
+        _searchMatchedCategories.value = emptyList()
         _isSearching.value = false
     }
 

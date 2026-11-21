@@ -28,7 +28,11 @@ data class TmdbMediaItemDto(
     @param:Json(name = "release_date") val releaseDate: String? = null,
     @param:Json(name = "first_air_date") val firstAirDate: String? = null,
     @param:Json(name = "genre_ids") val genreIds: List<Int>? = null,
-    @param:Json(name = "popularity") val popularity: Double? = null
+    @param:Json(name = "popularity") val popularity: Double? = null,
+    @param:Json(name = "department") val department: String? = null,
+    @param:Json(name = "job") val job: String? = null,
+    @param:Json(name = "known_for_department") val knownForDepartment: String? = null,
+    @param:Json(name = "known_for") val knownFor: List<TmdbMediaItemDto>? = null
 )
 
 @Immutable
@@ -111,6 +115,49 @@ data class TmdbCastMemberDto(
 @JsonClass(generateAdapter = true)
 data class TmdbCreditsDto(
     @param:Json(name = "cast") val cast: List<TmdbCastMemberDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class TmdbPersonSearchDto(
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String = "",
+    @param:Json(name = "known_for_department") val knownForDepartment: String? = null,
+    @param:Json(name = "popularity") val popularity: Double? = null,
+    @param:Json(name = "profile_path") val profilePath: String? = null,
+    @param:Json(name = "known_for") val knownFor: List<TmdbMediaItemDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class TmdbPersonCombinedCreditsDto(
+    @param:Json(name = "id") val id: Int? = null,
+    @param:Json(name = "cast") val cast: List<TmdbMediaItemDto> = emptyList(),
+    @param:Json(name = "crew") val crew: List<TmdbMediaItemDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class TmdbKeywordDto(
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class TmdbCompanyDto(
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String = ""
+)
+
+@Immutable
+data class ExtendedSearchResult(
+    val items: List<MediaItem> = emptyList(),
+    val matchedCategories: List<String> = emptyList()
+)
+
+@Immutable
+data class MatchedSearchGenre(
+    val displayName: String,
+    val movieGenreId: Int?,
+    val tvGenreId: Int?,
+    val matchedAlias: String
 )
 
 @Immutable
@@ -261,7 +308,70 @@ object TmdbGenreMap {
         10768 to "War & Politics"
     )
 
+    private data class GenreSearchDefinition(
+        val displayName: String,
+        val movieGenreId: Int?,
+        val tvGenreId: Int?,
+        val aliases: List<String>
+    )
+
+    private val searchGenreDefinitions: List<GenreSearchDefinition> = listOf(
+        GenreSearchDefinition("Azione", 28, 10759, listOf("azione", "action")),
+        GenreSearchDefinition("Avventura", 12, 10759, listOf("avventura", "adventure")),
+        GenreSearchDefinition("Animazione", 16, 16, listOf("animazione", "animation", "anime", "cartoni", "cartone")),
+        GenreSearchDefinition("Commedia", 35, 35, listOf("commedia", "commedie", "comedy", "comico", "comici")),
+        GenreSearchDefinition("Crime", 80, 80, listOf("crime", "crimine", "poliziesco", "polizieschi", "gangster", "mafia")),
+        GenreSearchDefinition("Documentario", 99, 99, listOf("documentario", "documentari", "documentary")),
+        GenreSearchDefinition("Dramma", 18, 18, listOf("dramma", "drammatico", "drammatici", "drama")),
+        GenreSearchDefinition("Famiglia", 10751, 10751, listOf("famiglia", "family")),
+        GenreSearchDefinition("Fantasy", 14, 10765, listOf("fantasy", "fantastico", "fantastici")),
+        GenreSearchDefinition("Storia", 36, null, listOf("storia", "storico", "storici", "history", "historical")),
+        GenreSearchDefinition("Horror", 27, null, listOf("horror", "orrore", "terrore", "paura")),
+        GenreSearchDefinition("Musica", 10402, null, listOf("musica", "musicale", "musicali", "musical", "music")),
+        GenreSearchDefinition("Mistero", 9648, 9648, listOf("mistero", "giallo", "gialli", "mystery")),
+        GenreSearchDefinition("Romantico", 10749, null, listOf("romantico", "romantici", "romance", "amore", "sentimentale")),
+        GenreSearchDefinition("Fantascienza", 878, 10765, listOf("fantascienza", "sci-fi", "scifi", "science fiction")),
+        GenreSearchDefinition("Thriller", 53, null, listOf("thriller", "suspense")),
+        GenreSearchDefinition("Guerra", 10752, 10768, listOf("guerra", "war", "bellico", "bellici")),
+        GenreSearchDefinition("Western", 37, 37, listOf("western", "cowboy"))
+    )
+
     fun namesFor(ids: List<Int>): List<String> = ids.mapNotNull { genres[it] }.take(3)
+
+    /**
+     * Riconosce generi cinematografici e televisivi (IT/EN/sinonimi) all'interno di una query di ricerca libera,
+     * es. "fantascienza", "horror", "azione 2024", "sci-fi", "anime".
+     */
+    fun resolveSearchGenres(rawQuery: String): List<MatchedSearchGenre> {
+        val normalized = rawQuery.lowercase().trim()
+        if (normalized.length < 3) return emptyList()
+        val tokens = normalized
+            .split(Regex("[\\s,;:/]+"))
+            .filter { it.isNotBlank() }
+            .toSet()
+
+        val matched = mutableListOf<MatchedSearchGenre>()
+        for (def in searchGenreDefinitions) {
+            val alias = def.aliases.firstOrNull { candidate ->
+                if (candidate.contains(' ')) {
+                    normalized.contains(candidate)
+                } else {
+                    candidate in tokens || normalized == candidate
+                }
+            }
+            if (alias != null) {
+                matched.add(
+                    MatchedSearchGenre(
+                        displayName = def.displayName,
+                        movieGenreId = def.movieGenreId,
+                        tvGenreId = def.tvGenreId,
+                        matchedAlias = alias
+                    )
+                )
+            }
+        }
+        return matched
+    }
 }
 
 @Immutable

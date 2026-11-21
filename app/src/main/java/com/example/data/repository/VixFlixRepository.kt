@@ -17,6 +17,7 @@ import com.example.data.local.UserProfileEntity
 import com.example.data.local.VixFlixDao
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.remote.ExtendedSearchResult
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.GitHubUpdateService
 import com.example.data.remote.MediaDetails
@@ -29,6 +30,7 @@ import com.example.data.remote.TmdbApiService
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
+import com.example.data.remote.TmdbPersonSearchDto
 import com.example.data.remote.TmdbSeasonDetailsDto
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.TmdbVideoDto
@@ -786,11 +788,315 @@ class VixFlixRepository(
         episodes
     }
 
-    suspend fun searchTmdb(query: String): Result<List<MediaItem>> = runCatching {
+    suspend fun searchTmdb(query: String): Result<List<MediaItem>> =
+        searchTmdbExtended(query).map { it.items }
+
+    /**
+     * Ricerca estesa parallela su TMDB per:
+     * - Titoli di film e serie TV (`search/multi`)
+     * - Attori, registi, sceneggiatori e creatori (`search/person` + `person/{id}/combined_credits` + `known_for`)
+     * - Generi cinematografici/TV in italiano, inglese e sinonimi (`discover/movie` + `discover/tv`)
+     * - Anno di uscita (`primary_release_year` / `first_air_date_year`, anche combinato es. "azione 2024")
+     * - Parole chiave/temi e case di produzione/studi (`search/keyword`, `search/company`)
+     */
+    suspend fun searchTmdbExtended(query: String): Result<ExtendedSearchResult> = runCatching {
         val trimmed = query.trim()
-        if (trimmed.isBlank()) return@runCatching emptyList()
-        val response = tmdbApi.searchMulti(query = trimmed)
-        response.results.mapNotNull { it.toDomain("movie") }.distinctBy { it.uniqueKey }
+        if (trimmed.isBlank()) return@runCatching ExtendedSearchResult()
+
+        val normalizedQuery = trimmed.lowercase()
+        val matchedGenres = TmdbGenreMap.resolveSearchGenres(trimmed)
+        val matchedYear = Regex("\\b(19[5-9]\\d|20[0-3]\\d)\\b")
+            .find(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+
+        // Rimuove eventuali generi e anno riconosciuti per capire se la query è puramente filtro (es. "horror" o "azione 2024")
+        val residualTokens = normalizedQuery
+            .split(Regex("[\\s,;:/]+"))
+            .filter { token ->
+                token.isNotBlank() &&
+                    token != matchedYear?.toString() &&
+                    matchedGenres.none { it.matchedAlias == token } &&
+                    token !in setOf("film", "movie", "movies", "serie", "series", "tv", "genere", "del", "di", "da", "con", "su")
+            }
+        val isPureFilterQuery = (matchedGenres.isNotEmpty() || matchedYear != null) && residualTokens.isEmpty()
+        val shouldSearchPeopleAndThemes = !isPureFilterQuery && trimmed.length >= 2
+
+        val importantCrewJobs = setOf(
+            "Director",
+            "Creator",
+            "Screenplay",
+            "Writer",
+            "Executive Producer",
+            "Producer",
+            "Original Music Composer"
+        )
+
+        coroutineScope {
+            val multiDeferred = async {
+                runCatching { tmdbApi.searchMulti(query = trimmed) }.getOrNull()
+            }
+
+            val personDeferred = async {
+                if (!shouldSearchPeopleAndThemes) {
+                    null
+                } else {
+                    runCatching { tmdbApi.searchPerson(query = trimmed) }.getOrNull()
+                }
+            }
+
+            val genreYearMoviesDeferred = async {
+                if (matchedGenres.isEmpty() && matchedYear == null) {
+                    emptyList()
+                } else {
+                    val movieGenreExpr = matchedGenres
+                        .mapNotNull { it.movieGenreId }
+                        .distinct()
+                        .joinToString(",")
+                        .takeIf { it.isNotBlank() }
+                    if (movieGenreExpr == null && matchedYear == null) {
+                        emptyList()
+                    } else {
+                        runCatching {
+                            tmdbApi.discoverMoviesExtended(
+                                genreIds = movieGenreExpr,
+                                releaseYear = matchedYear
+                            ).results.mapNotNull { it.toDomain("movie") }
+                        }.getOrDefault(emptyList())
+                    }
+                }
+            }
+
+            val genreYearTvDeferred = async {
+                if (matchedGenres.isEmpty() && matchedYear == null) {
+                    emptyList()
+                } else {
+                    val tvGenreExpr = matchedGenres
+                        .mapNotNull { it.tvGenreId }
+                        .distinct()
+                        .joinToString(",")
+                        .takeIf { it.isNotBlank() }
+                    if (tvGenreExpr == null && matchedYear == null) {
+                        emptyList()
+                    } else {
+                        runCatching {
+                            tmdbApi.discoverTvExtended(
+                                genreIds = tvGenreExpr,
+                                firstAirDateYear = matchedYear
+                            ).results.mapNotNull { it.toDomain("tv") }
+                        }.getOrDefault(emptyList())
+                    }
+                }
+            }
+
+            val keywordDeferred = async {
+                if (!shouldSearchPeopleAndThemes || trimmed.length < 3) {
+                    null
+                } else {
+                    runCatching { tmdbApi.searchKeywords(query = trimmed) }.getOrNull()
+                }
+            }
+
+            val companyDeferred = async {
+                if (!shouldSearchPeopleAndThemes || trimmed.length < 3) {
+                    null
+                } else {
+                    runCatching { tmdbApi.searchCompanies(query = trimmed) }.getOrNull()
+                }
+            }
+
+            val multiResponse = multiDeferred.await()
+            val titleResults = multiResponse?.results
+                ?.mapNotNull { it.toDomain("movie") }
+                .orEmpty()
+
+            // Estrae eventuali persone già restituite da search/multi e le unisce a search/person
+            val multiPersons = multiResponse?.results
+                ?.filter { it.mediaType == "person" && !(it.name.isNullOrBlank()) }
+                ?.map {
+                    TmdbPersonSearchDto(
+                        id = it.id,
+                        name = it.name.orEmpty(),
+                        knownForDepartment = it.knownForDepartment,
+                        popularity = it.popularity,
+                        knownFor = it.knownFor.orEmpty()
+                    )
+                }
+                .orEmpty()
+
+            val searchedPersons = personDeferred.await()?.results.orEmpty()
+            val candidatePersons = (searchedPersons + multiPersons)
+                .filter { it.id > 0 && it.name.isNotBlank() }
+                .distinctBy { it.id }
+                .sortedWith(
+                    compareByDescending<TmdbPersonSearchDto> { person ->
+                        val pName = person.name.lowercase()
+                        when {
+                            pName == normalizedQuery -> 3
+                            pName.startsWith(normalizedQuery) || pName.contains(normalizedQuery) -> 2
+                            normalizedQuery.split(" ").filter { it.length >= 3 }.all { pName.contains(it) } -> 1
+                            else -> 0
+                        }
+                    }.thenByDescending { it.popularity ?: 0.0 }
+                )
+                .take(2)
+
+            val strongPersonMatch = candidatePersons.firstOrNull()?.let { top ->
+                val pName = top.name.lowercase()
+                pName == normalizedQuery ||
+                    pName.contains(normalizedQuery) ||
+                    (normalizedQuery.length >= 4 && normalizedQuery.split(" ").filter { it.length >= 3 }.let { parts ->
+                        parts.isNotEmpty() && parts.all { pName.contains(it) }
+                    })
+            } == true
+
+            // Carica la filmografia completa dei top attori/registi trovati in parallelo
+            val personCreditsDeferred = candidatePersons.map { person ->
+                async {
+                    val knownForItems = person.knownFor.mapNotNull { it.toDomain("movie") }
+                    val combined = runCatching {
+                        tmdbApi.getPersonCombinedCredits(personId = person.id)
+                    }.getOrNull()
+                    val castItems = combined?.cast.orEmpty()
+                        .sortedByDescending { (it.popularity ?: 0.0) + ((it.voteAverage ?: 0.0) * 2.0) }
+                        .mapNotNull { it.toDomain("movie") }
+                    val crewItems = combined?.crew.orEmpty()
+                        .filter { crew ->
+                            crew.job == null || crew.job in importantCrewJobs || crew.department == "Directing"
+                        }
+                        .sortedByDescending { (it.popularity ?: 0.0) + ((it.voteAverage ?: 0.0) * 2.0) }
+                        .mapNotNull { it.toDomain("movie") }
+                    person to (knownForItems + castItems + crewItems).distinctBy { it.uniqueKey }.take(24)
+                }
+            }
+
+            // Risolve top parole chiave (temi/argomenti)
+            val matchedKeywords = keywordDeferred.await()?.results.orEmpty()
+                .filter { kw ->
+                    val kwLower = kw.name.lowercase()
+                    kwLower == normalizedQuery || kwLower.contains(normalizedQuery) || normalizedQuery.contains(kwLower)
+                }
+                .take(2)
+
+            val keywordItemsDeferred = async {
+                if (matchedKeywords.isEmpty()) {
+                    emptyList()
+                } else {
+                    val kwExpr = matchedKeywords.joinToString("|") { it.id.toString() }
+                    val movies = async {
+                        runCatching {
+                            tmdbApi.discoverMoviesExtended(keywordIds = kwExpr).results.mapNotNull { it.toDomain("movie") }
+                        }.getOrDefault(emptyList())
+                    }
+                    val tv = async {
+                        runCatching {
+                            tmdbApi.discoverTvExtended(keywordIds = kwExpr).results.mapNotNull { it.toDomain("tv") }
+                        }.getOrDefault(emptyList())
+                    }
+                    interleaveMediaLists(movies.await(), tv.await()).take(20)
+                }
+            }
+
+            // Risolve casa di produzione / studio (es. Pixar, Marvel, Studio Ghibli, A24)
+            val matchedCompany = companyDeferred.await()?.results.orEmpty()
+                .firstOrNull { company ->
+                    val cLower = company.name.lowercase()
+                    cLower == normalizedQuery ||
+                        cLower.startsWith(normalizedQuery) ||
+                        (normalizedQuery.length >= 4 && cLower.contains(normalizedQuery))
+                }
+
+            val companyItemsDeferred = async {
+                if (matchedCompany == null) {
+                    emptyList()
+                } else {
+                    val cId = matchedCompany.id.toString()
+                    val movies = async {
+                        runCatching {
+                            tmdbApi.discoverMoviesExtended(companyIds = cId).results.mapNotNull { it.toDomain("movie") }
+                        }.getOrDefault(emptyList())
+                    }
+                    val tv = async {
+                        runCatching {
+                            tmdbApi.discoverTvExtended(companyIds = cId).results.mapNotNull { it.toDomain("tv") }
+                        }.getOrDefault(emptyList())
+                    }
+                    interleaveMediaLists(movies.await(), tv.await()).take(20)
+                }
+            }
+
+            val personPairs = personCreditsDeferred.map { it.await() }
+            val personItems = personPairs.flatMap { it.second }
+            val matchedPersonNames = personPairs
+                .filter { it.second.isNotEmpty() }
+                .map { it.first.name }
+
+            val genreYearItems = interleaveMediaLists(
+                genreYearMoviesDeferred.await(),
+                genreYearTvDeferred.await()
+            )
+            val keywordItems = keywordItemsDeferred.await()
+            val companyItems = companyItemsDeferred.await()
+
+            val orderedBuckets: List<List<MediaItem>> = when {
+                isPureFilterQuery -> listOf(genreYearItems, titleResults)
+                strongPersonMatch && personItems.isNotEmpty() -> listOf(
+                    titleResults.filter { it.title.lowercase().contains(normalizedQuery) },
+                    personItems,
+                    titleResults,
+                    genreYearItems,
+                    companyItems,
+                    keywordItems
+                )
+                else -> listOf(
+                    titleResults,
+                    personItems,
+                    genreYearItems,
+                    companyItems,
+                    keywordItems
+                )
+            }
+
+            val mergedItems = orderedBuckets
+                .flatten()
+                .distinctBy { it.uniqueKey }
+                .take(60)
+
+            val categories = buildList {
+                if (titleResults.isNotEmpty() && !isPureFilterQuery) add("Titoli")
+                matchedPersonNames.forEach { name -> add("Cast/Regia: $name") }
+                if (matchedGenres.isNotEmpty() && genreYearItems.isNotEmpty()) {
+                    add("Genere: ${matchedGenres.joinToString(", ") { it.displayName }}")
+                }
+                if (matchedYear != null && genreYearItems.isNotEmpty()) {
+                    add("Anno: $matchedYear")
+                }
+                if (matchedCompany != null && companyItems.isNotEmpty()) {
+                    add("Studio: ${matchedCompany.name}")
+                }
+                if (matchedKeywords.isNotEmpty() && keywordItems.isNotEmpty()) {
+                    add("Tema: ${matchedKeywords.first().name}")
+                }
+            }
+
+            ExtendedSearchResult(
+                items = mergedItems,
+                matchedCategories = categories
+            )
+        }
+    }
+
+    private fun interleaveMediaLists(first: List<MediaItem>, second: List<MediaItem>): List<MediaItem> {
+        if (first.isEmpty()) return second
+        if (second.isEmpty()) return first
+        val out = ArrayList<MediaItem>(first.size + second.size)
+        val maxLen = maxOf(first.size, second.size)
+        for (i in 0 until maxLen) {
+            if (i < first.size) out.add(first[i])
+            if (i < second.size) out.add(second[i])
+        }
+        return out
     }
 
     /**

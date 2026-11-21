@@ -24,6 +24,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,6 +48,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -195,6 +197,7 @@ fun VixFlixAppScreen(
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val searchMatchedCategories by viewModel.searchMatchedCategories.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val detailStackSize by viewModel.detailStackSize.collectAsStateWithLifecycle()
     val previousDetailTitle by viewModel.previousDetailTitle.collectAsStateWithLifecycle()
@@ -713,6 +716,7 @@ fun VixFlixAppScreen(
                                 query = searchQuery,
                                 isSearching = isSearching,
                                 results = searchResults,
+                                matchedCategories = searchMatchedCategories,
                                 isTvLayout = useTvNavigationRail,
                                 firstItemFocusRequester = sectionSearchFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
@@ -3401,6 +3405,7 @@ private fun SearchResultsGrid(
     query: String,
     isSearching: Boolean,
     results: List<MediaItem>,
+    matchedCategories: List<String> = emptyList(),
     isTvLayout: Boolean,
     firstItemFocusRequester: FocusRequester,
     navRailFocusRequester: FocusRequester,
@@ -3438,6 +3443,12 @@ private fun SearchResultsGrid(
                     text = "Nessun risultato trovato su TMDB per \"$query\"",
                     style = MaterialTheme.typography.titleMedium,
                     color = NetflixLightGray,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "Prova a cercare per titolo, attore, regista, genere (es. Fantascienza, Horror), anno (es. 2024) o studio (es. Pixar).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NetflixMutedGray,
                     textAlign = TextAlign.Center
                 )
                 OutlinedButton(
@@ -3483,13 +3494,16 @@ private fun SearchResultsGrid(
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val gridColumns = when {
-            maxWidth >= 1240.dp -> 6
-            maxWidth >= 960.dp -> 5
-            maxWidth >= 680.dp -> 4
-            maxWidth >= 420.dp -> 3
-            else -> 2
-        }
+        // Dimensione standard locandine (130.dp x 194.dp, aspectRatio 0.67f) identica al resto dell'app
+        val standardPosterWidth = 130.dp
+        val standardPosterSpacing = 12.dp
+        val horizontalMargins = if (isTvLayout) 48.dp else 32.dp
+        val availableWidth = (maxWidth - horizontalMargins).coerceAtLeast(standardPosterWidth)
+        val gridColumns = (((availableWidth + standardPosterSpacing) / (standardPosterWidth + standardPosterSpacing)).toInt())
+            .coerceAtLeast(2)
+
+        val hasHeader = true
+        val headerItemOffset = if (hasHeader) 1 else 0
 
         val itemFocusRequesters = remember(safeResults) {
             List(safeResults.size) { index ->
@@ -3519,7 +3533,7 @@ private fun SearchResultsGrid(
                 true
             } else {
                 coroutineScope.launch {
-                    runCatching { gridState.scrollToItem(targetIdx, 0) }
+                    runCatching { gridState.scrollToItem(targetIdx + headerItemOffset, 0) }
                     for (attempt in 1..6) {
                         androidx.compose.runtime.withFrameNanos { }
                         if (targetRequester.safeRequestFocus()) break
@@ -3533,12 +3547,57 @@ private fun SearchResultsGrid(
             state = gridState,
             columns = GridCells.Fixed(gridColumns),
             contentPadding = contentPadding,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(standardPosterSpacing),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("search_results_grid")
         ) {
+            item(
+                key = "search_summary_header",
+                span = { GridItemSpan(gridColumns) },
+                contentType = "search_header"
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 4.dp)
+                        .testTag("search_results_summary_header")
+                ) {
+                    Text(
+                        text = "${safeResults.size} risultati per \"$query\"",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = NetflixWhite
+                    )
+                    if (matchedCategories.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                        ) {
+                            matchedCategories.forEach { category ->
+                                Surface(
+                                    color = NetflixElevatedSurface,
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.55f))
+                                ) {
+                                    Text(
+                                        text = category,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = NetflixWhite,
+                                        maxLines = 1,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             itemsIndexed(
                 items = safeResults,
                 key = { _, it -> "search_${it.uniqueKey}" },
@@ -3556,70 +3615,74 @@ private fun SearchResultsGrid(
                     -1
                 }
 
-                MediaPosterCard(
-                    item = item,
-                    itemIndex = index,
-                    onClick = {
-                        onItemFocused(itemFocusRequester)
-                        onItemClick(item)
-                    },
-                    onQuickPlay = { onItemQuickPlay(item) },
-                    onLongClick = { onItemLongClick(item) },
-                    onFocused = { onItemFocused(itemFocusRequester) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .safeFocusRequester(itemFocusRequester)
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionUp -> {
-                                        if (isFirstRow) {
-                                            coroutineScope.launch {
-                                                runCatching { gridState.scrollToItem(0, 0) }
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    MediaPosterCard(
+                        item = item,
+                        itemIndex = index,
+                        onClick = {
+                            onItemFocused(itemFocusRequester)
+                            onItemClick(item)
+                        },
+                        onQuickPlay = { onItemQuickPlay(item) },
+                        onLongClick = { onItemLongClick(item) },
+                        onFocused = { onItemFocused(itemFocusRequester) },
+                        modifier = Modifier
+                            .safeFocusRequester(itemFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> {
+                                            if (isFirstRow) {
+                                                coroutineScope.launch {
+                                                    runCatching { gridState.scrollToItem(0, 0) }
+                                                }
+                                                upFocusRequester.safeRequestFocus()
+                                            } else {
+                                                navigateToGridIndex(upIndex, upIndex < gridColumns)
                                             }
-                                            upFocusRequester.safeRequestFocus()
-                                        } else {
-                                            navigateToGridIndex(upIndex, upIndex < gridColumns)
                                         }
-                                    }
-                                    Key.DirectionDown -> {
-                                        if (downIndex >= 0) {
-                                            navigateToGridIndex(downIndex, false)
-                                        } else {
-                                            true
+                                        Key.DirectionDown -> {
+                                            if (downIndex >= 0) {
+                                                navigateToGridIndex(downIndex, false)
+                                            } else {
+                                                true
+                                            }
                                         }
-                                    }
-                                    Key.DirectionLeft -> {
-                                        if (isFirstColumn) {
-                                            navRailFocusRequester.safeRequestFocus()
-                                        } else {
-                                            false
+                                        Key.DirectionLeft -> {
+                                            if (isFirstColumn) {
+                                                navRailFocusRequester.safeRequestFocus()
+                                            } else {
+                                                false
+                                            }
                                         }
+                                        Key.DirectionRight -> {
+                                            val isLastInRow = (index % gridColumns) == gridColumns - 1 || index == safeResults.lastIndex
+                                            if (isLastInRow) true else false
+                                        }
+                                        else -> false
                                     }
-                                    Key.DirectionRight -> {
-                                        val isLastInRow = (index % gridColumns) == gridColumns - 1 || index == safeResults.lastIndex
-                                        if (isLastInRow) true else false
-                                    }
-                                    else -> false
+                                } else {
+                                    false
                                 }
-                            } else {
-                                false
                             }
-                        }
-                        .focusProperties {
-                            if (isFirstColumn) {
-                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            .focusProperties {
+                                if (isFirstColumn) {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                }
+                                if (isFirstRow) {
+                                    upFocusRequester.takeIfAttached()?.let { up = it }
+                                } else {
+                                    itemFocusRequesters.getOrNull(upIndex)?.takeIfAttached()?.let { up = it }
+                                }
+                                if (downIndex >= 0) {
+                                    itemFocusRequesters.getOrNull(downIndex)?.takeIfAttached()?.let { down = it }
+                                }
                             }
-                            if (isFirstRow) {
-                                upFocusRequester.takeIfAttached()?.let { up = it }
-                            } else {
-                                itemFocusRequesters.getOrNull(upIndex)?.takeIfAttached()?.let { up = it }
-                            }
-                            if (downIndex >= 0) {
-                                itemFocusRequesters.getOrNull(downIndex)?.takeIfAttached()?.let { down = it }
-                            }
-                        }
-                )
+                    )
+                }
             }
         }
     }

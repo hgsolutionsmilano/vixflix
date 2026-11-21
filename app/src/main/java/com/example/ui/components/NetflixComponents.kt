@@ -422,9 +422,11 @@ fun NetflixTopBar(
                     onValueChange = onSearchQueryChange,
                     placeholder = {
                         Text(
-                            text = "Cerca film, serie TV, attori in tempo reale su TMDB…",
+                            text = "Cerca titolo, attore, regista, genere, anno o tema…",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = NetflixMutedGray
+                            color = NetflixMutedGray,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingIcon = {

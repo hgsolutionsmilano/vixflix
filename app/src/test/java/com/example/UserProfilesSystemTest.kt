@@ -326,22 +326,25 @@ class UserProfilesSystemTest {
             )
 
             // 3. Isolamento completo preferiti e Continua a guardare tra Profilo A e Profilo B
-            repo.toggleWatchlist(movieA, profileA)
-            repo.toggleWatchlist(seriesB, profileB)
+            repo.toggleWatchlist(movieA, currentlyInList = false, profileId = profileA)
+            repo.toggleWatchlist(seriesB, currentlyInList = false, profileId = profileB)
 
             repo.saveWatchProgress(
                 item = movieA,
+                seasonNumber = null,
+                episodeNumber = null,
+                episodeTitle = null,
                 positionMs = 1_800_000L, // 30 min su 60 min -> 50%
                 durationMs = 3_600_000L,
                 profileId = profileA
             )
             repo.saveWatchProgress(
                 item = seriesB,
-                positionMs = 1_200_000L, // 20 min su 40 min -> 50%
-                durationMs = 2_400_000L,
                 seasonNumber = 1,
                 episodeNumber = 3,
                 episodeTitle = "Episodio 3",
+                positionMs = 1_200_000L, // 20 min su 40 min -> 50%
+                durationMs = 2_400_000L,
                 profileId = profileB
             )
 
@@ -360,6 +363,9 @@ class UserProfilesSystemTest {
             // 4. Completamento (>= 96%) rimuove automaticamente da Continua a guardare (NESSUNA cronologia!)
             repo.saveWatchProgress(
                 item = movieA,
+                seasonNumber = null,
+                episodeNumber = null,
+                episodeTitle = null,
                 positionMs = 3_500_000L, // 97.2%
                 durationMs = 3_600_000L,
                 profileId = profileA
