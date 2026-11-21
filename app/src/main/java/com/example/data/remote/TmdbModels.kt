@@ -135,6 +135,63 @@ data class TmdbPersonCombinedCreditsDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class TmdbPersonDetailsDto(
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String = "",
+    @param:Json(name = "biography") val biography: String? = null,
+    @param:Json(name = "birthday") val birthday: String? = null,
+    @param:Json(name = "deathday") val deathday: String? = null,
+    @param:Json(name = "place_of_birth") val placeOfBirth: String? = null,
+    @param:Json(name = "known_for_department") val knownForDepartment: String? = null,
+    @param:Json(name = "profile_path") val profilePath: String? = null,
+    @param:Json(name = "popularity") val popularity: Double? = null
+)
+
+@Immutable
+data class ActorDetails(
+    val id: Int,
+    val name: String,
+    val biography: String?,
+    val birthday: String?,
+    val deathday: String?,
+    val placeOfBirth: String?,
+    val knownForDepartment: String?,
+    val profilePath: String?,
+    val filmography: List<MediaItem> = emptyList(),
+    val movieCount: Int = 0,
+    val tvCount: Int = 0
+) {
+    val profileUrl: String?
+        get() = profilePath?.takeIf { it.isNotBlank() }?.let { "https://image.tmdb.org/t/p/w500$it" }
+}
+
+fun formatTmdbDateItalian(rawDate: String?): String? {
+    val clean = rawDate?.trim().orEmpty()
+    if (clean.length < 10) return clean.takeIf { it.isNotBlank() }
+    val parts = clean.take(10).split("-")
+    if (parts.size != 3) return clean
+    val year = parts[0].toIntOrNull() ?: return clean
+    val month = parts[1].toIntOrNull() ?: return clean
+    val day = parts[2].toIntOrNull() ?: return clean
+    val monthName = when (month) {
+        1 -> "gennaio"
+        2 -> "febbraio"
+        3 -> "marzo"
+        4 -> "aprile"
+        5 -> "maggio"
+        6 -> "giugno"
+        7 -> "luglio"
+        8 -> "agosto"
+        9 -> "settembre"
+        10 -> "ottobre"
+        11 -> "novembre"
+        12 -> "dicembre"
+        else -> return clean
+    }
+    return "$day $monthName $year"
+}
+
+@JsonClass(generateAdapter = true)
 data class TmdbKeywordDto(
     @param:Json(name = "id") val id: Int,
     @param:Json(name = "name") val name: String = ""

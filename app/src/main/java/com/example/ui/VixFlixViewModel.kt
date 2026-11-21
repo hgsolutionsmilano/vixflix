@@ -25,12 +25,14 @@ import com.example.data.local.VerifiedPreviousEpisode
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.remote.ActorDetails
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.ResolvedTrailerStream
 import com.example.data.remote.TmdbApiConfig
+import com.example.data.remote.TmdbCastMemberDto
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
@@ -127,8 +129,47 @@ data class DetailUiState(
     val isLoadingEpisodes: Boolean = false,
     val episodeProgressMap: Map<Int, EpisodeProgressEntity> = emptyMap(),
     val activeTrailer: TrailerPlaybackState? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val savedScrollIndex: Int = 0,
+    val savedScrollOffset: Int = 0,
+    val savedFocusedCastActorId: Int? = null,
+    val savedFocusedSimilarKey: String? = null
 )
+
+@Immutable
+data class ActorDetailUiState(
+    val actorId: Int,
+    val name: String,
+    val profilePath: String? = null,
+    val characterRole: String? = null,
+    val isLoading: Boolean = true,
+    val details: ActorDetails? = null,
+    val errorMessage: String? = null,
+    val savedScrollIndex: Int = 0,
+    val savedScrollOffset: Int = 0,
+    val savedFocusedMediaKey: String? = null
+) {
+    val resolvedProfileUrl: String?
+        get() = details?.profileUrl ?: profilePath?.takeIf { it.isNotBlank() }?.let { "https://image.tmdb.org/t/p/w500$it" }
+}
+
+@Immutable
+sealed interface DetailStackEntry {
+    val stackKey: String
+    val displayTitle: String
+
+    @Immutable
+    data class Media(val state: DetailUiState) : DetailStackEntry {
+        override val stackKey: String get() = "media_${state.mediaItem.uniqueKey}"
+        override val displayTitle: String get() = state.mediaItem.title
+    }
+
+    @Immutable
+    data class Actor(val state: ActorDetailUiState) : DetailStackEntry {
+        override val stackKey: String get() = "actor_${state.actorId}"
+        override val displayTitle: String get() = state.details?.name?.ifBlank { state.name } ?: state.name
+    }
+}
 
 @Immutable
 data class PlaybackSession(
@@ -301,10 +342,13 @@ class VixFlixViewModel @JvmOverloads constructor(
     private val _searchMatchedCategories = MutableStateFlow<List<String>>(emptyList())
     val searchMatchedCategories: StateFlow<List<String>> = _searchMatchedCategories.asStateFlow()
 
-    private val _detailBackStack = MutableStateFlow<List<DetailUiState>>(emptyList())
+    private val _detailBackStack = MutableStateFlow<List<DetailStackEntry>>(emptyList())
 
     private val _detailState = MutableStateFlow<DetailUiState?>(null)
     val detailState: StateFlow<DetailUiState?> = _detailState.asStateFlow()
+
+    private val _actorDetailState = MutableStateFlow<ActorDetailUiState?>(null)
+    val actorDetailState: StateFlow<ActorDetailUiState?> = _actorDetailState.asStateFlow()
 
     private val _detailStackSize = MutableStateFlow(0)
     val detailStackSize: StateFlow<Int> = _detailStackSize.asStateFlow()
@@ -333,23 +377,33 @@ class VixFlixViewModel @JvmOverloads constructor(
     private var seasonLoadJob: Job? = null
     private var trailerJob: Job? = null
     private var detailLoadJob: Job? = null
+    private var actorLoadJob: Job? = null
     private var playbackResolveJob: Job? = null
     private var nextEpisodePreResolveJob: Job? = null
     private var lastPreResolvedEpisodeKey: String? = null
     private val livePlaybackPositionMs = AtomicLong(0L)
     private val playbackSessionCounter = AtomicLong(0L)
 
-    private fun updateDetailStack(newStack: List<DetailUiState>) {
+    private fun updateDetailStack(newStack: List<DetailStackEntry>) {
         _detailBackStack.value = newStack
-        _detailState.value = newStack.lastOrNull()
+        val top = newStack.lastOrNull()
+        _detailState.value = (top as? DetailStackEntry.Media)?.state
+        _actorDetailState.value = (top as? DetailStackEntry.Actor)?.state
         _detailStackSize.value = newStack.size
-        _previousDetailTitle.value = if (newStack.size > 1) newStack[newStack.size - 2].mediaItem.title else null
+        _previousDetailTitle.value = if (newStack.size > 1) newStack[newStack.size - 2].displayTitle else null
     }
 
     private fun updateTopDetail(transform: (DetailUiState) -> DetailUiState) {
         val currentStack = _detailBackStack.value
-        val top = currentStack.lastOrNull() ?: return
-        val updated = transform(top)
+        val top = currentStack.lastOrNull() as? DetailStackEntry.Media ?: return
+        val updated = DetailStackEntry.Media(transform(top.state))
+        updateDetailStack(currentStack.dropLast(1) + updated)
+    }
+
+    private fun updateTopActorDetail(transform: (ActorDetailUiState) -> ActorDetailUiState) {
+        val currentStack = _detailBackStack.value
+        val top = currentStack.lastOrNull() as? DetailStackEntry.Actor ?: return
+        val updated = DetailStackEntry.Actor(transform(top.state))
         updateDetailStack(currentStack.dropLast(1) + updated)
     }
 
@@ -886,6 +940,7 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun openDetails(item: MediaItem) {
         detailLoadJob?.cancel()
+        actorLoadJob?.cancel()
         trailerJob?.cancel()
         seasonProgressJob?.cancel()
         seasonLoadJob?.cancel()
@@ -919,11 +974,13 @@ class VixFlixViewModel @JvmOverloads constructor(
                 )
             }
 
+            val wrappedEntry = DetailStackEntry.Media(initialEntry)
             val currentStack = _detailBackStack.value
-            val updatedStack = if (currentStack.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
-                currentStack.dropLast(1) + initialEntry
+            val currentTopMedia = currentStack.lastOrNull() as? DetailStackEntry.Media
+            val updatedStack = if (currentTopMedia?.state?.mediaItem?.uniqueKey == item.uniqueKey) {
+                currentStack.dropLast(1) + wrappedEntry
             } else {
-                (currentStack + initialEntry).takeLast(12)
+                (currentStack + wrappedEntry).takeLast(16)
             }
             updateDetailStack(updatedStack)
 
@@ -945,8 +1002,9 @@ class VixFlixViewModel @JvmOverloads constructor(
                     } else {
                         details.seasons.firstOrNull()?.seasonNumber ?: 1
                     }
-                    if (_detailBackStack.value.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey) {
-                        val previouslySelectedSeason = _detailBackStack.value.lastOrNull()?.selectedSeason ?: targetSeason
+                    val topMedia = _detailBackStack.value.lastOrNull() as? DetailStackEntry.Media
+                    if (topMedia?.state?.mediaItem?.uniqueKey == item.uniqueKey) {
+                        val previouslySelectedSeason = topMedia.state.selectedSeason
                         val resolvedSeason = if (details.seasons.any { it.seasonNumber == previouslySelectedSeason }) {
                             previouslySelectedSeason
                         } else {
@@ -969,7 +1027,8 @@ class VixFlixViewModel @JvmOverloads constructor(
                     }
                 },
                 onFailure = { err ->
-                    if (_detailBackStack.value.lastOrNull()?.mediaItem?.uniqueKey == item.uniqueKey && cachedEntry == null) {
+                    val topMedia = _detailBackStack.value.lastOrNull() as? DetailStackEntry.Media
+                    if (topMedia?.state?.mediaItem?.uniqueKey == item.uniqueKey && cachedEntry == null) {
                         updateTopDetail { top ->
                             top.copy(
                                 isLoading = false,
@@ -982,8 +1041,185 @@ class VixFlixViewModel @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Apre il dettaglio di un titolo simile preservando lo stato di scorrimento e focus del titolo di origine.
+     */
+    fun openDetailsFromSimilar(
+        item: MediaItem,
+        originScrollIndex: Int = 0,
+        originScrollOffset: Int = 0
+    ) {
+        updateTopDetail { top ->
+            top.copy(
+                savedScrollIndex = originScrollIndex,
+                savedScrollOffset = originScrollOffset,
+                savedFocusedCastActorId = null,
+                savedFocusedSimilarKey = item.uniqueKey
+            )
+        }
+        openDetails(item)
+    }
+
+    /**
+     * Apre la schermata dedicata all'attore selezionato dal Cast preservando posizione di scorrimento
+     * e focus esatto sull'attore nello stack del film/serie TV di origine.
+     */
+    fun openActorDetails(
+        actor: TmdbCastMemberDto,
+        originScrollIndex: Int = 0,
+        originScrollOffset: Int = 0
+    ) {
+        detailLoadJob?.cancel()
+        actorLoadJob?.cancel()
+        trailerJob?.cancel()
+        seasonProgressJob?.cancel()
+        seasonLoadJob?.cancel()
+
+        // Salva posizione di scorrimento e attore selezionato sullo stack Media sottostante per ripristino al BACK
+        updateTopDetail { top ->
+            top.copy(
+                savedScrollIndex = originScrollIndex,
+                savedScrollOffset = originScrollOffset,
+                savedFocusedCastActorId = actor.id,
+                savedFocusedSimilarKey = null
+            )
+        }
+
+        val cached = repository.getCachedActorDetails(actor.id)
+        val initialActorState = if (cached != null) {
+            ActorDetailUiState(
+                actorId = actor.id,
+                name = cached.value.name.ifBlank { actor.name },
+                profilePath = cached.value.profilePath ?: actor.profilePath,
+                characterRole = actor.character,
+                isLoading = false,
+                details = cached.value,
+                errorMessage = null
+            )
+        } else {
+            ActorDetailUiState(
+                actorId = actor.id,
+                name = actor.name,
+                profilePath = actor.profilePath,
+                characterRole = actor.character,
+                isLoading = true,
+                details = null,
+                errorMessage = null
+            )
+        }
+
+        val wrappedActor = DetailStackEntry.Actor(initialActorState)
+        val currentStack = _detailBackStack.value
+        val currentTopActor = currentStack.lastOrNull() as? DetailStackEntry.Actor
+        val updatedStack = if (currentTopActor?.state?.actorId == actor.id) {
+            currentStack.dropLast(1) + wrappedActor
+        } else {
+            (currentStack + wrappedActor).takeLast(16)
+        }
+        updateDetailStack(updatedStack)
+
+        if (cached != null && !cached.isStale) {
+            return
+        }
+
+        actorLoadJob = viewModelScope.launch {
+            repository.fetchActorDetails(
+                actorId = actor.id,
+                fallbackName = actor.name,
+                fallbackProfilePath = actor.profilePath
+            ).fold(
+                onSuccess = { actorDetails ->
+                    val topActor = _detailBackStack.value.lastOrNull() as? DetailStackEntry.Actor
+                    if (topActor?.state?.actorId == actor.id) {
+                        updateTopActorDetail { top ->
+                            top.copy(
+                                name = actorDetails.name.ifBlank { top.name },
+                                profilePath = actorDetails.profilePath ?: top.profilePath,
+                                isLoading = false,
+                                details = actorDetails,
+                                errorMessage = null
+                            )
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    val topActor = _detailBackStack.value.lastOrNull() as? DetailStackEntry.Actor
+                    if (topActor?.state?.actorId == actor.id && cached == null) {
+                        updateTopActorDetail { top ->
+                            top.copy(
+                                isLoading = false,
+                                errorMessage = err.localizedMessage ?: "Impossibile caricare il profilo dell'attore da TMDB."
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    /**
+     * Apre un film o una serie TV dalla filmografia di un attore riutilizzando la schermata di dettaglio esistente,
+     * salvando posizione di scorrimento e locandina focalizzata nella schermata attore per il ritorno tramite BACK.
+     */
+    fun openDetailsFromActor(
+        item: MediaItem,
+        actorScrollIndex: Int = 0,
+        actorScrollOffset: Int = 0
+    ) {
+        updateTopActorDetail { top ->
+            top.copy(
+                savedScrollIndex = actorScrollIndex,
+                savedScrollOffset = actorScrollOffset,
+                savedFocusedMediaKey = item.uniqueKey
+            )
+        }
+        openDetails(item)
+    }
+
+    fun retryActorDetails() {
+        val currentActor = _actorDetailState.value ?: return
+        actorLoadJob?.cancel()
+        updateTopActorDetail { top ->
+            top.copy(isLoading = true, errorMessage = null)
+        }
+        actorLoadJob = viewModelScope.launch {
+            repository.fetchActorDetails(
+                actorId = currentActor.actorId,
+                fallbackName = currentActor.name,
+                fallbackProfilePath = currentActor.profilePath
+            ).fold(
+                onSuccess = { actorDetails ->
+                    val topActor = _detailBackStack.value.lastOrNull() as? DetailStackEntry.Actor
+                    if (topActor?.state?.actorId == currentActor.actorId) {
+                        updateTopActorDetail { top ->
+                            top.copy(
+                                name = actorDetails.name.ifBlank { top.name },
+                                profilePath = actorDetails.profilePath ?: top.profilePath,
+                                isLoading = false,
+                                details = actorDetails,
+                                errorMessage = null
+                            )
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    val topActor = _detailBackStack.value.lastOrNull() as? DetailStackEntry.Actor
+                    if (topActor?.state?.actorId == currentActor.actorId) {
+                        updateTopActorDetail { top ->
+                            top.copy(
+                                isLoading = false,
+                                errorMessage = err.localizedMessage ?: "Impossibile caricare il profilo dell'attore da TMDB."
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
     fun navigateBackDetail() {
         detailLoadJob?.cancel()
+        actorLoadJob?.cancel()
         trailerJob?.cancel()
         seasonProgressJob?.cancel()
         seasonLoadJob?.cancel()
@@ -992,9 +1228,9 @@ class VixFlixViewModel @JvmOverloads constructor(
         if (currentStack.size > 1) {
             val popped = currentStack.dropLast(1)
             updateDetailStack(popped)
-            val top = popped.lastOrNull()
-            if (top != null && top.mediaItem.isSeries) {
-                observeSeasonProgressForTop(top.mediaItem.id, top.selectedSeason)
+            val topMedia = popped.lastOrNull() as? DetailStackEntry.Media
+            if (topMedia != null && topMedia.state.mediaItem.isSeries) {
+                observeSeasonProgressForTop(topMedia.state.mediaItem.id, topMedia.state.selectedSeason)
             }
         } else {
             closeDetails()
@@ -1003,6 +1239,7 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun closeDetails() {
         detailLoadJob?.cancel()
+        actorLoadJob?.cancel()
         trailerJob?.cancel()
         seasonProgressJob?.cancel()
         seasonLoadJob?.cancel()

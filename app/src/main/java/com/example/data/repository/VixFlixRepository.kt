@@ -24,6 +24,7 @@ import com.example.data.local.VerifiedNextEpisode
 import com.example.data.local.VixFlixDao
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.remote.ActorDetails
 import com.example.data.remote.ExtendedSearchResult
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.GitHubUpdateService
@@ -188,6 +189,7 @@ class VixFlixRepository(
     )
 
     private val detailsMemoryCache = LruCache<String, TimedMemoryEntry<MediaDetails>>(24)
+    private val actorDetailsMemoryCache = LruCache<Int, TimedMemoryEntry<ActorDetails>>(24)
     private val episodesMemoryCache = LruCache<String, TimedMemoryEntry<List<TmdbEpisodeDto>>>(20)
     private val platformCatalogMemoryCache = LruCache<Int, TimedMemoryEntry<PlatformCatalogContent>>(12)
     private val movieGenreMemoryCache = LruCache<Int, TimedMemoryEntry<List<MediaItem>>>(20)
@@ -1711,6 +1713,89 @@ class VixFlixRepository(
         )
     }
 
+    fun getCachedActorDetails(actorId: Int): CachedValue<ActorDetails>? {
+        val now = System.currentTimeMillis()
+        val mem = actorDetailsMemoryCache.get(actorId) ?: return null
+        return CachedValue(
+            value = mem.value,
+            updatedAtMs = mem.updatedAtMs,
+            isStale = (now - mem.updatedAtMs) > DETAIL_FRESH_MS
+        )
+    }
+
+    /**
+     * Carica profilo completo attore (foto, nome, biografia, data/luogo di nascita) e filmografia
+     * completa (Film + Serie TV) riutilizzando esclusivamente la configurazione TMDB esistente.
+     */
+    suspend fun fetchActorDetails(
+        actorId: Int,
+        fallbackName: String = "",
+        fallbackProfilePath: String? = null
+    ): Result<ActorDetails> = withContext(Dispatchers.IO) {
+        runCatching {
+            coroutineScope {
+                val detailsDeferred = async {
+                    tmdbApi.getPersonDetails(personId = actorId, language = "it-IT")
+                }
+                val creditsDeferred = async {
+                    runCatching {
+                        tmdbApi.getPersonCombinedCredits(personId = actorId, language = "it-IT")
+                    }.getOrNull()
+                }
+
+                val person = detailsDeferred.await()
+                val credits = creditsDeferred.await()
+
+                // Se la biografia in italiano non è disponibile su TMDB, recupera la biografia inglese originale
+                var resolvedBio = person.biography?.trim()?.takeIf { it.isNotBlank() }
+                if (resolvedBio == null) {
+                    resolvedBio = runCatching {
+                        tmdbApi.getPersonDetails(personId = actorId, language = "en-US")
+                            .biography
+                            ?.trim()
+                            ?.takeIf { it.isNotBlank() }
+                    }.getOrNull()
+                }
+
+                // Filmografia recitata (Film e Serie TV), deduplicata e ordinata per rilevanza/popolarità
+                val castCredits = credits?.cast.orEmpty()
+                    .filter { dto ->
+                        val type = dto.mediaType
+                        type == null || type == "movie" || type == "tv"
+                    }
+                    .sortedWith(
+                        compareByDescending<com.example.data.remote.TmdbMediaItemDto> { !it.posterPath.isNullOrBlank() }
+                            .thenByDescending { (it.popularity ?: 0.0) + ((it.voteAverage ?: 0.0) * 2.5) }
+                            .thenByDescending { (it.releaseDate ?: it.firstAirDate).orEmpty() }
+                    )
+
+                val filmography = castCredits
+                    .mapNotNull { it.toDomain("movie") }
+                    .distinctBy { it.uniqueKey }
+
+                val movieCount = filmography.count { !it.isSeries }
+                val tvCount = filmography.count { it.isSeries }
+
+                val actorDetails = ActorDetails(
+                    id = person.id,
+                    name = person.name.trim().ifBlank { fallbackName },
+                    biography = resolvedBio,
+                    birthday = person.birthday?.trim()?.takeIf { it.isNotBlank() },
+                    deathday = person.deathday?.trim()?.takeIf { it.isNotBlank() },
+                    placeOfBirth = person.placeOfBirth?.trim()?.takeIf { it.isNotBlank() },
+                    knownForDepartment = person.knownForDepartment?.trim()?.takeIf { it.isNotBlank() },
+                    profilePath = person.profilePath?.takeIf { it.isNotBlank() } ?: fallbackProfilePath,
+                    filmography = filmography,
+                    movieCount = movieCount,
+                    tvCount = tvCount
+                )
+
+                actorDetailsMemoryCache.put(actorId, TimedMemoryEntry(actorDetails, System.currentTimeMillis()))
+                actorDetails
+            }
+        }
+    }
+
     /**
      * Riduce l'impronta RAM delle cache volatili in memoria su pressione di sistema (`onTrimMemory`),
      * lasciando intatta la persistenza su disco Room/HTTP.
@@ -1720,11 +1805,13 @@ class VixFlixRepository(
             level >= android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE
         ) {
             detailsMemoryCache.evictAll()
+            actorDetailsMemoryCache.evictAll()
             episodesMemoryCache.evictAll()
             platformCatalogMemoryCache.evictAll()
             movieGenreMemoryCache.evictAll()
         } else {
             detailsMemoryCache.trimToSize(8)
+            actorDetailsMemoryCache.trimToSize(8)
             episodesMemoryCache.trimToSize(6)
             platformCatalogMemoryCache.trimToSize(4)
             movieGenreMemoryCache.trimToSize(6)
@@ -1733,6 +1820,7 @@ class VixFlixRepository(
 
     suspend fun clearAllLocalCaches(clearImageCaches: () -> Unit) {
         detailsMemoryCache.evictAll()
+        actorDetailsMemoryCache.evictAll()
         episodesMemoryCache.evictAll()
         platformCatalogMemoryCache.evictAll()
         movieGenreMemoryCache.evictAll()

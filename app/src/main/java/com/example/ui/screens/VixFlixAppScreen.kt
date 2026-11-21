@@ -130,6 +130,7 @@ import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.repository.CatalogFeed
+import com.example.ui.ActorDetailUiState
 import com.example.ui.CatalogUiState
 import com.example.ui.DetailUiState
 import com.example.ui.MovieGenreFilterUiState
@@ -200,6 +201,7 @@ fun VixFlixAppScreen(
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
     val searchMatchedCategories by viewModel.searchMatchedCategories.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
+    val actorDetailState by viewModel.actorDetailState.collectAsStateWithLifecycle()
     val detailStackSize by viewModel.detailStackSize.collectAsStateWithLifecycle()
     val previousDetailTitle by viewModel.previousDetailTitle.collectAsStateWithLifecycle()
     val playbackSession by viewModel.playbackSession.collectAsStateWithLifecycle()
@@ -256,11 +258,15 @@ fun VixFlixAppScreen(
         viewModel.openDetails(mediaItem)
     }
 
-    // Memorizza l'ultimo DetailUiState in SideEffect (nessuna mutazione diretta durante la composizione)
+    // Memorizza gli ultimi snapshot Dettaglio/Attore in SideEffect (nessuna mutazione diretta durante la composizione)
     var lastDetailSnapshot by remember { mutableStateOf<DetailUiState?>(null) }
+    var lastActorSnapshot by remember { mutableStateOf<ActorDetailUiState?>(null) }
     SideEffect {
         if (detailState != null) {
             lastDetailSnapshot = detailState
+        }
+        if (actorDetailState != null) {
+            lastActorSnapshot = actorDetailState
         }
     }
 
@@ -281,7 +287,9 @@ fun VixFlixAppScreen(
     val isProfileSelectorVisible = !isSplashVisible &&
         profileUiState.showProfileSelector &&
         (respectStartupProfileGate || !profileUiState.mustSelectBeforeClosing)
-    val isDetailVisible = detailState != null
+    val isMediaDetailVisible = detailState != null
+    val isActorDetailVisible = actorDetailState != null
+    val isDetailVisible = isMediaDetailVisible || isActorDetailVisible
     val isPlayerVisible = playbackSession != null
     val isOverlayActive = isDetailVisible || isPlayerVisible
     val isUpdateDialogVisible = !isSplashVisible && !isProfileSelectorVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
@@ -291,8 +299,9 @@ fun VixFlixAppScreen(
         isSplashVisible -> DpadFocusScope.SPLASH
         isProfileSelectorVisible -> DpadFocusScope.PROFILE_SELECTOR
         isPlayerVisible -> DpadFocusScope.VIDEO_PLAYER
-        isDetailVisible && detailState?.activeTrailer != null -> DpadFocusScope.MODAL_TRAILER_POPUP
-        isDetailVisible -> DpadFocusScope.DETAIL_SHEET
+        isActorDetailVisible -> DpadFocusScope.ACTOR_DETAIL
+        isMediaDetailVisible && detailState?.activeTrailer != null -> DpadFocusScope.MODAL_TRAILER_POPUP
+        isMediaDetailVisible -> DpadFocusScope.DETAIL_SHEET
         isQuickModalVisible -> DpadFocusScope.MODAL_QUICK_ACTION
         else -> DpadFocusScope.MAIN_NAVIGATION
     }
@@ -1196,14 +1205,14 @@ fun VixFlixAppScreen(
         }
         }
 
-        // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (con stack cronologico tra Titoli Simili)
+        // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (con stack cronologico tra Titoli Simili e Attori)
         androidx.compose.animation.AnimatedVisibility(
-            visible = isDetailVisible && !isPlayerVisible,
+            visible = isMediaDetailVisible && !isPlayerVisible,
             enter = fadeIn(tween(130)),
             exit = fadeOut(tween(100)),
             modifier = Modifier
                 .fillMaxSize()
-                .focusProperties { canFocus = !isPlayerVisible }
+                .focusProperties { canFocus = isMediaDetailVisible && !isPlayerVisible }
         ) {
             val currentDetail = lastDetailSnapshot
             if (currentDetail != null) {
@@ -1216,7 +1225,7 @@ fun VixFlixAppScreen(
                     bufferPreset = bufferPreset,
                     detailStackDepth = detailStackSize,
                     previousDetailTitle = previousDetailTitle,
-                    isInteractive = isDetailVisible && !isPlayerVisible,
+                    isInteractive = isMediaDetailVisible && !isPlayerVisible,
                     onBack = viewModel::navigateBackDetail,
                     onClose = viewModel::closeDetails,
                     onPlayMain = { restartFromZero ->
@@ -1247,8 +1256,34 @@ fun VixFlixAppScreen(
                         viewModel.toggleWatchlist(currentDetail.mediaItem)
                     },
                     onSelectSimilar = { similarItem ->
-                        viewModel.openDetails(similarItem)
-                    }
+                        viewModel.openDetailsFromSimilar(similarItem)
+                    },
+                    onSelectSimilarWithScroll = viewModel::openDetailsFromSimilar,
+                    onSelectActor = viewModel::openActorDetails
+                )
+            }
+        }
+
+        // 2B. LIVELLO INTERMEDIO ATTORE: Schermata Dettaglio Attore & Filmografia TMDB
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isActorDetailVisible && !isPlayerVisible,
+            enter = fadeIn(tween(130)),
+            exit = fadeOut(tween(100)),
+            modifier = Modifier
+                .fillMaxSize()
+                .focusProperties { canFocus = isActorDetailVisible && !isPlayerVisible }
+        ) {
+            val currentActor = lastActorSnapshot
+            if (currentActor != null) {
+                ActorDetailScreen(
+                    state = currentActor,
+                    detailStackDepth = detailStackSize,
+                    previousDetailTitle = previousDetailTitle,
+                    isInteractive = isActorDetailVisible && !isPlayerVisible,
+                    onBack = viewModel::navigateBackDetail,
+                    onClose = viewModel::closeDetails,
+                    onRetry = viewModel::retryActorDetails,
+                    onSelectMedia = viewModel::openDetailsFromActor
                 )
             }
         }

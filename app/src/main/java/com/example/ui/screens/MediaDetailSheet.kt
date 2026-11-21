@@ -39,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.SmartDisplay
@@ -144,7 +145,9 @@ fun MediaDetailScreen(
     onCloseTrailer: () -> Unit,
     onSelectSeason: (Int) -> Unit,
     onToggleWatchlist: () -> Unit,
-    onSelectSimilar: (MediaItem) -> Unit
+    onSelectSimilar: (MediaItem) -> Unit,
+    onSelectSimilarWithScroll: ((MediaItem, Int, Int) -> Unit)? = null,
+    onSelectActor: (TmdbCastMemberDto, Int, Int) -> Unit = { _, _, _ -> }
 ) {
     val backAction = if (detailStackDepth > 1) onBack else onClose
 
@@ -215,6 +218,7 @@ fun MediaDetailScreen(
                 details?.similar.orEmpty().distinctBy { it.uniqueKey }
             }
             val listState = rememberLazyListState()
+            val castListState = rememberLazyListState()
             val coroutineScope = rememberCoroutineScope()
             val detailPlayFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailTrailerFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
@@ -223,6 +227,9 @@ fun MediaDetailScreen(
             val detailCloseFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailBackFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstCastFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            val castActorRequesters = remember(currentItem.uniqueKey, castList) {
+                castList.associate { it.id to FocusRequester() }
+            }
             val firstSeasonFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstEpisodeFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val lastEpisodeFocus = remember(currentItem.uniqueKey) { FocusRequester() }
@@ -294,13 +301,95 @@ fun MediaDetailScreen(
             val isCurrentActive = currentItem.uniqueKey == item.uniqueKey
             val isTrailerOpen = currentState.activeTrailer != null
 
-            LaunchedEffect(isCurrentActive, isInteractive, isTrailerOpen) {
+            LaunchedEffect(
+                isCurrentActive,
+                isInteractive,
+                isTrailerOpen,
+                currentState.savedFocusedCastActorId,
+                currentState.savedFocusedSimilarKey,
+                castList.size,
+                similarList.size
+            ) {
                 if (!isCurrentActive) return@LaunchedEffect
                 if (isTrailerOpen) {
                     focusTracker.wasTrailerOpen = true
                     return@LaunchedEffect
                 }
                 if (isInteractive) {
+                    val savedCastId = currentState.savedFocusedCastActorId
+                    val savedSimilarKey = currentState.savedFocusedSimilarKey
+
+                    // 1. Ripristino deterministico su un attore del Cast al ritorno dalla schermata Dettaglio Attore
+                    if (savedCastId != null && castItemIndex != null && castList.isNotEmpty()) {
+                        val actorIdx = castList.indexOfFirst { it.id == savedCastId }
+                        if (actorIdx >= 0) {
+                            focusTracker.wasTrailerOpen = false
+                            focusTracker.userMovedFocus = true
+                            focusTracker.heroStageLockActive = false
+                            if (currentState.savedScrollIndex > 0 || currentState.savedScrollOffset > 0) {
+                                runCatching {
+                                    listState.scrollToItem(
+                                        currentState.savedScrollIndex,
+                                        currentState.savedScrollOffset
+                                    )
+                                }
+                            } else {
+                                runCatching {
+                                    listState.scrollToItem(castItemIndex, 0)
+                                    listState.scrollBy(-topHeaderClearancePx.toFloat())
+                                }
+                            }
+                            runCatching { castListState.scrollToItem(actorIdx) }
+                            androidx.compose.runtime.withFrameNanos { }
+                            val actorReq = castActorRequesters[savedCastId] ?: firstCastFocus
+                            var restored = false
+                            for (attempt in 1..8) {
+                                if (actorReq.safeRequestFocus()) {
+                                    restored = true
+                                    break
+                                }
+                                if (attempt == 3) {
+                                    runCatching {
+                                        listState.scrollToItem(castItemIndex, 0)
+                                        listState.scrollBy(-topHeaderClearancePx.toFloat())
+                                        castListState.scrollToItem(actorIdx)
+                                    }
+                                }
+                                kotlinx.coroutines.delay(20L)
+                                androidx.compose.runtime.withFrameNanos { }
+                            }
+                            if (!restored) {
+                                firstCastFocus.safeRequestFocus()
+                            }
+                            return@LaunchedEffect
+                        }
+                    }
+
+                    // 2. Ripristino deterministico sulla sezione Titoli Simili al ritorno da un titolo simile
+                    if (savedSimilarKey != null && similarItemIndex != null && similarList.isNotEmpty()) {
+                        focusTracker.wasTrailerOpen = false
+                        focusTracker.userMovedFocus = true
+                        focusTracker.heroStageLockActive = false
+                        if (currentState.savedScrollIndex > 0 || currentState.savedScrollOffset > 0) {
+                            runCatching {
+                                listState.scrollToItem(
+                                    currentState.savedScrollIndex,
+                                    currentState.savedScrollOffset
+                                )
+                            }
+                        } else {
+                            runCatching { listState.scrollToItem(similarItemIndex, 0) }
+                        }
+                        androidx.compose.runtime.withFrameNanos { }
+                        for (attempt in 1..6) {
+                            if (firstSimilarFocus.safeRequestFocus()) break
+                            kotlinx.coroutines.delay(20L)
+                            androidx.compose.runtime.withFrameNanos { }
+                        }
+                        return@LaunchedEffect
+                    }
+
+                    // 3. Apertura normale o ritorno dal Trailer Popup
                     val returnToTrailer = focusTracker.wasTrailerOpen
                     focusTracker.wasTrailerOpen = false
                     focusTracker.userMovedFocus = false
@@ -388,6 +477,10 @@ fun MediaDetailScreen(
             val handleDetailBack: () -> Unit = {
                 if (isTrailerOpen) {
                     onCloseTrailer()
+                } else if (detailStackDepth > 1) {
+                    // Quando si è in una catena di navigazione (es. Film B aperto da Attore X),
+                    // BACK torna immediatamente alla schermata precedente nello stack.
+                    backAction()
                 } else if (
                     isTvDevice &&
                     (!focusTracker.heroStageLockActive ||
@@ -1274,15 +1367,34 @@ fun MediaDetailScreen(
                         }
                         item(key = "detail_cast_section", contentType = "detail_cast") {
                             Spacer(modifier = Modifier.height(18.dp))
-                            Text(
-                                text = "Cast Principale",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = NetflixWhite,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                            )
-                            val castListState = rememberLazyListState()
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Cast Principale",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NetflixWhite
+                                )
+                                Text(
+                                    text = "Seleziona un attore per filmografia",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NetflixMutedGray
+                                )
+                            }
                             var lastFocusedCastIdx by remember(currentItem.uniqueKey) {
                                 androidx.compose.runtime.mutableIntStateOf(0)
+                            }
+                            LaunchedEffect(currentState.savedFocusedCastActorId, castList) {
+                                val savedId = currentState.savedFocusedCastActorId ?: return@LaunchedEffect
+                                val idx = castList.indexOfFirst { it.id == savedId }
+                                if (idx >= 0) {
+                                    lastFocusedCastIdx = idx
+                                }
                             }
                             val targetCastIdx by remember(castListState, castList.size) {
                                 derivedStateOf {
@@ -1299,17 +1411,26 @@ fun MediaDetailScreen(
                             }
                             LazyRow(
                                 state = castListState,
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 itemsIndexed(
                                     items = castList,
                                     key = { _, actor -> actor.id },
                                     contentType = { _, _ -> "detail_cast_card" }
                                 ) { index, actor ->
-                                    val ownActorRequester = remember(actor.id) { FocusRequester() }
+                                    val ownActorRequester = castActorRequesters[actor.id]
+                                        ?: remember(actor.id) { FocusRequester() }
                                     CastCard(
                                         actor = actor,
+                                        onClick = {
+                                            lastFocusedCastIdx = index
+                                            onSelectActor(
+                                                actor,
+                                                listState.firstVisibleItemIndex,
+                                                listState.firstVisibleItemScrollOffset
+                                            )
+                                        },
                                         onFocusChange = { focused ->
                                             if (focused) {
                                                 lastFocusedCastIdx = index
@@ -1500,6 +1621,7 @@ fun MediaDetailScreen(
                                     episode = ep,
                                     savedEpProgress = currentState.episodeProgressMap[ep.episodeNumber],
                                     fallbackBackdropUrl = currentItem.backdropUrl,
+                                    isTvDevice = isTvDevice,
                                     onPlayEpisode = {
                                         onPlayEpisode(ep.seasonNumber, ep.episodeNumber, ep.name)
                                     },
@@ -1592,11 +1714,22 @@ fun MediaDetailScreen(
                         }
                         item(key = "detail_similar_section", contentType = "detail_similar") {
                             Spacer(modifier = Modifier.height(20.dp))
+                            val handleSimilarSelection: (MediaItem) -> Unit = { sim ->
+                                if (onSelectSimilarWithScroll != null) {
+                                    onSelectSimilarWithScroll(
+                                        sim,
+                                        listState.firstVisibleItemIndex,
+                                        listState.firstVisibleItemScrollOffset
+                                    )
+                                } else {
+                                    onSelectSimilar(sim)
+                                }
+                            }
                             MediaCatalogRow(
                                 title = "Titoli Simili su TMDB",
                                 items = similarList,
-                                onItemClick = onSelectSimilar,
-                                onItemQuickPlay = { sim -> onSelectSimilar(sim) },
+                                onItemClick = handleSimilarSelection,
+                                onItemQuickPlay = handleSimilarSelection,
                                 onItemFocused = {
                                     focusTracker.userMovedFocus = true
                                     focusTracker.heroStageLockActive = false
@@ -1899,42 +2032,66 @@ private fun rememberSizedDetailImageRequest(
 @Composable
 private fun CastCard(
     actor: TmdbCastMemberDto,
+    onClick: () -> Unit,
     onFocusChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier
-            .width(84.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .width(96.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isFocused) NetflixCardSurface else Color.Transparent)
             .tvFocusableControl(
-                shape = RoundedCornerShape(10.dp),
-                focusedScale = 1.06f,
+                shape = RoundedCornerShape(12.dp),
+                focusedScale = 1.08f,
                 focusedBorderColor = NetflixWhite,
                 focusTag = "cast_card_${actor.id}",
-                onFocusChange = onFocusChange
+                onFocusChange = { focused ->
+                    isFocused = focused
+                    onFocusChange?.invoke(focused)
+                },
+                onClick = onClick
             )
-            .padding(vertical = 4.dp)
+            .padding(horizontal = 6.dp, vertical = 8.dp)
             .testTag("cast_card_${actor.id}"),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        AsyncImage(
-            model = rememberSizedDetailImageRequest(
-                url = actor.profileUrl,
-                widthDp = 68.dp,
-                heightDp = 68.dp
-            ),
-            contentDescription = actor.name,
-            contentScale = ContentScale.Crop,
+        Box(
+            contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(68.dp)
+                .size(74.dp)
                 .clip(CircleShape)
                 .background(NetflixCardSurface)
-        )
+        ) {
+            if (!actor.profileUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = rememberSizedDetailImageRequest(
+                        url = actor.profileUrl,
+                        widthDp = 74.dp,
+                        heightDp = 74.dp
+                    ),
+                    contentDescription = actor.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = actor.name,
+                    tint = NetflixMutedGray,
+                    modifier = Modifier.size(34.dp)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = actor.name,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Medium,
             color = NetflixWhite,
+            textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1942,7 +2099,8 @@ private fun CastCard(
             Text(
                 text = actor.character,
                 style = MaterialTheme.typography.labelSmall,
-                color = NetflixMutedGray,
+                color = if (isFocused) NetflixLightGray else NetflixMutedGray,
+                textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1955,24 +2113,37 @@ private fun EpisodeRowItem(
     episode: TmdbEpisodeDto,
     savedEpProgress: EpisodeProgressEntity?,
     fallbackBackdropUrl: String?,
+    isTvDevice: Boolean = false,
     onPlayEpisode: () -> Unit,
     onFocusChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val thumbWidth = if (isTvDevice) 248.dp else 172.dp
+    val thumbHeight = if (isTvDevice) 140.dp else 97.dp
+    val cardCorner = if (isTvDevice) 14.dp else 12.dp
+    val playCircleSize = if (isTvDevice) 50.dp else 42.dp
+    val playIconSize = if (isTvDevice) 30.dp else 24.dp
 
     Card(
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(cardCorner),
         colors = CardDefaults.cardColors(
             containerColor = if (isFocused) NetflixCardSurface else NetflixDarkSurface
         ),
-        border = if (isFocused) BorderStroke(2.dp, NetflixWhite) else null,
+        border = if (isFocused) {
+            BorderStroke(if (isTvDevice) 2.5.dp else 2.dp, NetflixWhite)
+        } else {
+            BorderStroke(1.dp, NetflixElevatedSurface.copy(alpha = 0.55f))
+        },
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .padding(
+                horizontal = if (isTvDevice) 20.dp else 16.dp,
+                vertical = if (isTvDevice) 8.dp else 7.dp
+            )
             .tvFocusableControl(
-                shape = RoundedCornerShape(10.dp),
-                focusedScale = 1.02f,
+                shape = RoundedCornerShape(cardCorner),
+                focusedScale = if (isTvDevice) 1.02f else 1.015f,
                 focusedBorderColor = NetflixWhite,
                 focusTag = "episode_card_${episode.seasonNumber}_${episode.episodeNumber}",
                 onFocusChange = { focused ->
@@ -1983,43 +2154,65 @@ private fun EpisodeRowItem(
             )
             .testTag("episode_card_${episode.seasonNumber}_${episode.episodeNumber}")
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(modifier = Modifier.padding(if (isTvDevice) 16.dp else 14.dp)) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                verticalAlignment = if (isTvDevice) Alignment.Top else Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(if (isTvDevice) 20.dp else 14.dp)
             ) {
+                // Miniatura 16:9 ingrandita ad alta leggibilità senza distorsioni
                 Box(
                     modifier = Modifier
-                        .width(132.dp)
-                        .height(76.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .width(thumbWidth)
+                        .height(thumbHeight)
+                        .clip(RoundedCornerShape(if (isTvDevice) 10.dp else 8.dp))
                         .background(NetflixCardSurface)
+                        .testTag("episode_thumbnail_${episode.seasonNumber}_${episode.episodeNumber}")
                 ) {
                     AsyncImage(
                         model = rememberSizedDetailImageRequest(
                             url = episode.stillUrl ?: fallbackBackdropUrl,
-                            widthDp = 132.dp,
-                            heightDp = 76.dp
+                            widthDp = thumbWidth,
+                            heightDp = thumbHeight
                         ),
-                        contentDescription = episode.name,
+                        contentDescription = episode.name ?: "Episodio ${episode.episodeNumber}",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
+
+                    // Badge compatto stagione/episodio in alto a sinistra
+                    Surface(
+                        color = NetflixBlack.copy(alpha = 0.8f),
+                        shape = RoundedCornerShape(bottomEnd = 8.dp),
+                        modifier = Modifier.align(Alignment.TopStart)
+                    ) {
+                        Text(
+                            text = "S${episode.seasonNumber} • E${episode.episodeNumber}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    // Pulsante Play centrale ben visibile
                     Box(
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(playCircleSize)
                             .align(Alignment.Center)
                             .clip(CircleShape)
-                            .background(NetflixBlack.copy(alpha = 0.7f)),
+                            .background(
+                                if (isFocused) NetflixRed.copy(alpha = 0.92f) else NetflixBlack.copy(alpha = 0.72f)
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = "Riproduci episodio",
                             tint = NetflixWhite,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(playIconSize)
                         )
                     }
+
                     if (savedEpProgress != null && savedEpProgress.startSeconds > 0L) {
                         LinearProgressIndicator(
                             progress = { savedEpProgress.progressFraction },
@@ -2027,30 +2220,41 @@ private fun EpisodeRowItem(
                             trackColor = NetflixElevatedSurface,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(4.dp)
+                                .height(if (isTvDevice) 5.dp else 4.dp)
                                 .align(Alignment.BottomCenter)
                         )
                     }
                 }
 
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(if (isTvDevice) 6.dp else 5.dp)
+                ) {
                     Text(
                         text = "${episode.episodeNumber}. ${episode.name ?: "Episodio ${episode.episodeNumber}"}",
-                        style = MaterialTheme.typography.titleSmall,
+                        style = if (isTvDevice) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                         color = NetflixWhite,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        Text(
+                            text = "Stagione ${episode.seasonNumber} • Ep. ${episode.episodeNumber}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NetflixLightGray,
+                            maxLines = 1
+                        )
                         if (episode.runtime != null && episode.runtime > 0) {
                             Text(
-                                text = "${episode.runtime}m",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixLightGray
+                                text = "• ${episode.runtime} min",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = NetflixLightGray,
+                                maxLines = 1
                             )
                         }
                         if (episode.voteAverage != null && episode.voteAverage > 0.0) {
@@ -2059,35 +2263,51 @@ private fun EpisodeRowItem(
                                     imageVector = Icons.Default.Star,
                                     contentDescription = null,
                                     tint = NetflixGold,
-                                    modifier = Modifier.size(12.dp)
+                                    modifier = Modifier.size(14.dp)
                                 )
-                                Spacer(modifier = Modifier.width(2.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
                                 val formattedEpVote = remember(episode.voteAverage) {
                                     String.format(Locale.US, "%.1f", episode.voteAverage)
                                 }
                                 Text(
                                     text = formattedEpVote,
-                                    style = MaterialTheme.typography.labelSmall,
+                                    style = MaterialTheme.typography.labelMedium,
                                     color = NetflixLightGray
                                 )
                             }
                         }
-                        if (savedEpProgress != null && savedEpProgress.startSeconds > 0L) {
-                            Text(
-                                text = "• Da ${formatSecondsToMmSs(savedEpProgress.startSeconds)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NetflixRed
-                            )
-                        }
+                    }
+
+                    if (savedEpProgress != null && savedEpProgress.startSeconds > 0L) {
+                        Text(
+                            text = "Riprendi da ${formatSecondsToMmSs(savedEpProgress.startSeconds)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = NetflixRed,
+                            maxLines = 1
+                        )
+                    }
+
+                    // Su TV / Tablet la trama trova spazio direttamente accanto alla miniatura ingrandita
+                    if (isTvDevice && !episode.overview.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = episode.overview,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = NetflixLightGray,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
 
-            if (!episode.overview.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(8.dp))
+            // Su smartphone la trama appare pulita sotto la riga per zero sovrapposizioni
+            if (!isTvDevice && !episode.overview.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = episode.overview,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = NetflixLightGray,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis

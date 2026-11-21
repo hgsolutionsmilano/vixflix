@@ -127,6 +127,12 @@ interface TmdbApiService {
         @Query("page") page: Int = 1
     ): TmdbPagedResponse<TmdbPersonSearchDto>
 
+    @GET("person/{person_id}")
+    suspend fun getPersonDetails(
+        @Path("person_id") personId: Int,
+        @Query("language") language: String = "it-IT"
+    ): TmdbPersonDetailsDto
+
     @GET("person/{person_id}/combined_credits")
     suspend fun getPersonCombinedCredits(
         @Path("person_id") personId: Int,

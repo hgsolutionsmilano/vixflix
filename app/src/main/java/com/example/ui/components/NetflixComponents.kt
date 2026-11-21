@@ -1259,6 +1259,25 @@ private fun ContinueWatchingCard(
                     )
                 }
 
+                // Percentuale progresso compatta in alto a destra sulla miniatura (mantiene il progresso senza righe sotto il titolo)
+                if (entry.completionPercent > 0) {
+                    Surface(
+                        color = NetflixBlack.copy(alpha = 0.8f),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                    ) {
+                        Text(
+                            text = "${entry.completionPercent}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = NetflixWhite,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
                 // Icona Play centrale con cerchio bianco (evidenziata su focus TV)
                 val playBorderColor = if (isFocused) NetflixRed else NetflixWhite
                 Box(
@@ -1290,35 +1309,25 @@ private fun ContinueWatchingCard(
                 )
             }
 
-            // Barra inferiore con titolo, minuti rimanenti, Info e Rimuovi
+            // Barra inferiore pulita: esclusivamente il titolo (+ azioni rapide touch su mobile), senza righe informative o scritte verdi
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(NetflixDarkSurface)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = entry.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = NetflixWhite,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = when {
-                            isTvLayout && isFocused -> "OK Riprendi (${entry.completionPercent}%) • Tieni premuto Opzioni"
-                            entry.remainingMinutes > 0 -> "${entry.completionPercent}% • -${entry.remainingMinutes} min • dal ${entry.startMinutes}°m"
-                            else -> "${entry.completionPercent}% • Riprendi da ${formatSecondsToMmSs(entry.startSeconds)}"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isTvLayout && isFocused) NetflixMatchGreen else NetflixLightGray,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                Text(
+                    text = entry.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = NetflixWhite,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("continue_watching_title_${entry.id}")
+                )
 
                 if (!isTvLayout) {
                     IconButton(
@@ -1828,9 +1837,9 @@ fun MediaPosterCard(
                 }
             }
 
-            // Overlay titolo + anno immediato quando la locandina è selezionata col telecomando TV
+            // Overlay titolo pulito quando la locandina è selezionata col telecomando TV (nessuna scritta verde sotto)
             if (isFocused) {
-                Column(
+                Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
@@ -1851,16 +1860,6 @@ fun MediaPosterCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (item.releaseYear.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "${item.releaseYear} • OK per aprire",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 9.sp,
-                            color = NetflixMatchGreen,
-                            maxLines = 1
-                        )
-                    }
                 }
             }
         }

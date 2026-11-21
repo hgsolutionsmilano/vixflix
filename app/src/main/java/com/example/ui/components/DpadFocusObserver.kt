@@ -36,6 +36,7 @@ enum class DpadFocusScope {
     MAIN_NAVIGATION,
     MODAL_QUICK_ACTION,
     DETAIL_SHEET,
+    ACTOR_DETAIL,
     MODAL_TRAILER_POPUP,
     VIDEO_PLAYER
 }
