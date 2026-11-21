@@ -70,6 +70,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -141,11 +142,14 @@ internal fun PlayerCleanTimeDisplay(
         style = MaterialTheme.typography.labelLarge.copy(
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 14.sp,
+            fontSize = 15.sp,
             letterSpacing = 0.5.sp
         ),
         color = NetflixWhite.copy(alpha = 0.94f),
+        textAlign = TextAlign.End,
         maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier.testTag("player_time_display")
     )
 }
@@ -313,11 +317,9 @@ internal fun PlayerCircularControlsRow(
 ) {
     Row(
         modifier = modifier
-            .fillMaxWidth()
-            .padding(top = 10.dp)
             .focusGroup()
             .testTag("player_controls_row"),
-        horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.Start),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 1. PLAY / PAUSA

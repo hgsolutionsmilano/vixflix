@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -237,11 +238,34 @@ class AdvancedVideoPlayerTest {
             .assertIsDisplayed()
             .assertTextEquals("00:35:42 / 01:52:18")
 
-        // 4. Esclusivamente i tre pulsanti circolari sotto le informazioni temporali
+        // 4. Esclusivamente i tre pulsanti circolari in basso a sinistra e tempi in basso a destra, senza sovrapposizioni
+        composeRule.onNodeWithTag("player_bottom_bar").assertIsDisplayed()
         composeRule.onNodeWithTag("player_controls_row").assertIsDisplayed()
         composeRule.onNodeWithTag("exo_play_pause_button").assertIsDisplayed()
         composeRule.onNodeWithTag("player_audio_button").assertIsDisplayed()
         composeRule.onNodeWithTag("player_vixsrc_link_button").assertIsDisplayed()
+
+        val bottomBarBounds = composeRule.onNodeWithTag("player_bottom_bar").getUnclippedBoundsInRoot()
+        val controlsBounds = composeRule.onNodeWithTag("player_controls_row").getUnclippedBoundsInRoot()
+        val timeBounds = composeRule.onNodeWithTag("player_time_display").getUnclippedBoundsInRoot()
+        val seekBarBounds = composeRule.onNodeWithTag("player_time_bar").getUnclippedBoundsInRoot()
+
+        // Pulsanti circolari posizionati sotto la barra temporale e ancorati a sinistra
+        assertTrue("Controlli devono stare sotto la barra temporale", controlsBounds.top >= seekBarBounds.bottom)
+        assertTrue(
+            "Controlli devono essere allineati a sinistra della barra inferiore",
+            controlsBounds.left <= bottomBarBounds.left + androidx.compose.ui.unit.Dp(4f)
+        )
+        // Tempo posizionato sotto la barra temporale, ancorato a destra e separato dai pulsanti
+        assertTrue("Tempi devono stare sotto la barra temporale", timeBounds.top >= seekBarBounds.bottom)
+        assertTrue(
+            "Tempi devono essere allineati a destra della barra inferiore",
+            timeBounds.right >= bottomBarBounds.right - androidx.compose.ui.unit.Dp(4f)
+        )
+        assertTrue(
+            "Pulsanti a sinistra e tempi a destra non devono sovrapporsi",
+            controlsBounds.right < timeBounds.left
+        )
 
         // 5. Vecchi pulsanti eliminati definitivamente
         composeRule.onNodeWithTag("player_replay_10_button").assertDoesNotExist()
@@ -250,6 +274,100 @@ class AdvancedVideoPlayerTest {
         composeRule.onNodeWithTag("player_manual_complete_button").assertDoesNotExist()
         composeRule.onNodeWithTag("next_episode_button").assertDoesNotExist()
         composeRule.onNodeWithTag("player_skip_intro_button").assertDoesNotExist()
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun playerManualSeek_neverShowsLoadingPopupDuringScrubbingOrAfterConfirmEvenWhenBuffering() {
+        val movieSession = PlaybackSession(
+            mediaItem = sampleMovie,
+            startPositionMs = 120_000L, // 00:02:00
+            isResolvingStream = false,
+            resolvedStream = ResolvedStream(
+                streamUrl = "https://example.com/movie.m3u8",
+                embedUrl = "https://vixsrc.to/movie/7001",
+                isDirectHls = true
+            )
+        )
+        var committedPositionMs = -1L
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = movieSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { pos, _ -> committedPositionMs = pos },
+                    onNextEpisode = {},
+                    onClose = {},
+                    initialDurationMsOverride = 6_000_000L, // 01:40:00
+                    initialReadyForTest = true,
+                    simulateBufferingOnSeekForTest = true
+                )
+            }
+        }
+
+        // Focalizza la barra temporale e sposta ripetutamente avanti/indietro
+        composeRule.onNodeWithTag("player_time_bar").requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_time_bar").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_time_bar").performKeyInput {
+            pressKey(Key.DirectionRight)
+            pressKey(Key.DirectionRight)
+            pressKey(Key.DirectionLeft)
+        }
+        composeRule.waitForIdle()
+
+        // Nessun popup di loading, nessuno spinner, navigazione sulla barra temporale mai interrotta
+        composeRule.onNodeWithTag("video_loading_popup").assertDoesNotExist()
+        composeRule.onNodeWithTag("loading_cancel_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_time_bar").assertIsDisplayed().assertIsFocused()
+        composeRule.onNodeWithTag("player_time_display").assertTextEquals("00:02:20 / 01:40:00")
+
+        // Conferma la posizione con OK: esegue il seek reale ma NON mostra alcun popup di loading
+        composeRule.onNodeWithTag("player_time_bar").performKeyInput {
+            pressKey(Key.DirectionCenter)
+        }
+        composeRule.waitForIdle()
+
+        assertEquals(140_000L, committedPositionMs)
+        composeRule.onNodeWithTag("video_loading_popup").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_time_bar").assertIsDisplayed().assertIsFocused()
+        composeRule.onNodeWithTag("player_controls_row").assertIsDisplayed()
+    }
+
+    @Test
+    fun playerInitialStreamResolution_stillShowsTechnicalLoadingPopupNormally() {
+        val resolvingSession = PlaybackSession(
+            mediaItem = sampleMovie,
+            startPositionMs = 0L,
+            isResolvingStream = true,
+            resolvedStream = null
+        )
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = resolvingSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onNextEpisode = {},
+                    onClose = {},
+                    initialReadyForTest = false
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
+        composeRule.onNodeWithTag("loading_cancel_button").assertIsDisplayed()
     }
 
     @OptIn(ExperimentalTestApi::class)

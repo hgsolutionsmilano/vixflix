@@ -18,8 +18,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -171,7 +173,8 @@ fun VixPlayerScreen(
     previewBitmapProvider: ((Long) -> Bitmap?)? = null,
     audioTracksOverrideForTest: List<PlayerAudioTrackOption>? = null,
     onAudioTrackSelectedForTest: ((PlayerAudioTrackOption) -> Unit)? = null,
-    onOpenVixSrcLinkOverrideForTest: ((String) -> Unit)? = null
+    onOpenVixSrcLinkOverrideForTest: ((String) -> Unit)? = null,
+    simulateBufferingOnSeekForTest: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -208,6 +211,9 @@ fun VixPlayerScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var interactionTick by remember { mutableLongStateOf(0L) }
     var isRemoteScrubbing by remember { mutableStateOf(false) }
+    var isManualSeekInProgress by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
     var isTimeBarFocused by remember { mutableStateOf(false) }
     var focusTimeBarOnReveal by remember { mutableStateOf(false) }
     var wasControlsVisible by remember { mutableStateOf(false) }
@@ -266,6 +272,11 @@ fun VixPlayerScreen(
     val hasVerifiedNextEpisode = session.mediaItem.isSeries && verifiedNextEpisode != null
     val currentError = playerErrorMessage ?: session.errorMessage
 
+    // Sopprime gli indicatori grafici di loading durante la ricerca manuale sulla barra temporale
+    // senza alterare la gestione tecnica di isBuffering, sync o errori reali del player.
+    val suppressSeekLoadingUi = isRemoteScrubbing || isManualSeekInProgress
+    val showLoadingOverlay = currentError == null && (isBuffering || session.isResolvingStream) && !suppressSeekLoadingUi
+
     val showSkipIntro by remember(
         session.mediaItem.isSeries,
         session.introSegment,
@@ -273,6 +284,8 @@ fun VixPlayerScreen(
         currentError,
         isBuffering,
         session.isResolvingStream,
+        isRemoteScrubbing,
+        isManualSeekInProgress,
         introSkipped,
         introDismissed
     ) {
@@ -282,6 +295,8 @@ fun VixPlayerScreen(
                 currentError == null &&
                 !isBuffering &&
                 !session.isResolvingStream &&
+                !isRemoteScrubbing &&
+                !isManualSeekInProgress &&
                 !introSkipped &&
                 !introDismissed &&
                 isIntroActiveAtPosition(
@@ -321,6 +336,7 @@ fun VixPlayerScreen(
         !session.isResolvingStream &&
         !autoNextDismissed &&
         !isRemoteScrubbing &&
+        !isManualSeekInProgress &&
         !showAudioSelector &&
         !showVixLinkPanel &&
         (playbackEnded || inCreditsWindow)
@@ -331,6 +347,7 @@ fun VixPlayerScreen(
         !session.isResolvingStream &&
         !movieEndedDismissed &&
         !isRemoteScrubbing &&
+        !isManualSeekInProgress &&
         !showAudioSelector &&
         !showVixLinkPanel &&
         (playbackEnded || inCreditsWindow)
@@ -462,7 +479,7 @@ fun VixPlayerScreen(
                 autoNextDismissed = true
                 rootFocusRequester.safeRequestFocus()
             }
-            controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
+            controlsVisible && currentError == null && !showLoadingOverlay -> {
                 controlsVisible = false
                 rootFocusRequester.safeRequestFocus()
             }
@@ -533,6 +550,9 @@ fun VixPlayerScreen(
                 if (playbackState == Player.STATE_READY) {
                     playerErrorMessage = null
                     playbackEnded = false
+                    if (!isRemoteScrubbing) {
+                        isManualSeekInProgress = false
+                    }
                     val d = exoPlayer.duration
                     if (d != C.TIME_UNSET && d > 0L) {
                         durationMsState.longValue = d
@@ -552,6 +572,7 @@ fun VixPlayerScreen(
                 } else if (playbackState == Player.STATE_ENDED) {
                     isBuffering = false
                     isPlaying = false
+                    isManualSeekInProgress = false
                     playbackEnded = true
                 }
             }
@@ -568,6 +589,7 @@ fun VixPlayerScreen(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                isManualSeekInProgress = false
                 if (resolvedStream?.fromCache == true && !hasAutoRetriedCachedStream && onInvalidateAndRetryStream != null) {
                     hasAutoRetriedCachedStream = true
                     isBuffering = true
@@ -671,7 +693,17 @@ fun VixPlayerScreen(
         }
     }
 
-    // Auto-hide dei controlli dopo 4.5 secondi (sospeso durante lo scrubbing o con pannelli Audio / Link aperti)
+    // Ripristina automaticamente il flag di seek manuale se lo spostamento è avvenuto dentro il buffer già pronto
+    LaunchedEffect(isManualSeekInProgress, isRemoteScrubbing, isBuffering) {
+        if (isManualSeekInProgress && !isRemoteScrubbing && !isBuffering) {
+            delay(800L)
+            if (!isRemoteScrubbing && !isBuffering) {
+                isManualSeekInProgress = false
+            }
+        }
+    }
+
+    // Auto-hide dei controlli dopo 4.5 secondi (sospeso durante lo scrubbing/seek manuale o con pannelli Audio / Link aperti)
     LaunchedEffect(
         controlsVisible,
         isPlaying,
@@ -679,6 +711,7 @@ fun VixPlayerScreen(
         isBuffering,
         session.isResolvingStream,
         isRemoteScrubbing,
+        isManualSeekInProgress,
         anyBlockingPopupVisible,
         anySubPanelVisible,
         interactionTick
@@ -689,6 +722,7 @@ fun VixPlayerScreen(
             !isBuffering &&
             !session.isResolvingStream &&
             !isRemoteScrubbing &&
+            !isManualSeekInProgress &&
             playerErrorMessage == null &&
             !anyBlockingPopupVisible &&
             !anySubPanelVisible
@@ -703,13 +737,12 @@ fun VixPlayerScreen(
         }
     }
 
-    // Gestione pulita del focus TV quando i controlli compaiono/scompaiono
+    // Gestione pulita del focus TV quando i controlli compaiono/scompaiono (mai rubato durante un seek manuale)
     LaunchedEffect(
         controlsVisible,
         playerErrorMessage,
         session.errorMessage,
-        isBuffering,
-        session.isResolvingStream,
+        showLoadingOverlay,
         anyBlockingPopupVisible,
         anySubPanelVisible
     ) {
@@ -723,7 +756,7 @@ fun VixPlayerScreen(
             return@LaunchedEffect
         }
 
-        if (isBuffering || session.isResolvingStream) {
+        if (showLoadingOverlay) {
             wasControlsVisible = false
             if (isTvDevice) {
                 delay(60L)
@@ -794,7 +827,7 @@ fun VixPlayerScreen(
                 showMovieEndedPopup && movieEndedFinishFocusRequester.safeRequestFocus() -> "movie_ended_finish_button"
                 showAutoNext && autoNextPlayFocusRequester.safeRequestFocus() -> "auto_next_play_now_button"
                 currentError != null && !session.isResolvingStream && retryFocusRequester.safeRequestFocus() -> "player_retry_stream_button"
-                (isBuffering || session.isResolvingStream) && cancelLoadingFocusRequester.safeRequestFocus() -> "loading_cancel_button"
+                showLoadingOverlay && cancelLoadingFocusRequester.safeRequestFocus() -> "loading_cancel_button"
                 showSkipIntro && !controlsVisible && !isRemoteScrubbing && !anySubPanelVisible && skipIntroFocusRequester.safeRequestFocus() -> "player_skip_intro_button"
                 controlsVisible && !anySubPanelVisible && playPauseFocusRequester.safeRequestFocus() -> "exo_play_pause_button"
                 controlsVisible && !anySubPanelVisible && timeBarFocusRequester.safeRequestFocus() -> "player_time_bar"
@@ -822,7 +855,7 @@ fun VixPlayerScreen(
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
                             Key.Menu -> {
-                                if (!anyBlockingPopupVisible && !anySubPanelVisible && currentError == null && !isBuffering && !session.isResolvingStream) {
+                                if (!anyBlockingPopupVisible && !anySubPanelVisible && currentError == null && !showLoadingOverlay) {
                                     controlsVisible = !controlsVisible
                                     if (!controlsVisible && isTvDevice) {
                                         rootFocusRequester.safeRequestFocus()
@@ -843,7 +876,7 @@ fun VixPlayerScreen(
                                         autoNextDismissed = true
                                         rootFocusRequester.safeRequestFocus()
                                     }
-                                    controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
+                                    controlsVisible && currentError == null && !showLoadingOverlay -> {
                                         controlsVisible = false
                                         rootFocusRequester.safeRequestFocus()
                                     }
@@ -880,6 +913,8 @@ fun VixPlayerScreen(
                             Key.MediaFastForward -> {
                                 val maxDur = durationMsState.longValue.takeIf { it > 0L } ?: Long.MAX_VALUE
                                 val target = (currentPositionMsState.longValue + 10_000L).coerceAtMost(maxDur)
+                                isManualSeekInProgress = true
+                                if (simulateBufferingOnSeekForTest) isBuffering = true
                                 exoPlayer.seekTo(target)
                                 currentPositionMsState.longValue = target
                                 controlsVisible = true
@@ -887,6 +922,8 @@ fun VixPlayerScreen(
                             }
                             Key.MediaRewind -> {
                                 val target = (currentPositionMsState.longValue - 10_000L).coerceAtLeast(0L)
+                                isManualSeekInProgress = true
+                                if (simulateBufferingOnSeekForTest) isBuffering = true
                                 exoPlayer.seekTo(target)
                                 currentPositionMsState.longValue = target
                                 playbackEnded = false
@@ -907,8 +944,7 @@ fun VixPlayerScreen(
                             !anySubPanelVisible &&
                             playerErrorMessage == null &&
                             session.errorMessage == null &&
-                            !isBuffering &&
-                            !session.isResolvingStream
+                            !showLoadingOverlay
                         if (canRevealOrSeek) {
                             when (keyEvent.key) {
                                 Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
@@ -923,6 +959,8 @@ fun VixPlayerScreen(
                                 }
                                 Key.DirectionLeft -> {
                                     val target = (currentPositionMsState.longValue - 10_000L).coerceAtLeast(0L)
+                                    isManualSeekInProgress = true
+                                    if (simulateBufferingOnSeekForTest) isBuffering = true
                                     exoPlayer.seekTo(target)
                                     currentPositionMsState.longValue = target
                                     playbackEnded = false
@@ -934,6 +972,8 @@ fun VixPlayerScreen(
                                 Key.DirectionRight -> {
                                     val maxDur = durationMsState.longValue.takeIf { it > 0L } ?: Long.MAX_VALUE
                                     val target = (currentPositionMsState.longValue + 10_000L).coerceAtMost(maxDur)
+                                    isManualSeekInProgress = true
+                                    if (simulateBufferingOnSeekForTest) isBuffering = true
                                     exoPlayer.seekTo(target)
                                     currentPositionMsState.longValue = target
                                     onProgressUpdate(target, durationMsState.longValue)
@@ -1056,7 +1096,7 @@ fun VixPlayerScreen(
                         Text("Riprova Connessione VixSrc")
                     }
                 }
-            } else if (isBuffering || session.isResolvingStream) {
+            } else if (showLoadingOverlay) {
                 VixStreamLoadingPopup(
                     session = session,
                     streamLang = streamLang,
@@ -1077,17 +1117,14 @@ fun VixPlayerScreen(
             }
 
             // Controlli inferiori puliti e riorganizzati:
-            // Nessun elemento superiore!
-            // Ordine esatto:
-            // 1) Video (sfondo)
-            // 2) Barra di avanzamento temporale (con solo miniatura durante scrubbing, oppure titolo sopra quando non in scrubbing)
-            // 3) Durata totale e tempo di riproduzione attuale ("00:35:42 / 01:52:18")
-            // 4) Esclusivamente tre pulsanti circolari: PLAY/PAUSA, AUDIO, LINK VIXSRC
+            // - Nessun controllo nella parte superiore
+            // - Barra di avanzamento temporale a tutta larghezza
+            // - In basso a sinistra: esclusivamente i 3 pulsanti circolari (Play/Pausa, Audio, Link VixSrc)
+            // - In basso a destra: tempo di riproduzione attuale / durata totale ("00:35:42 / 01:52:18")
             AnimatedVisibility(
                 visible = controlsVisible &&
                     currentError == null &&
-                    !isBuffering &&
-                    !session.isResolvingStream &&
+                    !showLoadingOverlay &&
                     !anyBlockingPopupVisible &&
                     !anySubPanelVisible,
                 enter = fadeIn(),
@@ -1097,7 +1134,6 @@ fun VixPlayerScreen(
                     .fillMaxWidth()
             ) {
                 Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
@@ -1131,17 +1167,21 @@ fun VixPlayerScreen(
                         )
                     }
 
-                    // 2. BARRA DI AVANZAMENTO TEMPORALE
+                    // BARRA DI AVANZAMENTO TEMPORALE
                     VixPlayerSeekBarIsolated(
                         positionMsProvider = { currentPositionMsState.longValue },
                         durationMsProvider = { durationMsState.longValue },
                         onSeekPreview = { previewMs ->
                             currentPositionMsState.longValue = previewMs
+                            isManualSeekInProgress = true
+                            if (simulateBufferingOnSeekForTest) isBuffering = true
                             interactionTick++
                         },
                         onSeekCommit = { targetMs ->
                             currentPositionMsState.longValue = targetMs
                             playbackEnded = false
+                            isManualSeekInProgress = true
+                            if (simulateBufferingOnSeekForTest) isBuffering = true
                             exoPlayer.seekTo(targetMs)
                             onProgressUpdate(targetMs, durationMsState.longValue)
                             interactionTick++
@@ -1151,6 +1191,9 @@ fun VixPlayerScreen(
                         onFocusChanged = { isTimeBarFocused = it },
                         onScrubbingChanged = { scrubbing ->
                             isRemoteScrubbing = scrubbing
+                            if (scrubbing) {
+                                isManualSeekInProgress = true
+                            }
                             interactionTick++
                         },
                         focusRequester = timeBarFocusRequester,
@@ -1162,42 +1205,52 @@ fun VixPlayerScreen(
                             .testTag("player_time_bar")
                     )
 
-                    // 3. DURATA TOTALE E TEMPO DI RIPRODUZIONE ATTUALE ("00:35:42 / 01:52:18")
-                    PlayerCleanTimeDisplay(
-                        positionMsProvider = { currentPositionMsState.longValue },
-                        durationMsProvider = { durationMsState.longValue },
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                    // ZONA INFERIORE: Pulsanti circolari a SINISTRA, Informazioni temporali a DESTRA
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp)
+                            .testTag("player_bottom_bar"),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        PlayerCircularControlsRow(
+                            isPlaying = isPlaying,
+                            playPauseFocusRequester = playPauseFocusRequester,
+                            audioFocusRequester = audioButtonFocusRequester,
+                            vixLinkFocusRequester = vixLinkButtonFocusRequester,
+                            upToTimeBarFocusRequester = timeBarFocusRequester,
+                            onTogglePlayPause = togglePlayPause,
+                            onOpenAudioSelector = {
+                                showVixLinkPanel = false
+                                showAudioSelector = true
+                                interactionTick++
+                            },
+                            onOpenVixLinkPanel = {
+                                showAudioSelector = false
+                                showVixLinkPanel = true
+                                interactionTick++
+                            }
+                        )
 
-                    // 4. FILA DI ESCLUSIVAMENTE TRE PULSANTI CIRCOLARI: PLAY/PAUSA, AUDIO, LINK VIXSRC
-                    PlayerCircularControlsRow(
-                        isPlaying = isPlaying,
-                        playPauseFocusRequester = playPauseFocusRequester,
-                        audioFocusRequester = audioButtonFocusRequester,
-                        vixLinkFocusRequester = vixLinkButtonFocusRequester,
-                        upToTimeBarFocusRequester = timeBarFocusRequester,
-                        onTogglePlayPause = togglePlayPause,
-                        onOpenAudioSelector = {
-                            showVixLinkPanel = false
-                            showAudioSelector = true
-                            interactionTick++
-                        },
-                        onOpenVixLinkPanel = {
-                            showAudioSelector = false
-                            showVixLinkPanel = true
-                            interactionTick++
-                        }
-                    )
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        PlayerCleanTimeDisplay(
+                            positionMsProvider = { currentPositionMsState.longValue },
+                            durationMsProvider = { durationMsState.longValue },
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
                 }
             }
 
-            // Selettore Tracce Audio (aperto dal pulsante circolare AUDIO)
+            // Selettore Tracce Audio (aperto dal pulsante circolare AUDIO in basso a sinistra)
             AnimatedVisibility(
-                visible = showAudioSelector && currentError == null && !isBuffering && !session.isResolvingStream,
+                visible = showAudioSelector && currentError == null && !showLoadingOverlay,
                 enter = fadeIn() + slideInVertically { it / 3 },
                 exit = fadeOut() + slideOutVertically { it / 3 },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.BottomStart)
                     .navigationBarsPadding()
                     .padding(horizontal = 24.dp, vertical = 28.dp)
             ) {
@@ -1220,13 +1273,13 @@ fun VixPlayerScreen(
                 )
             }
 
-            // Pannello Link VixSrc (aperto dal pulsante circolare LINK VIXSRC)
+            // Pannello Link VixSrc (aperto dal pulsante circolare LINK VIXSRC in basso a sinistra)
             AnimatedVisibility(
-                visible = showVixLinkPanel && currentError == null && !isBuffering && !session.isResolvingStream,
+                visible = showVixLinkPanel && currentError == null && !showLoadingOverlay,
                 enter = fadeIn() + slideInVertically { it / 3 },
                 exit = fadeOut() + slideOutVertically { it / 3 },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.BottomStart)
                     .navigationBarsPadding()
                     .padding(horizontal = 24.dp, vertical = 28.dp)
             ) {
