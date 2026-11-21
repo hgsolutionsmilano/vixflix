@@ -199,3 +199,70 @@ data class CacheStatsSummary(
     val imageCacheSizeBytes: Long = 0L
 )
 
+/**
+ * Intervallo intro affidabile per uno specifico episodio di serie TV.
+ * Ogni episodio conserva il proprio intervallo reale (mai stimato o uguale per tutti).
+ */
+@Immutable
+@Entity(
+    tableName = "intro_segments",
+    indices = [
+        Index(value = ["seriesTmdbId", "seasonNumber", "episodeNumber"])
+    ]
+)
+data class IntroSegmentEntity(
+    @PrimaryKey val episodeKey: String, // "tv_{seriesTmdbId}_s{seasonNumber}_e{episodeNumber}"
+    val seriesTmdbId: Int,
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val introStartMs: Long,
+    val introEndMs: Long,
+    val source: String = IntroSegmentSource.LOCAL_DB.storageKey,
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+/**
+ * Dati sui titoli di coda per film o episodi di serie TV, con stato esplicito dell'affidabilità.
+ */
+@Immutable
+@Entity(
+    tableName = "credits_segments",
+    indices = [
+        Index(value = ["tmdbId", "mediaType"])
+    ]
+)
+data class CreditsSegmentEntity(
+    @PrimaryKey val contentKey: String, // "movie_{tmdbId}" oppure "tv_{tmdbId}_s{season}_e{episode}"
+    val tmdbId: Int,
+    val mediaType: String, // "movie" | "tv"
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val creditsStartMs: Long,
+    val durationMs: Long = 0L,
+    val detectionState: String = CreditsDetectionState.LOCAL_DB.storageKey,
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+/**
+ * Stato di completamento persistente per singolo profilo utente (film o episodio completato).
+ * Utilizzato esclusivamente per stato completamento e gestione Continua a guardare (nessuna cronologia).
+ */
+@Immutable
+@Entity(
+    tableName = "completed_media",
+    primaryKeys = ["profileId", "contentKey"],
+    indices = [
+        Index(value = ["profileId", "tmdbId", "mediaType"])
+    ]
+)
+data class CompletedMediaEntity(
+    val profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
+    val contentKey: String, // "movie_{tmdbId}" oppure "tv_{tmdbId}_s{season}_e{episode}"
+    val tmdbId: Int,
+    val mediaType: String, // "movie" | "tv"
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val completedAtMs: Long = System.currentTimeMillis()
+)
+
+

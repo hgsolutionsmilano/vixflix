@@ -37,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Language
@@ -110,7 +111,10 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.VixFlixApplication
+import com.example.data.local.PlayerAdvancedSettings
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.local.isIntroActiveAtPosition
+import com.example.data.local.resolveCreditsTrigger
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.ui.PlaybackSession
@@ -175,7 +179,12 @@ fun VixPlayerScreen(
     onNextEpisode: () -> Unit,
     onClose: () -> Unit,
     onInvalidateAndRetryStream: (() -> Unit)? = null,
-    onPreResolveNextEpisode: () -> Unit = {}
+    onPreResolveNextEpisode: () -> Unit = {},
+    advancedSettings: PlayerAdvancedSettings = PlayerAdvancedSettings(),
+    onCompleteMovieAndClose: () -> Unit = onClose,
+    initialDurationMsOverride: Long = 0L,
+    initialReadyForTest: Boolean = false,
+    onSkipIntroTriggered: ((Long) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -183,7 +192,7 @@ fun VixPlayerScreen(
     val resolvedStream = session.resolvedStream
 
     var isPlaying by remember { mutableStateOf(true) }
-    var isBuffering by remember { mutableStateOf(true) }
+    var isBuffering by remember(initialReadyForTest) { mutableStateOf(!initialReadyForTest) }
     var playerErrorMessage by remember(session.errorMessage) { mutableStateOf(session.errorMessage) }
     // Stato posizione/durata mantenuto come State holder per evitare ricomposizioni ogni 1s del root
     val currentPositionMsState = remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
@@ -194,7 +203,14 @@ fun VixPlayerScreen(
             currentPositionMsState.longValue = session.startPositionMs
         }
     }
-    val durationMsState = remember { mutableLongStateOf(0L) }
+    val durationMsState = remember(
+        session.mediaItem.id,
+        session.seasonNumber,
+        session.episodeNumber,
+        initialDurationMsOverride
+    ) {
+        mutableLongStateOf(initialDurationMsOverride)
+    }
     var hasSeekedInitial by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
@@ -211,11 +227,28 @@ fun VixPlayerScreen(
     var playbackEnded by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
+    var introSkipped by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
+    var introDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
     var autoNextDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
         mutableStateOf(false)
     }
-    val autoNextRemainingSecState = remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableIntStateOf(10)
+    var movieEndedDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
+    var manualMovieEndedRequested by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
+        mutableStateOf(false)
+    }
+    val autoNextRemainingSecState = remember(
+        session.mediaItem.id,
+        session.seasonNumber,
+        session.episodeNumber,
+        advancedSettings.sanitizedCountdownSec
+    ) {
+        mutableIntStateOf(advancedSettings.sanitizedCountdownSec)
     }
     var mediaActionBadge by remember { mutableStateOf<String?>(null) }
     var retryNonce by remember { mutableIntStateOf(0) }
@@ -233,33 +266,85 @@ fun VixPlayerScreen(
     val timeBarFocusRequester = remember { FocusRequester() }
     val resizeFocusRequester = remember { FocusRequester() }
     val nextEpisodeFocusRequester = remember { FocusRequester() }
+    val manualMovieCompleteFocusRequester = remember { FocusRequester() }
+    val skipIntroFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
     val cancelLoadingFocusRequester = remember { FocusRequester() }
     val autoNextPlayFocusRequester = remember { FocusRequester() }
     val autoNextCancelFocusRequester = remember { FocusRequester() }
+    val movieEndedFinishFocusRequester = remember { FocusRequester() }
+    val movieEndedContinueFocusRequester = remember { FocusRequester() }
     val rootFocusRequester = remember { FocusRequester() }
 
     val currentSeason = session.seasonNumber ?: 1
     val currentEpisode = session.episodeNumber ?: 1
-    val nextEpisodeDto = remember(session.seasonEpisodes, currentEpisode) {
-        session.seasonEpisodes.firstOrNull { it.episodeNumber == currentEpisode + 1 }
-    }
-    val hasNextEpisodeCandidate = session.mediaItem.isSeries && (
-        nextEpisodeDto != null || session.seasonEpisodes.isEmpty()
-    )
+    val verifiedNextEpisode = session.verifiedNextEpisode
+    val hasVerifiedNextEpisode = session.mediaItem.isSeries && verifiedNextEpisode != null
     val currentError = playerErrorMessage ?: session.errorMessage
-    val nearEpisodeEnd by remember {
+
+    val showSkipIntro by remember(
+        session.mediaItem.isSeries,
+        session.introSegment,
+        advancedSettings.skipIntroEnabled,
+        currentError,
+        isBuffering,
+        session.isResolvingStream,
+        introSkipped,
+        introDismissed
+    ) {
         derivedStateOf {
-            val dur = durationMsState.longValue
-            dur > 60_000L && currentPositionMsState.longValue >= (dur - 12_000L)
+            session.mediaItem.isSeries &&
+                advancedSettings.skipIntroEnabled &&
+                currentError == null &&
+                !isBuffering &&
+                !session.isResolvingStream &&
+                !introSkipped &&
+                !introDismissed &&
+                isIntroActiveAtPosition(
+                    segment = session.introSegment,
+                    positionMs = currentPositionMsState.longValue,
+                    durationMs = durationMsState.longValue
+                )
         }
     }
-    val showAutoNext = hasNextEpisodeCandidate &&
+
+    val creditsTrigger by remember(
+        session.creditsSegment,
+        session.mediaItem.isSeries,
+        advancedSettings.creditsDetectionEnabled
+    ) {
+        derivedStateOf {
+            resolveCreditsTrigger(
+                segment = session.creditsSegment,
+                durationMs = durationMsState.longValue,
+                isSeries = session.mediaItem.isSeries,
+                creditsDetectionEnabled = advancedSettings.creditsDetectionEnabled
+            )
+        }
+    }
+
+    val inCreditsWindow by remember(creditsTrigger) {
+        derivedStateOf {
+            val trigger = creditsTrigger
+            trigger != null && currentPositionMsState.longValue >= trigger.creditsStartMs
+        }
+    }
+
+    val showAutoNext = hasVerifiedNextEpisode &&
+        advancedSettings.nextEpisodePromptEnabled &&
         currentError == null &&
         !isBuffering &&
         !session.isResolvingStream &&
         !autoNextDismissed &&
-        (playbackEnded || nearEpisodeEnd)
+        (playbackEnded || inCreditsWindow)
+
+    val showMovieEndedPopup = !session.mediaItem.isSeries &&
+        currentError == null &&
+        !isBuffering &&
+        !session.isResolvingStream &&
+        (manualMovieEndedRequested || (!movieEndedDismissed && (playbackEnded || inCreditsWindow)))
+
+    val anyBlockingPopupVisible = showAutoNext || showMovieEndedPopup
 
     // Usa OkHttpDataSource.Factory con l'interceptor VixSrc per gestire playlist HLS,
     // chiave AES-128 (/storage/enc.key) e segmenti MPEG-TS direttamente da vixsrc.to
@@ -325,19 +410,41 @@ fun VixPlayerScreen(
             .build()
     }
 
+    val performSkipIntro: () -> Unit = {
+        val targetMs = session.introSegment?.introEndMs
+        if (targetMs != null && targetMs > 0L) {
+            introSkipped = true
+            exoPlayer.seekTo(targetMs)
+            currentPositionMsState.longValue = targetMs
+            mediaActionBadge = "Intro saltata"
+            onSkipIntroTriggered?.invoke(targetMs)
+            onProgressUpdate(targetMs, durationMsState.longValue)
+            if (!controlsVisible) {
+                rootFocusRequester.safeRequestFocus()
+            }
+        }
+    }
+
+    val dismissMovieEndedPopup: () -> Unit = {
+        movieEndedDismissed = true
+        manualMovieEndedRequested = false
+        rootFocusRequester.safeRequestFocus()
+    }
+
     BackHandler {
         when {
+            showMovieEndedPopup -> dismissMovieEndedPopup()
             showAutoNext -> {
                 autoNextDismissed = true
-                if (isTvDevice) {
-                    rootFocusRequester.safeRequestFocus()
-                }
+                rootFocusRequester.safeRequestFocus()
             }
             controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
                 controlsVisible = false
-                if (isTvDevice) {
-                    rootFocusRequester.safeRequestFocus()
-                }
+                rootFocusRequester.safeRequestFocus()
+            }
+            showSkipIntro -> {
+                introDismissed = true
+                rootFocusRequester.safeRequestFocus()
             }
             else -> {
                 val pos = currentPositionMsState.longValue
@@ -360,6 +467,10 @@ fun VixPlayerScreen(
         retryNonce
     ) {
         if (session.isResolvingStream) return@LaunchedEffect
+        if (initialReadyForTest) {
+            isBuffering = false
+            return@LaunchedEffect
+        }
         val stream = resolvedStream
         if (stream == null || !stream.isDirectHls) {
             isBuffering = false
@@ -465,7 +576,7 @@ fun VixPlayerScreen(
                     if (tick % 10 == 0) {
                         onProgressUpdate(pos, dur)
                     }
-                    if (!hasPreResolvedNext && hasNextEpisodeCandidate && dur > 120_000L && pos >= (dur - 90_000L)) {
+                    if (!hasPreResolvedNext && hasVerifiedNextEpisode && dur > 120_000L && pos >= (dur - 90_000L)) {
                         hasPreResolvedNext = true
                         onPreResolveNextEpisode()
                     }
@@ -476,21 +587,46 @@ fun VixPlayerScreen(
         }
     }
 
-    // Timer conto alla rovescia automatico Prossimo Episodio
-    LaunchedEffect(showAutoNext, currentSeason, currentEpisode) {
+    // Timer conto alla rovescia configurabile Prossimo Episodio (auto-play solo se attivo nelle impostazioni)
+    LaunchedEffect(
+        showAutoNext,
+        currentSeason,
+        currentEpisode,
+        advancedSettings.autoPlayNextEpisodeEnabled,
+        advancedSettings.sanitizedCountdownSec
+    ) {
         if (!showAutoNext) return@LaunchedEffect
-        autoNextRemainingSecState.intValue = 10
+        autoNextRemainingSecState.intValue = advancedSettings.sanitizedCountdownSec
         controlsVisible = false
-        if (isTvDevice) {
-            delay(60L)
-            autoNextPlayFocusRequester.safeRequestFocus()
+        delay(60L)
+        autoNextPlayFocusRequester.safeRequestFocus()
+
+        if (!advancedSettings.autoPlayNextEpisodeEnabled) {
+            return@LaunchedEffect
         }
+
         while (autoNextRemainingSecState.intValue > 0) {
             delay(1_000L)
             autoNextRemainingSecState.intValue--
         }
-        if (showAutoNext && !autoNextDismissed) {
+        if (showAutoNext && !autoNextDismissed && advancedSettings.autoPlayNextEpisodeEnabled) {
             onNextEpisode()
+        }
+    }
+
+    // Auto-focus sul pulsante primario del popup "IL FILM È TERMINATO"
+    LaunchedEffect(showMovieEndedPopup) {
+        if (!showMovieEndedPopup) return@LaunchedEffect
+        controlsVisible = false
+        delay(60L)
+        movieEndedFinishFocusRequester.safeRequestFocus()
+    }
+
+    // Auto-focus sul pulsante "SALTA INTRO" quando i controlli sono nascosti per conferma immediata con tasto OK
+    LaunchedEffect(showSkipIntro, controlsVisible, anyBlockingPopupVisible) {
+        if (showSkipIntro && !controlsVisible && !anyBlockingPopupVisible) {
+            delay(60L)
+            skipIntroFocusRequester.safeRequestFocus()
         }
     }
 
@@ -509,21 +645,30 @@ fun VixPlayerScreen(
         isBuffering,
         session.isResolvingStream,
         isRemoteScrubbing,
-        showAutoNext,
+        anyBlockingPopupVisible,
         interactionTick
     ) {
-        if (controlsVisible && isPlaying && !isBuffering && !session.isResolvingStream && !isRemoteScrubbing && playerErrorMessage == null && !showAutoNext) {
+        if (controlsVisible && isPlaying && !isBuffering && !session.isResolvingStream && !isRemoteScrubbing && playerErrorMessage == null && !anyBlockingPopupVisible) {
             delay(4_500L)
             controlsVisible = false
-            if (isTvDevice) {
+            if (showSkipIntro) {
+                skipIntroFocusRequester.safeRequestFocus()
+            } else if (isTvDevice) {
                 rootFocusRequester.safeRequestFocus()
             }
         }
     }
 
     // Sposta automaticamente il focus sui controlli TV solo quando compaiono (senza rubare focus alla barra del tempo durante i seek)
-    LaunchedEffect(controlsVisible, playerErrorMessage, session.errorMessage, isBuffering, session.isResolvingStream, showAutoNext) {
-        if (showAutoNext) {
+    LaunchedEffect(
+        controlsVisible,
+        playerErrorMessage,
+        session.errorMessage,
+        isBuffering,
+        session.isResolvingStream,
+        anyBlockingPopupVisible
+    ) {
+        if (anyBlockingPopupVisible) {
             wasControlsVisible = false
             return@LaunchedEffect
         }
@@ -557,7 +702,9 @@ fun VixPlayerScreen(
         } else {
             wasControlsVisible = false
             focusTimeBarOnReveal = false
-            if (isTvDevice) {
+            if (showSkipIntro) {
+                skipIntroFocusRequester.safeRequestFocus()
+            } else if (isTvDevice) {
                 rootFocusRequester.safeRequestFocus()
             }
         }
@@ -567,11 +714,13 @@ fun VixPlayerScreen(
         scope = DpadFocusScope.VIDEO_PLAYER,
         onRecoverFocus = {
             when {
+                showMovieEndedPopup && movieEndedFinishFocusRequester.safeRequestFocus() -> "movie_ended_finish_button"
                 showAutoNext && autoNextPlayFocusRequester.safeRequestFocus() -> "auto_next_play_now_button"
                 currentError != null && !session.isResolvingStream && retryFocusRequester.safeRequestFocus() -> "player_retry_stream_button"
                 currentError != null && !session.isResolvingStream && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
                 (isBuffering || session.isResolvingStream) && cancelLoadingFocusRequester.safeRequestFocus() -> "loading_cancel_button"
                 (isBuffering || session.isResolvingStream) && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
+                showSkipIntro && !controlsVisible && skipIntroFocusRequester.safeRequestFocus() -> "player_skip_intro_button"
                 controlsVisible && playPauseFocusRequester.safeRequestFocus() -> "exo_play_pause_button"
                 controlsVisible && backButtonFocusRequester.safeRequestFocus() -> "player_back_button"
                 rootFocusRequester.safeRequestFocus() -> "vix_player_root"
@@ -598,7 +747,7 @@ fun VixPlayerScreen(
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
                         Key.Menu -> {
-                            if (!showAutoNext && currentError == null && !isBuffering && !session.isResolvingStream) {
+                            if (!anyBlockingPopupVisible && currentError == null && !isBuffering && !session.isResolvingStream) {
                                 controlsVisible = !controlsVisible
                                 if (!controlsVisible && isTvDevice) {
                                     rootFocusRequester.safeRequestFocus()
@@ -608,13 +757,18 @@ fun VixPlayerScreen(
                         }
                         Key.Escape -> {
                             when {
+                                showMovieEndedPopup -> dismissMovieEndedPopup()
                                 showAutoNext -> {
                                     autoNextDismissed = true
-                                    if (isTvDevice) rootFocusRequester.safeRequestFocus()
+                                    rootFocusRequester.safeRequestFocus()
                                 }
                                 controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream -> {
                                     controlsVisible = false
-                                    if (isTvDevice) rootFocusRequester.safeRequestFocus()
+                                    rootFocusRequester.safeRequestFocus()
+                                }
+                                showSkipIntro -> {
+                                    introDismissed = true
+                                    rootFocusRequester.safeRequestFocus()
                                 }
                                 else -> {
                                     val pos = currentPositionMsState.longValue
@@ -662,7 +816,7 @@ fun VixPlayerScreen(
                             return@onPreviewKeyEvent true
                         }
                         Key.MediaNext -> {
-                            if (session.mediaItem.isSeries) {
+                            if (hasVerifiedNextEpisode) {
                                 onNextEpisode()
                                 return@onPreviewKeyEvent true
                             }
@@ -671,13 +825,20 @@ fun VixPlayerScreen(
                     }
 
                     val canRevealOrSeek = !controlsVisible &&
+                        !anyBlockingPopupVisible &&
                         playerErrorMessage == null &&
                         session.errorMessage == null &&
                         !isBuffering &&
                         !session.isResolvingStream
                     if (canRevealOrSeek) {
                         when (keyEvent.key) {
-                            Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
+                            Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                                // Se "SALTA INTRO" è attivo a schermo senza controlli, lascia gestire OK al pulsante "SALTA INTRO"
+                                if (!showSkipIntro) {
+                                    controlsVisible = true
+                                    return@onPreviewKeyEvent true
+                                }
+                            }
                             Key.DirectionUp, Key.DirectionDown -> {
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
@@ -942,13 +1103,6 @@ fun VixPlayerScreen(
                     }
 
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = session.mediaItem.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = NetflixWhite,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                         VixPlayerTopSubtitle(
                             session = session,
                             positionMsProvider = { currentPositionMsState.longValue }
@@ -1100,15 +1254,16 @@ fun VixPlayerScreen(
 
         // Controlli centrali e barra inferiore per ExoPlayer Nativo (visibili quando il popup di loading non è mostrato)
         AnimatedVisibility(
-            visible = controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream && !showAutoNext,
+            visible = controlsVisible && currentError == null && !isBuffering && !session.isResolvingStream && !anyBlockingPopupVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
-            val bottomPrimaryFocusRequester = if (session.mediaItem.isSeries) {
-                nextEpisodeFocusRequester
-            } else {
-                resizeFocusRequester
+            val showManualCompleteButton = !session.mediaItem.isSeries && advancedSettings.manualMovieCompletionEnabled
+            val bottomPrimaryFocusRequester = when {
+                hasVerifiedNextEpisode -> nextEpisodeFocusRequester
+                showManualCompleteButton -> manualMovieCompleteFocusRequester
+                else -> resizeFocusRequester
             }
 
             Box(modifier = Modifier.fillMaxSize()) {
@@ -1223,7 +1378,13 @@ fun VixPlayerScreen(
                                 if (keyEvent.type == KeyEventType.KeyDown) {
                                     when (keyEvent.key) {
                                         Key.DirectionLeft -> playPauseFocusRequester.safeRequestFocus()
-                                        Key.DirectionRight -> true
+                                        Key.DirectionRight -> {
+                                            if (showSkipIntro) {
+                                                skipIntroFocusRequester.safeRequestFocus()
+                                            } else {
+                                                true
+                                            }
+                                        }
                                         Key.DirectionUp ->
                                             audioLangFocusRequester.safeRequestFocus() || backButtonFocusRequester.safeRequestFocus()
                                         Key.DirectionDown -> timeBarFocusRequester.safeRequestFocus()
@@ -1235,6 +1396,9 @@ fun VixPlayerScreen(
                             }
                             .focusProperties {
                                 playPauseFocusRequester.takeIfAttached()?.let { left = it }
+                                if (showSkipIntro) {
+                                    skipIntroFocusRequester.takeIfAttached()?.let { right = it }
+                                }
                                 (audioLangFocusRequester.takeIfAttached() ?: backButtonFocusRequester.takeIfAttached())?.let { up = it }
                                 timeBarFocusRequester.takeIfAttached()?.let { down = it }
                             }
@@ -1256,7 +1420,7 @@ fun VixPlayerScreen(
                     }
                 }
 
-                // Barra inferiore con Slider rosso Netflix, timestamp salvato su Room e Prossimo Episodio
+                // Barra inferiore con Titolo + Stagione/Episodio sopra lo Slider rosso Netflix, timestamp e azioni rapide
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -1265,13 +1429,19 @@ fun VixPlayerScreen(
                             Brush.verticalGradient(
                                 colors = listOf(
                                     Color.Transparent,
-                                    NetflixBlack.copy(alpha = 0.92f)
+                                    NetflixBlack.copy(alpha = 0.72f),
+                                    NetflixBlack.copy(alpha = 0.95f)
                                 )
                             )
                         )
                         .navigationBarsPadding()
-                        .padding(horizontal = 20.dp, vertical = 14.dp)
+                        .padding(horizontal = 24.dp, vertical = 14.dp)
                 ) {
+                    PlayerMediaTitleHeader(
+                        session = session,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
                     VixPlayerSeekBarIsolated(
                         positionMsProvider = { currentPositionMsState.longValue },
                         durationMsProvider = { durationMsState.longValue },
@@ -1336,10 +1506,10 @@ fun VixPlayerScreen(
                                                 Key.DirectionLeft, Key.DirectionDown -> true
                                                 Key.DirectionUp -> timeBarFocusRequester.safeRequestFocus()
                                                 Key.DirectionRight -> {
-                                                    if (session.mediaItem.isSeries) {
-                                                        nextEpisodeFocusRequester.safeRequestFocus()
-                                                    } else {
-                                                        true
+                                                    when {
+                                                        hasVerifiedNextEpisode -> nextEpisodeFocusRequester.safeRequestFocus()
+                                                        showManualCompleteButton -> manualMovieCompleteFocusRequester.safeRequestFocus()
+                                                        else -> true
                                                     }
                                                 }
                                                 else -> false
@@ -1350,8 +1520,9 @@ fun VixPlayerScreen(
                                     }
                                     .focusProperties {
                                         timeBarFocusRequester.takeIfAttached()?.let { up = it }
-                                        if (session.mediaItem.isSeries) {
-                                            nextEpisodeFocusRequester.takeIfAttached()?.let { right = it }
+                                        when {
+                                            hasVerifiedNextEpisode -> nextEpisodeFocusRequester.takeIfAttached()?.let { right = it }
+                                            showManualCompleteButton -> manualMovieCompleteFocusRequester.takeIfAttached()?.let { right = it }
                                         }
                                     }
                                     .tvFocusableControl(
@@ -1368,7 +1539,54 @@ fun VixPlayerScreen(
                                 )
                             }
 
-                            if (session.mediaItem.isSeries) {
+                            if (showManualCompleteButton) {
+                                OutlinedButton(
+                                    onClick = { manualMovieEndedRequested = true },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                                    border = BorderStroke(1.dp, NetflixWhite.copy(alpha = 0.45f)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .safeFocusRequester(manualMovieCompleteFocusRequester)
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                                when (keyEvent.key) {
+                                                    Key.DirectionRight, Key.DirectionDown -> true
+                                                    Key.DirectionLeft -> resizeFocusRequester.safeRequestFocus()
+                                                    Key.DirectionUp -> timeBarFocusRequester.safeRequestFocus()
+                                                    else -> false
+                                                }
+                                            } else {
+                                                false
+                                            }
+                                        }
+                                        .focusProperties {
+                                            timeBarFocusRequester.takeIfAttached()?.let { up = it }
+                                            resizeFocusRequester.takeIfAttached()?.let { left = it }
+                                        }
+                                        .tvFocusableControl(
+                                            shape = RoundedCornerShape(8.dp),
+                                            focusedBorderColor = NetflixRed,
+                                            focusedScale = 1.06f,
+                                            focusTag = "player_manual_complete_button"
+                                        )
+                                        .testTag("player_manual_complete_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Termina film",
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                }
+                            }
+
+                            if (hasVerifiedNextEpisode) {
                                 Button(
                                     onClick = onNextEpisode,
                                     colors = ButtonDefaults.buttonColors(
@@ -1422,9 +1640,31 @@ fun VixPlayerScreen(
             }
         }
 
-        // Overlay automatico "Prossimo Episodio tra 10s" per visione continua da divano TV
+        // Pulsante fluttuante "SALTA INTRO" (visibile solo per serie TV con dati intro affidabili)
         AnimatedVisibility(
-            visible = showAutoNext,
+            visible = showSkipIntro && !anyBlockingPopupVisible,
+            enter = fadeIn() + slideInVertically { it / 2 },
+            exit = fadeOut() + slideOutVertically { it / 2 },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(
+                    end = 24.dp,
+                    bottom = if (controlsVisible) 186.dp else 32.dp
+                )
+        ) {
+            SkipIntroFloatingButton(
+                focusRequester = skipIntroFocusRequester,
+                controlsVisible = controlsVisible,
+                leftFocusRequester = forward10FocusRequester,
+                downFocusRequester = timeBarFocusRequester,
+                onSkipIntro = performSkipIntro
+            )
+        }
+
+        // Overlay "PROSSIMO EPISODIO" per serie TV (solo con episodio successivo reale verificato)
+        AnimatedVisibility(
+            visible = showAutoNext && verifiedNextEpisode != null,
             enter = fadeIn() + slideInVertically { it / 3 },
             exit = fadeOut() + slideOutVertically { it / 3 },
             modifier = Modifier
@@ -1432,16 +1672,43 @@ fun VixPlayerScreen(
                 .navigationBarsPadding()
                 .padding(24.dp)
         ) {
-            VixAutoNextEpisodeCard(
-                session = session,
-                currentSeason = currentSeason,
-                currentEpisode = currentEpisode,
-                nextEpisodeDto = nextEpisodeDto,
-                remainingSecProvider = { autoNextRemainingSecState.intValue },
-                playFocusRequester = autoNextPlayFocusRequester,
-                cancelFocusRequester = autoNextCancelFocusRequester,
-                onPlayNow = onNextEpisode,
-                onCancel = { autoNextDismissed = true }
+            verifiedNextEpisode?.let { nextEp ->
+                NextEpisodePopupCard(
+                    session = session,
+                    nextEpisode = nextEp,
+                    autoPlayEnabled = advancedSettings.autoPlayNextEpisodeEnabled,
+                    totalCountdownSec = advancedSettings.sanitizedCountdownSec,
+                    remainingSecProvider = { autoNextRemainingSecState.intValue },
+                    playFocusRequester = autoNextPlayFocusRequester,
+                    cancelFocusRequester = autoNextCancelFocusRequester,
+                    onPlayNow = onNextEpisode,
+                    onCancel = {
+                        autoNextDismissed = true
+                        rootFocusRequester.safeRequestFocus()
+                    }
+                )
+            }
+        }
+
+        // Overlay "IL FILM È TERMINATO" per film (rilevamento titoli di coda o conferma manuale)
+        AnimatedVisibility(
+            visible = showMovieEndedPopup,
+            enter = fadeIn() + slideInVertically { it / 3 },
+            exit = fadeOut() + slideOutVertically { it / 3 },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(24.dp)
+        ) {
+            MovieEndedPopupCard(
+                movieTitle = session.mediaItem.title,
+                finishFocusRequester = movieEndedFinishFocusRequester,
+                continueFocusRequester = movieEndedContinueFocusRequester,
+                onFinishWatching = {
+                    manualMovieEndedRequested = false
+                    onCompleteMovieAndClose()
+                },
+                onContinueWatching = dismissMovieEndedPopup
             )
         }
     }

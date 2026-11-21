@@ -5,15 +5,22 @@ import androidx.compose.runtime.Immutable
 import com.example.BuildConfig
 import com.example.data.local.CacheStatsSummary
 import com.example.data.local.CatalogSnapshotEntity
+import com.example.data.local.CompletedMediaEntity
+import com.example.data.local.CreditsDetectionState
+import com.example.data.local.CreditsSegmentEntity
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.IntroSegmentEntity
+import com.example.data.local.IntroSegmentSource
 import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.MediaDetailsCacheEntity
+import com.example.data.local.PlayerSegmentKeys
 import com.example.data.local.ProfileAvatarPreset
 import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.ResolvedStreamCacheEntity
 import com.example.data.local.SeasonEpisodesCacheEntity
 import com.example.data.local.UserProfileEntity
+import com.example.data.local.VerifiedNextEpisode
 import com.example.data.local.VixFlixDao
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -32,6 +39,7 @@ import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.TmdbPersonSearchDto
 import com.example.data.remote.TmdbSeasonDetailsDto
+import com.example.data.remote.TmdbSeasonSummaryDto
 import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.TmdbVideoDto
 import com.example.data.remote.TmdbWatchProviderDto
@@ -1132,14 +1140,15 @@ class VixFlixRepository(
         episodeTitle: String?,
         positionMs: Long,
         durationMs: Long,
-        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
+        allowAutoComplete: Boolean = true
     ) {
         if (positionMs < 3_000L) return
         val safeDuration = if (durationMs > 0L) durationMs else 5_400_000L // 90m stima se live HLS non espone durata iniziale
         val mainId = "${item.mediaType}_${item.id}"
-        val isCompleted = durationMs > 60_000L && positionMs >= (durationMs * 0.96).toLong()
+        val isCompleted = allowAutoComplete && durationMs > 60_000L && positionMs >= (durationMs * 0.96).toLong()
 
-        // Quando un contenuto viene completato (>= 96%), rimuovilo da "Continua a guardare"
+        // Quando un contenuto viene completato (>= 96% e auto-completamento consentito), rimuovilo da "Continua a guardare"
         // (Continua a guardare mostra esclusivamente contenuti interrotti da riprendere, mai uno storico).
         if (isCompleted) {
             dao.deleteWatchProgress(mainId, profileId)
@@ -1186,6 +1195,236 @@ class VixFlixRepository(
                 )
             )
         }
+    }
+
+    // --- Intro & Credits Segments (Local Room Persistence) ---
+
+    suspend fun getIntroSegment(
+        seriesTmdbId: Int,
+        seasonNumber: Int,
+        episodeNumber: Int
+    ): IntroSegmentEntity? = withContext(Dispatchers.IO) {
+        dao.getIntroSegment(PlayerSegmentKeys.introEpisodeKey(seriesTmdbId, seasonNumber, episodeNumber))
+    }
+
+    suspend fun saveIntroSegment(
+        seriesTmdbId: Int,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        introStartMs: Long,
+        introEndMs: Long,
+        source: IntroSegmentSource = IntroSegmentSource.LOCAL_DB
+    ) = withContext(Dispatchers.IO) {
+        if (introStartMs < 0L || introEndMs <= introStartMs + 3_000L) return@withContext
+        dao.upsertIntroSegment(
+            IntroSegmentEntity(
+                episodeKey = PlayerSegmentKeys.introEpisodeKey(seriesTmdbId, seasonNumber, episodeNumber),
+                seriesTmdbId = seriesTmdbId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                introStartMs = introStartMs,
+                introEndMs = introEndMs,
+                source = source.storageKey,
+                updatedAtMs = System.currentTimeMillis()
+            )
+        )
+    }
+
+    suspend fun getCreditsSegment(
+        tmdbId: Int,
+        mediaType: String,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null
+    ): CreditsSegmentEntity? = withContext(Dispatchers.IO) {
+        dao.getCreditsSegment(PlayerSegmentKeys.creditsContentKey(tmdbId, mediaType, seasonNumber, episodeNumber))
+    }
+
+    suspend fun saveCreditsSegment(
+        tmdbId: Int,
+        mediaType: String,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null,
+        creditsStartMs: Long,
+        durationMs: Long = 0L,
+        detectionState: CreditsDetectionState = CreditsDetectionState.LOCAL_DB
+    ) = withContext(Dispatchers.IO) {
+        if (creditsStartMs <= 0L) return@withContext
+        dao.upsertCreditsSegment(
+            CreditsSegmentEntity(
+                contentKey = PlayerSegmentKeys.creditsContentKey(tmdbId, mediaType, seasonNumber, episodeNumber),
+                tmdbId = tmdbId,
+                mediaType = mediaType,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                creditsStartMs = creditsStartMs,
+                durationMs = durationMs,
+                detectionState = detectionState.storageKey,
+                updatedAtMs = System.currentTimeMillis()
+            )
+        )
+    }
+
+    // --- Per-Profile Completion State & Continue Watching Management ---
+
+    suspend fun markMovieCompleted(
+        item: MediaItem,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ) = withContext(Dispatchers.IO) {
+        val contentKey = PlayerSegmentKeys.completedMediaKey(item.id, "movie")
+        dao.upsertCompletedMedia(
+            CompletedMediaEntity(
+                profileId = profileId,
+                contentKey = contentKey,
+                tmdbId = item.id,
+                mediaType = "movie",
+                seasonNumber = null,
+                episodeNumber = null,
+                completedAtMs = System.currentTimeMillis()
+            )
+        )
+        dao.deleteWatchProgress(id = "movie_${item.id}", profileId = profileId)
+    }
+
+    suspend fun isMediaCompleted(
+        tmdbId: Int,
+        mediaType: String,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Boolean = withContext(Dispatchers.IO) {
+        val contentKey = PlayerSegmentKeys.completedMediaKey(tmdbId, mediaType, seasonNumber, episodeNumber)
+        dao.getCompletedMedia(contentKey = contentKey, profileId = profileId) != null
+    }
+
+    /**
+     * Segna l'episodio corrente come completato per il profilo attivo:
+     * - rimuove il progresso parziale dell'episodio concluso;
+     * - se esiste un episodio successivo verificato, aggiorna "Continua a guardare" puntando al prossimo episodio;
+     * - se era l'ultimo episodio della serie, rimuove la serie da "Continua a guardare" per il solo profilo attivo.
+     */
+    suspend fun markEpisodeCompletedAndAdvanceSeries(
+        item: MediaItem,
+        completedSeason: Int,
+        completedEpisode: Int,
+        nextEpisode: VerifiedNextEpisode?,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ) = withContext(Dispatchers.IO) {
+        val contentKey = PlayerSegmentKeys.completedMediaKey(
+            tmdbId = item.id,
+            mediaType = "tv",
+            seasonNumber = completedSeason,
+            episodeNumber = completedEpisode
+        )
+        dao.upsertCompletedMedia(
+            CompletedMediaEntity(
+                profileId = profileId,
+                contentKey = contentKey,
+                tmdbId = item.id,
+                mediaType = "tv",
+                seasonNumber = completedSeason,
+                episodeNumber = completedEpisode,
+                completedAtMs = System.currentTimeMillis()
+            )
+        )
+        dao.deleteEpisodeProgress(
+            episodeKey = "tv_${item.id}_s${completedSeason}_e${completedEpisode}",
+            profileId = profileId
+        )
+
+        val mainId = "tv_${item.id}"
+        if (nextEpisode != null) {
+            dao.upsertWatchProgress(
+                WatchProgressEntity(
+                    id = mainId,
+                    tmdbId = item.id,
+                    mediaType = "tv",
+                    title = item.title,
+                    overview = item.overview,
+                    posterPath = item.posterPath,
+                    backdropPath = item.backdropPath,
+                    voteAverage = item.voteAverage,
+                    releaseYear = item.releaseYear,
+                    seasonNumber = nextEpisode.seasonNumber,
+                    episodeNumber = nextEpisode.episodeNumber,
+                    episodeTitle = nextEpisode.title,
+                    positionMs = 0L,
+                    durationMs = 3_600_000L,
+                    updatedAt = System.currentTimeMillis(),
+                    profileId = profileId
+                )
+            )
+        } else {
+            dao.deleteWatchProgress(id = mainId, profileId = profileId)
+        }
+    }
+
+    /**
+     * Verifica in modo rigoroso se esiste realmente un episodio successivo per la serie TV:
+     * 1) Cerca il prossimo episodio nella stagione corrente.
+     * 2) Se l'episodio corrente è l'ultimo della stagione, controlla le stagioni reali della serie
+     *    (escludendo gli speciali S0 se si sta guardando una stagione regolare) e verifica il primo episodio
+     *    della stagione successiva valida.
+     * 3) Non inventa mai episodi inesistenti: restituisce `null` se la serie non ha un episodio successivo.
+     */
+    suspend fun resolveVerifiedNextEpisode(
+        item: MediaItem,
+        currentSeason: Int,
+        currentEpisode: Int,
+        currentSeasonEpisodes: List<TmdbEpisodeDto> = emptyList(),
+        knownSeasons: List<TmdbSeasonSummaryDto> = emptyList()
+    ): VerifiedNextEpisode? = withContext(Dispatchers.IO) {
+        if (!item.isSeries || currentSeason < 0 || currentEpisode <= 0) return@withContext null
+
+        val episodesInSeason = currentSeasonEpisodes.ifEmpty {
+            fetchSeasonEpisodes(item.id, currentSeason).getOrDefault(emptyList())
+        }.sortedBy { it.episodeNumber }
+
+        // 1. Prossimo episodio reale nella stessa stagione
+        val sameSeasonNext = episodesInSeason.firstOrNull { it.episodeNumber > currentEpisode }
+        if (sameSeasonNext != null) {
+            return@withContext VerifiedNextEpisode(
+                seasonNumber = currentSeason,
+                episodeNumber = sameSeasonNext.episodeNumber,
+                title = sameSeasonNext.name?.takeIf { it.isNotBlank() },
+                stillUrl = sameSeasonNext.stillUrl,
+                overview = sameSeasonNext.overview?.takeIf { it.isNotBlank() },
+                isCrossSeason = false
+            )
+        }
+
+        // 2. Se non ci sono episodi della stagione corrente caricabili, non inventare mai un episodio successivo
+        if (episodesInSeason.isEmpty()) return@withContext null
+
+        // 3. Ultimo episodio della stagione corrente -> controlla la stagione successiva reale
+        val seasonsList = knownSeasons.ifEmpty {
+            fetchMediaDetails(item).getOrNull()?.seasons.orEmpty()
+        }
+        val candidateNextSeasons = seasonsList
+            .filter { season ->
+                season.seasonNumber > currentSeason &&
+                    (currentSeason == 0 || season.seasonNumber > 0) &&
+                    season.episodeCount > 0
+            }
+            .sortedBy { it.seasonNumber }
+
+        for (candidate in candidateNextSeasons) {
+            val nextSeasonEpisodes = fetchSeasonEpisodes(item.id, candidate.seasonNumber)
+                .getOrDefault(emptyList())
+                .sortedBy { it.episodeNumber }
+            val firstEp = nextSeasonEpisodes.firstOrNull { it.episodeNumber > 0 }
+            if (firstEp != null) {
+                return@withContext VerifiedNextEpisode(
+                    seasonNumber = candidate.seasonNumber,
+                    episodeNumber = firstEp.episodeNumber,
+                    title = firstEp.name?.takeIf { it.isNotBlank() },
+                    stillUrl = firstEp.stillUrl,
+                    overview = firstEp.overview?.takeIf { it.isNotBlank() },
+                    isCrossSeason = true
+                )
+            }
+        }
+
+        null
     }
 
     suspend fun removeContinueWatching(

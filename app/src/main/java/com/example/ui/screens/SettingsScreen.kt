@@ -109,6 +109,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import com.example.BuildConfig
 import com.example.data.local.CacheStatsSummary
+import com.example.data.local.PlayerAdvancedSettings
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.UserProfileUiState
 import com.example.data.remote.TmdbApiConfig
@@ -178,6 +179,13 @@ fun SettingsScreen(
     onOpenProfileSelector: (Boolean) -> Unit = {},
     onSetAutoLoginProfile: (Boolean) -> Unit = {},
     onSetDefaultProfileId: (String?) -> Unit = {},
+    playerAdvancedSettings: PlayerAdvancedSettings = PlayerAdvancedSettings(),
+    onSetSkipIntroEnabled: (Boolean) -> Unit = {},
+    onSetNextEpisodePromptEnabled: (Boolean) -> Unit = {},
+    onSetAutoPlayNextEpisodeEnabled: (Boolean) -> Unit = {},
+    onSetNextEpisodeCountdownSec: (Int) -> Unit = {},
+    onSetCreditsDetectionEnabled: (Boolean) -> Unit = {},
+    onSetManualMovieCompletionEnabled: (Boolean) -> Unit = {},
     firstControlFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
@@ -368,9 +376,16 @@ fun SettingsScreen(
                         streamLang = streamLang,
                         preferWebPlayer = preferWebPlayer,
                         bufferPreset = bufferPreset,
+                        playerAdvancedSettings = playerAdvancedSettings,
                         onSelectStreamLang = onSelectStreamLang,
                         onSetPreferWebPlayer = onSetPreferWebPlayer,
                         onSelectBufferPreset = onSelectBufferPreset,
+                        onSetSkipIntroEnabled = onSetSkipIntroEnabled,
+                        onSetNextEpisodePromptEnabled = onSetNextEpisodePromptEnabled,
+                        onSetAutoPlayNextEpisodeEnabled = onSetAutoPlayNextEpisodeEnabled,
+                        onSetNextEpisodeCountdownSec = onSetNextEpisodeCountdownSec,
+                        onSetCreditsDetectionEnabled = onSetCreditsDetectionEnabled,
+                        onSetManualMovieCompletionEnabled = onSetManualMovieCompletionEnabled,
                         onRefreshCatalog = onRefreshCatalog,
                         firstControlFocusRequester = categoryPanelFirstFocus,
                         upToCategoryFocusRequester = categoryTabRequester,
@@ -660,9 +675,16 @@ private fun PlaybackSettingsPanel(
     streamLang: String,
     preferWebPlayer: Boolean,
     bufferPreset: StreamingBufferPreset,
+    playerAdvancedSettings: PlayerAdvancedSettings,
     onSelectStreamLang: (String) -> Unit,
     onSetPreferWebPlayer: (Boolean) -> Unit,
     onSelectBufferPreset: (StreamingBufferPreset) -> Unit,
+    onSetSkipIntroEnabled: (Boolean) -> Unit,
+    onSetNextEpisodePromptEnabled: (Boolean) -> Unit,
+    onSetAutoPlayNextEpisodeEnabled: (Boolean) -> Unit,
+    onSetNextEpisodeCountdownSec: (Int) -> Unit,
+    onSetCreditsDetectionEnabled: (Boolean) -> Unit,
+    onSetManualMovieCompletionEnabled: (Boolean) -> Unit,
     onRefreshCatalog: () -> Unit,
     firstControlFocusRequester: FocusRequester?,
     upToCategoryFocusRequester: FocusRequester?,
@@ -730,6 +752,85 @@ private fun PlaybackSettingsPanel(
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester
             )
+        }
+
+        SettingsSectionCard(
+            title = "Funzionalità Avanzate Player",
+            subtitle = "Personalizza Salta Intro, titoli di coda, episodio successivo e completamento film",
+            icon = Icons.Default.Tune,
+            badgeText = "${playerAdvancedSettings.sanitizedCountdownSec}s",
+            badgeColor = NetflixRed
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SettingsSwitchRow(
+                    label = "Salta intro",
+                    description = "Mostra il pulsante SALTA INTRO quando esistono dati affidabili per l'episodio",
+                    checked = playerAdvancedSettings.skipIntroEnabled,
+                    onCheckedChange = onSetSkipIntroEnabled,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_skip_intro_switch"
+                )
+
+                SettingsSwitchRow(
+                    label = "Proposta episodio successivo",
+                    description = "Mostra il popup PROSSIMO EPISODIO sui titoli di coda se esiste un episodio successivo",
+                    checked = playerAdvancedSettings.nextEpisodePromptEnabled,
+                    onCheckedChange = onSetNextEpisodePromptEnabled,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_next_episode_prompt_switch"
+                )
+
+                SettingsSwitchRow(
+                    label = "Riproduzione automatica episodio successivo",
+                    description = "Avvia automaticamente il prossimo episodio allo scadere del conto alla rovescia",
+                    checked = playerAdvancedSettings.autoPlayNextEpisodeEnabled,
+                    onCheckedChange = onSetAutoPlayNextEpisodeEnabled,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_auto_play_next_switch"
+                )
+
+                Text(
+                    text = "Conto alla rovescia episodio successivo",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite
+                )
+                SettingsChoiceRow(
+                    options = PlayerAdvancedSettings.ALLOWED_COUNTDOWN_OPTIONS.map { sec ->
+                        sec.toString() to "${sec}s"
+                    },
+                    selectedKey = playerAdvancedSettings.sanitizedCountdownSec.toString(),
+                    onSelect = { key ->
+                        key.toIntOrNull()?.let(onSetNextEpisodeCountdownSec)
+                    },
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    tagPrefix = "settings_countdown"
+                )
+
+                SettingsSwitchRow(
+                    label = "Rilevamento titoli di coda",
+                    description = "Attiva il rilevamento dei titoli di coda per serie TV e film",
+                    checked = playerAdvancedSettings.creditsDetectionEnabled,
+                    onCheckedChange = onSetCreditsDetectionEnabled,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_credits_detection_switch"
+                )
+
+                SettingsSwitchRow(
+                    label = "Conferma manuale completamento film",
+                    description = "Mostra il pulsante Termina film nei controlli del player per completare il film manualmente",
+                    checked = playerAdvancedSettings.manualMovieCompletionEnabled,
+                    onCheckedChange = onSetManualMovieCompletionEnabled,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_manual_movie_complete_switch"
+                )
+            }
         }
 
         SettingsSectionCard(

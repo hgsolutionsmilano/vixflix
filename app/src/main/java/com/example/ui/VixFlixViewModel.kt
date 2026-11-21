@@ -10,13 +10,17 @@ import com.example.VixFlixApplication
 import com.example.data.cache.BackgroundCachePrefetcher
 import com.example.data.local.AppPreferences
 import com.example.data.local.CacheStatsSummary
+import com.example.data.local.CreditsSegmentEntity
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.IntroSegmentEntity
 import com.example.data.local.MAX_USER_PROFILES
+import com.example.data.local.PlayerAdvancedSettings
 import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.UserProfileEntity
 import com.example.data.local.UserProfileUiState
+import com.example.data.local.VerifiedNextEpisode
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -136,7 +140,11 @@ data class PlaybackSession(
     val isResolvingStream: Boolean = true,
     val resolvedStream: ResolvedStream? = null,
     val forceWebPlayer: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val introSegment: IntroSegmentEntity? = null,
+    val creditsSegment: CreditsSegmentEntity? = null,
+    val verifiedNextEpisode: VerifiedNextEpisode? = null,
+    val hasCheckedNextEpisode: Boolean = false
 ) {
     val startSeconds: Long get() = (startPositionMs / 1000L).coerceAtLeast(0L)
     val startMinutes: Int get() = (startSeconds / 60L).toInt()
@@ -263,6 +271,9 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     val backgroundPrefetchEnabled: StateFlow<Boolean> = preferences.backgroundPrefetchFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val playerAdvancedSettings: StateFlow<PlayerAdvancedSettings> = preferences.playerAdvancedSettingsFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerAdvancedSettings())
 
     private val _cacheStats = MutableStateFlow(CacheStatsSummary())
     val cacheStats: StateFlow<CacheStatsSummary> = _cacheStats.asStateFlow()
@@ -1372,21 +1383,66 @@ class VixFlixViewModel @JvmOverloads constructor(
                 }
             }
 
-            // Recupera eventuali episodi della stagione da TMDB in parallelo senza bloccare l'avvio del video
-            if (item.isSeries && initialSeasonEpisodes.isEmpty()) {
+            val cachedDetailSeasons = _detailState.value
+                ?.takeIf { it.mediaItem.id == item.id }
+                ?.details
+                ?.seasons
+                .orEmpty()
+
+            // Carica in parallelo eventuali marker affidabili di intro e titoli di coda dal DB locale
+            launch {
+                val intro = if (item.isSeries && targetSeason != null && targetEpisode != null) {
+                    repository.getIntroSegment(item.id, targetSeason, targetEpisode)
+                } else {
+                    null
+                }
+                val credits = repository.getCreditsSegment(
+                    tmdbId = item.id,
+                    mediaType = item.mediaType,
+                    seasonNumber = targetSeason,
+                    episodeNumber = targetEpisode
+                )
+                val active = _playbackSession.value
+                if (active != null &&
+                    active.mediaItem.id == item.id &&
+                    active.seasonNumber == targetSeason &&
+                    active.episodeNumber == targetEpisode
+                ) {
+                    _playbackSession.value = active.copy(
+                        introSegment = intro,
+                        creditsSegment = credits
+                    )
+                }
+            }
+
+            // Recupera episodi della stagione e verifica l'eventuale episodio successivo reale (incluso cambio stagione)
+            if (item.isSeries && targetSeason != null && targetEpisode != null) {
                 launch {
-                    val fetchedEpisodes = repository.fetchSeasonEpisodes(item.id, resolvedSeason)
-                        .getOrDefault(emptyList())
-                    if (fetchedEpisodes.isNotEmpty()) {
-                        val active = _playbackSession.value
-                        if (active != null && active.mediaItem.id == item.id && active.seasonNumber == targetSeason) {
-                            val resolvedEpName = active.episodeTitle?.takeIf { it.isNotBlank() }
-                                ?: fetchedEpisodes.firstOrNull { it.episodeNumber == targetEpisode }?.name
-                            _playbackSession.value = active.copy(
-                                seasonEpisodes = fetchedEpisodes,
-                                episodeTitle = resolvedEpName
-                            )
-                        }
+                    val seasonEpisodes = initialSeasonEpisodes.ifEmpty {
+                        repository.fetchSeasonEpisodes(item.id, resolvedSeason)
+                            .getOrDefault(emptyList())
+                    }
+                    val verifiedNext = repository.resolveVerifiedNextEpisode(
+                        item = item,
+                        currentSeason = targetSeason,
+                        currentEpisode = targetEpisode,
+                        currentSeasonEpisodes = seasonEpisodes,
+                        knownSeasons = cachedDetailSeasons
+                    )
+                    val active = _playbackSession.value
+                    if (active != null &&
+                        active.mediaItem.id == item.id &&
+                        active.seasonNumber == targetSeason &&
+                        active.episodeNumber == targetEpisode
+                    ) {
+                        val resolvedEpName = active.episodeTitle?.takeIf { it.isNotBlank() }
+                            ?: seasonEpisodes.firstOrNull { it.episodeNumber == targetEpisode }?.name
+                        _playbackSession.value = active.copy(
+                            seasonEpisodes = seasonEpisodes.ifEmpty { active.seasonEpisodes },
+                            episodeTitle = resolvedEpName,
+                            verifiedNextEpisode = verifiedNext,
+                            hasCheckedNextEpisode = true
+                        )
                     }
                 }
             }
@@ -1520,7 +1576,11 @@ class VixFlixViewModel @JvmOverloads constructor(
      * Persiste la posizione di visione su Room senza ri-emettere `_playbackSession`
      * ad ogni tick periodico, evitando ricomposizioni della root UI durante lo streaming.
      */
-    fun onPlaybackProgressUpdate(positionMs: Long, durationMs: Long) {
+    fun onPlaybackProgressUpdate(
+        positionMs: Long,
+        durationMs: Long,
+        allowAutoComplete: Boolean = true
+    ) {
         val session = _playbackSession.value ?: return
         if (positionMs <= 0L) return
         val currentProfileId = _activeProfileId.value
@@ -1533,25 +1593,22 @@ class VixFlixViewModel @JvmOverloads constructor(
                 episodeTitle = session.episodeTitle,
                 positionMs = positionMs,
                 durationMs = durationMs,
-                profileId = currentProfileId
+                profileId = currentProfileId,
+                allowAutoComplete = allowAutoComplete
             )
         }
     }
 
     /**
-     * Pre-risolve silenziosamente lo stream HLS del prossimo episodio negli ultimi 90 secondi di visione,
-     * popolando la cache stream in memoria/Room per un cambio episodio quasi istantaneo.
+     * Pre-risolve silenziosamente lo stream HLS del prossimo episodio reale (anche della stagione successiva)
+     * negli ultimi 90 secondi di visione, popolando la cache stream in memoria/Room.
      */
     fun preResolveNextEpisode() {
         val session = _playbackSession.value ?: return
         if (!session.mediaItem.isSeries) return
-        val currentSeason = session.seasonNumber ?: 1
-        val currentEp = session.episodeNumber ?: 1
-        val nextEpDto = session.seasonEpisodes.firstOrNull { it.episodeNumber == currentEp + 1 }
-        if (nextEpDto == null && session.seasonEpisodes.isNotEmpty()) return
-        val nextEpisodeNumber = nextEpDto?.episodeNumber ?: (currentEp + 1)
+        val next = session.verifiedNextEpisode ?: return
         val lang = streamLanguage.value
-        val key = "${session.mediaItem.id}_${currentSeason}_${nextEpisodeNumber}_$lang"
+        val key = "${session.mediaItem.id}_${next.seasonNumber}_${next.episodeNumber}_$lang"
         if (lastPreResolvedEpisodeKey == key) return
         lastPreResolvedEpisodeKey = key
 
@@ -1560,8 +1617,8 @@ class VixFlixViewModel @JvmOverloads constructor(
             runCatching {
                 repository.resolveVixSrcStream(
                     item = session.mediaItem,
-                    season = currentSeason,
-                    episode = nextEpisodeNumber,
+                    season = next.seasonNumber,
+                    episode = next.episodeNumber,
                     startPositionMs = 0L,
                     lang = lang,
                     forceRefresh = false
@@ -1570,22 +1627,55 @@ class VixFlixViewModel @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Passa all'episodio successivo reale (stessa stagione o stagione successiva) e aggiorna
+     * stato di completamento e Continua a guardare esclusivamente per il profilo attivo.
+     */
     fun playNextEpisode() {
         val session = _playbackSession.value ?: return
         if (!session.mediaItem.isSeries) return
+        val next = session.verifiedNextEpisode ?: return
         val currentSeason = session.seasonNumber ?: 1
         val currentEp = session.episodeNumber ?: 1
-        val nextEpDto = session.seasonEpisodes.firstOrNull { it.episodeNumber == currentEp + 1 }
-        val nextEpisodeNumber = nextEpDto?.episodeNumber ?: (currentEp + 1)
-        val nextEpisodeTitle = nextEpDto?.name ?: "Episodio $nextEpisodeNumber"
+        val profileId = _activeProfileId.value
+
+        viewModelScope.launch {
+            repository.markEpisodeCompletedAndAdvanceSeries(
+                item = session.mediaItem,
+                completedSeason = currentSeason,
+                completedEpisode = currentEp,
+                nextEpisode = next,
+                profileId = profileId
+            )
+        }
 
         startPlayback(
             item = session.mediaItem,
-            seasonNumber = currentSeason,
-            episodeNumber = nextEpisodeNumber,
-            episodeTitle = nextEpisodeTitle,
+            seasonNumber = next.seasonNumber,
+            episodeNumber = next.episodeNumber,
+            episodeTitle = next.title,
             explicitStartPositionMs = 0L
         )
+    }
+
+    /**
+     * Conferma esplicitamente la conclusione del film in riproduzione:
+     * 1) segna il film come completato solo per il profilo attivo;
+     * 2) rimuove il film da "Continua a guardare" solo per il profilo attivo;
+     * 3) chiude la sessione player tornando alla schermata precedente/dettaglio.
+     */
+    fun completeCurrentMovieAndClose() {
+        val session = _playbackSession.value
+        val profileId = _activeProfileId.value
+        if (session != null && !session.mediaItem.isSeries) {
+            viewModelScope.launch {
+                repository.markMovieCompleted(
+                    item = session.mediaItem,
+                    profileId = profileId
+                )
+            }
+        }
+        closePlayer()
     }
 
     fun closePlayer() {
@@ -1659,6 +1749,42 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun setBufferPreset(preset: StreamingBufferPreset) {
         viewModelScope.launch {
             preferences.setBufferPreset(preset)
+        }
+    }
+
+    fun setSkipIntroEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setSkipIntroEnabled(enabled)
+        }
+    }
+
+    fun setNextEpisodePromptEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setNextEpisodePromptEnabled(enabled)
+        }
+    }
+
+    fun setAutoPlayNextEpisodeEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setAutoPlayNextEpisodeEnabled(enabled)
+        }
+    }
+
+    fun setNextEpisodeCountdownSec(seconds: Int) {
+        viewModelScope.launch {
+            preferences.setNextEpisodeCountdownSec(seconds)
+        }
+    }
+
+    fun setCreditsDetectionEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setCreditsDetectionEnabled(enabled)
+        }
+    }
+
+    fun setManualMovieCompletionEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setManualMovieCompletionEnabled(enabled)
         }
     }
 

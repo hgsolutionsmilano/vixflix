@@ -37,11 +37,15 @@ interface VixFlixDao {
     @Query("DELETE FROM my_list WHERE profileId = :profileId")
     suspend fun deleteWatchlistForProfile(profileId: String)
 
+    @Query("DELETE FROM completed_media WHERE profileId = :profileId")
+    suspend fun deleteCompletedMediaForProfile(profileId: String)
+
     @Transaction
     suspend fun deleteProfileAndPersonalData(profileId: String) {
         deleteWatchProgressForProfile(profileId)
         deleteEpisodeProgressForProfile(profileId)
         deleteWatchlistForProfile(profileId)
+        deleteCompletedMediaForProfile(profileId)
         deleteProfileById(profileId)
     }
 
@@ -189,4 +193,40 @@ interface VixFlixDao {
 
     @Query("DELETE FROM stream_link_cache")
     suspend fun clearStreamCaches()
+
+    // --- Intro Segments (TV Series) ---
+    @Query("SELECT * FROM intro_segments WHERE episodeKey = :episodeKey LIMIT 1")
+    suspend fun getIntroSegment(episodeKey: String): IntroSegmentEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertIntroSegment(entity: IntroSegmentEntity)
+
+    @Query("DELETE FROM intro_segments WHERE episodeKey = :episodeKey")
+    suspend fun deleteIntroSegment(episodeKey: String)
+
+    // --- Credits Segments (Movies & TV Series) ---
+    @Query("SELECT * FROM credits_segments WHERE contentKey = :contentKey LIMIT 1")
+    suspend fun getCreditsSegment(contentKey: String): CreditsSegmentEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCreditsSegment(entity: CreditsSegmentEntity)
+
+    @Query("DELETE FROM credits_segments WHERE contentKey = :contentKey")
+    suspend fun deleteCreditsSegment(contentKey: String)
+
+    // --- Per-Profile Completed Media State (NO viewing history) ---
+    @Query("SELECT * FROM completed_media WHERE profileId = :profileId AND contentKey = :contentKey LIMIT 1")
+    suspend fun getCompletedMedia(
+        contentKey: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): CompletedMediaEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCompletedMedia(entity: CompletedMediaEntity)
+
+    @Query("DELETE FROM completed_media WHERE profileId = :profileId AND contentKey = :contentKey")
+    suspend fun deleteCompletedMedia(
+        contentKey: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    )
 }

@@ -3,6 +3,7 @@ package com.example.data.local
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -91,6 +92,12 @@ class AppPreferences(private val context: Context) {
         private val KEY_DEFAULT_PROFILE_ID = stringPreferencesKey("default_profile_id")
         private val KEY_AUTO_LOGIN_PROFILE = booleanPreferencesKey("auto_login_profile")
         private val KEY_HAS_SELECTED_PROFILE_ONCE = booleanPreferencesKey("has_selected_profile_once")
+        private val KEY_PLAYER_SKIP_INTRO = booleanPreferencesKey("player_skip_intro_enabled")
+        private val KEY_PLAYER_NEXT_EPISODE_PROMPT = booleanPreferencesKey("player_next_episode_prompt_enabled")
+        private val KEY_PLAYER_AUTO_PLAY_NEXT = booleanPreferencesKey("player_auto_play_next_episode_enabled")
+        private val KEY_PLAYER_NEXT_COUNTDOWN_SEC = intPreferencesKey("player_next_episode_countdown_sec")
+        private val KEY_PLAYER_CREDITS_DETECTION = booleanPreferencesKey("player_credits_detection_enabled")
+        private val KEY_PLAYER_MANUAL_MOVIE_COMPLETE = booleanPreferencesKey("player_manual_movie_completion_enabled")
     }
 
     val githubRepoFlow: Flow<String> = context.dataStore.data.map { prefs ->
@@ -141,6 +148,24 @@ class AppPreferences(private val context: Context) {
 
     val hasSelectedProfileOnceFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[KEY_HAS_SELECTED_PROFILE_ONCE] ?: false
+    }
+
+    val playerAdvancedSettingsFlow: Flow<PlayerAdvancedSettings> = context.dataStore.data.map { prefs ->
+        val rawCountdown = prefs[KEY_PLAYER_NEXT_COUNTDOWN_SEC]
+            ?: PlayerAdvancedSettings.DEFAULT_COUNTDOWN_SECONDS
+        val validCountdown = if (rawCountdown in PlayerAdvancedSettings.ALLOWED_COUNTDOWN_OPTIONS) {
+            rawCountdown
+        } else {
+            PlayerAdvancedSettings.DEFAULT_COUNTDOWN_SECONDS
+        }
+        PlayerAdvancedSettings(
+            skipIntroEnabled = prefs[KEY_PLAYER_SKIP_INTRO] ?: true,
+            nextEpisodePromptEnabled = prefs[KEY_PLAYER_NEXT_EPISODE_PROMPT] ?: true,
+            autoPlayNextEpisodeEnabled = prefs[KEY_PLAYER_AUTO_PLAY_NEXT] ?: true,
+            nextEpisodeCountdownSec = validCountdown,
+            creditsDetectionEnabled = prefs[KEY_PLAYER_CREDITS_DETECTION] ?: true,
+            manualMovieCompletionEnabled = prefs[KEY_PLAYER_MANUAL_MOVIE_COMPLETE] ?: true
+        )
     }
 
     suspend fun setGithubRepo(ownerAndRepo: String) {
@@ -212,6 +237,47 @@ class AppPreferences(private val context: Context) {
     suspend fun markProfileSelectedOnce() {
         context.dataStore.edit { prefs ->
             prefs[KEY_HAS_SELECTED_PROFILE_ONCE] = true
+        }
+    }
+
+    suspend fun setSkipIntroEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_SKIP_INTRO] = enabled
+        }
+    }
+
+    suspend fun setNextEpisodePromptEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_NEXT_EPISODE_PROMPT] = enabled
+        }
+    }
+
+    suspend fun setAutoPlayNextEpisodeEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_AUTO_PLAY_NEXT] = enabled
+        }
+    }
+
+    suspend fun setNextEpisodeCountdownSec(seconds: Int) {
+        val sanitized = if (seconds in PlayerAdvancedSettings.ALLOWED_COUNTDOWN_OPTIONS) {
+            seconds
+        } else {
+            PlayerAdvancedSettings.DEFAULT_COUNTDOWN_SECONDS
+        }
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_NEXT_COUNTDOWN_SEC] = sanitized
+        }
+    }
+
+    suspend fun setCreditsDetectionEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_CREDITS_DETECTION] = enabled
+        }
+    }
+
+    suspend fun setManualMovieCompletionEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_MANUAL_MOVIE_COMPLETE] = enabled
         }
     }
 

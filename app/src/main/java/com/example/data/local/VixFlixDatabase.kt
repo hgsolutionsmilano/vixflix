@@ -16,9 +16,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CatalogSnapshotEntity::class,
         MediaDetailsCacheEntity::class,
         SeasonEpisodesCacheEntity::class,
-        ResolvedStreamCacheEntity::class
+        ResolvedStreamCacheEntity::class,
+        IntroSegmentEntity::class,
+        CreditsSegmentEntity::class,
+        CompletedMediaEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class VixFlixDatabase : RoomDatabase() {
@@ -254,6 +257,67 @@ abstract class VixFlixDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `intro_segments` (
+                        `episodeKey` TEXT NOT NULL,
+                        `seriesTmdbId` INTEGER NOT NULL,
+                        `seasonNumber` INTEGER NOT NULL,
+                        `episodeNumber` INTEGER NOT NULL,
+                        `introStartMs` INTEGER NOT NULL,
+                        `introEndMs` INTEGER NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`episodeKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_intro_segments_seriesTmdbId_seasonNumber_episodeNumber` ON `intro_segments` (`seriesTmdbId`, `seasonNumber`, `episodeNumber`)"
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `credits_segments` (
+                        `contentKey` TEXT NOT NULL,
+                        `tmdbId` INTEGER NOT NULL,
+                        `mediaType` TEXT NOT NULL,
+                        `seasonNumber` INTEGER,
+                        `episodeNumber` INTEGER,
+                        `creditsStartMs` INTEGER NOT NULL,
+                        `durationMs` INTEGER NOT NULL,
+                        `detectionState` TEXT NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`contentKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_credits_segments_tmdbId_mediaType` ON `credits_segments` (`tmdbId`, `mediaType`)"
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `completed_media` (
+                        `profileId` TEXT NOT NULL,
+                        `contentKey` TEXT NOT NULL,
+                        `tmdbId` INTEGER NOT NULL,
+                        `mediaType` TEXT NOT NULL,
+                        `seasonNumber` INTEGER,
+                        `episodeNumber` INTEGER,
+                        `completedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`profileId`, `contentKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_completed_media_profileId_tmdbId_mediaType` ON `completed_media` (`profileId`, `tmdbId`, `mediaType`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): VixFlixDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -262,7 +326,7 @@ abstract class VixFlixDatabase : RoomDatabase() {
                     "vixflix_stream.db"
                 )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

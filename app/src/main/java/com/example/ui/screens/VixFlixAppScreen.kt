@@ -191,6 +191,7 @@ fun VixFlixAppScreen(
     val bufferPreset by viewModel.bufferPreset.collectAsStateWithLifecycle()
     val autoCheckUpdates by viewModel.autoCheckUpdates.collectAsStateWithLifecycle()
     val backgroundPrefetchEnabled by viewModel.backgroundPrefetchEnabled.collectAsStateWithLifecycle()
+    val playerAdvancedSettings by viewModel.playerAdvancedSettings.collectAsStateWithLifecycle()
     val cacheStats by viewModel.cacheStats.collectAsStateWithLifecycle()
     val isBackgroundCatalogRefreshing by viewModel.isBackgroundCatalogRefreshing.collectAsStateWithLifecycle()
     val cacheClearedFeedbackNonce by viewModel.cacheClearedFeedbackNonce.collectAsStateWithLifecycle()
@@ -771,6 +772,13 @@ fun VixFlixAppScreen(
                                 },
                                 onSetAutoLoginProfile = viewModel::setAutoLoginProfile,
                                 onSetDefaultProfileId = viewModel::setDefaultProfileId,
+                                playerAdvancedSettings = playerAdvancedSettings,
+                                onSetSkipIntroEnabled = viewModel::setSkipIntroEnabled,
+                                onSetNextEpisodePromptEnabled = viewModel::setNextEpisodePromptEnabled,
+                                onSetAutoPlayNextEpisodeEnabled = viewModel::setAutoPlayNextEpisodeEnabled,
+                                onSetNextEpisodeCountdownSec = viewModel::setNextEpisodeCountdownSec,
+                                onSetCreditsDetectionEnabled = viewModel::setCreditsDetectionEnabled,
+                                onSetManualMovieCompletionEnabled = viewModel::setManualMovieCompletionEnabled,
                                 firstControlFocusRequester = sectionSettingsFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = activeTopBarFocusRequester,
@@ -1261,11 +1269,19 @@ fun VixFlixAppScreen(
                     onDynamicHlsFound = viewModel::onDynamicHlsIntercepted,
                     onTogglePlayerMode = viewModel::togglePlayerMode,
                     onToggleLanguage = viewModel::setStreamLanguage,
-                    onProgressUpdate = viewModel::onPlaybackProgressUpdate,
+                    onProgressUpdate = { pos, dur ->
+                        viewModel.onPlaybackProgressUpdate(
+                            positionMs = pos,
+                            durationMs = dur,
+                            allowAutoComplete = false
+                        )
+                    },
                     onNextEpisode = viewModel::playNextEpisode,
                     onClose = viewModel::closePlayer,
                     onInvalidateAndRetryStream = viewModel::invalidateAndRetryCurrentStream,
-                    onPreResolveNextEpisode = viewModel::preResolveNextEpisode
+                    onPreResolveNextEpisode = viewModel::preResolveNextEpisode,
+                    advancedSettings = playerAdvancedSettings,
+                    onCompleteMovieAndClose = viewModel::completeCurrentMovieAndClose
                 )
             }
         }
