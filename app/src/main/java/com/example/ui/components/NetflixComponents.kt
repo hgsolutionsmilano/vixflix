@@ -925,7 +925,10 @@ fun NetflixHeroBanner(
 
                 // Pulsante Info
                 OutlinedButton(
-                    onClick = onInfoClick,
+                    onClick = {
+                        onItemFocused?.invoke(infoFocusRequester)
+                        onInfoClick()
+                    },
                     shape = RoundedCornerShape(6.dp),
                     border = BorderStroke(
                         if (infoFocused) 2.5.dp else 1.dp,
@@ -1071,26 +1074,43 @@ fun ContinueWatchingSection(
                 key = { _, it -> it.id },
                 contentType = { _, _ -> "continue_watching_card" }
             ) { index, entry ->
-                val itemFocusRequester = if (index == targetFocusIdx && firstItemFocusRequester != null) {
-                    firstItemFocusRequester
-                } else {
-                    remember(entry.id) { FocusRequester() }
-                }
+                val itemFocusRequester = remember(entry.id) { FocusRequester() }
                 ContinueWatchingCard(
                     entry = entry,
                     itemIndex = index,
                     listState = listState,
                     isTvLayout = isTvLayout,
-                    onResume = { onResumeClick(entry) },
-                    onInfo = { onInfoClick(entry) },
+                    onResume = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                        onResumeClick(entry)
+                    },
+                    onInfo = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                        onInfoClick(entry)
+                    },
                     onRemove = { onRemoveClick(entry) },
-                    onLongPress = onTvLongPress?.let { handler -> { handler(entry) } },
+                    onLongPress = onTvLongPress?.let { handler ->
+                        {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                            handler(entry)
+                        }
+                    },
                     onFocused = {
                         lastFocusedIndex = index
                         onItemFocused?.invoke(itemFocusRequester)
                     },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
+                        .then(
+                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                Modifier.safeFocusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
@@ -1351,25 +1371,44 @@ fun Top10Section(
                 key = { _, item -> "top10_${item.uniqueKey}" },
                 contentType = { _, _ -> "top10_card" }
             ) { index, item ->
-                val itemFocusRequester = if (index == targetFocusIdx && firstItemFocusRequester != null) {
-                    firstItemFocusRequester
-                } else {
-                    remember(item.uniqueKey) { FocusRequester() }
-                }
+                val itemFocusRequester = remember(item.uniqueKey) { FocusRequester() }
                 Top10PosterCard(
                     rank = index + 1,
                     itemIndex = index,
                     listState = listState,
                     item = item,
-                    onClick = { onItemClick(item) },
-                    onQuickPlay = onItemQuickPlay?.let { handler -> { handler(item) } },
-                    onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
+                    onClick = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                        onItemClick(item)
+                    },
+                    onQuickPlay = onItemQuickPlay?.let { handler ->
+                        {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                            handler(item)
+                        }
+                    },
+                    onLongClick = onItemLongClick?.let { handler ->
+                        {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                            handler(item)
+                        }
+                    },
                     onFocused = {
                         lastFocusedIndex = index
                         onItemFocused?.invoke(itemFocusRequester)
                     },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
+                        .then(
+                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                Modifier.safeFocusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
@@ -1582,24 +1621,43 @@ fun MediaCatalogRow(
                 key = { _, item -> "${title}_${item.uniqueKey}" },
                 contentType = { _, _ -> "poster_card" }
             ) { index, item ->
-                val itemFocusRequester = if (index == targetFocusIdx && firstItemFocusRequester != null) {
-                    firstItemFocusRequester
-                } else {
-                    remember("${title}_${item.uniqueKey}") { FocusRequester() }
-                }
+                val itemFocusRequester = remember("${title}_${item.uniqueKey}") { FocusRequester() }
                 MediaPosterCard(
                     item = item,
                     itemIndex = index,
                     listState = listState,
-                    onClick = { onItemClick(item) },
-                    onQuickPlay = onItemQuickPlay?.let { handler -> { handler(item) } },
-                    onLongClick = onItemLongClick?.let { handler -> { handler(item) } },
+                    onClick = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                        onItemClick(item)
+                    },
+                    onQuickPlay = onItemQuickPlay?.let { handler ->
+                        {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                            handler(item)
+                        }
+                    },
+                    onLongClick = onItemLongClick?.let { handler ->
+                        {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                            handler(item)
+                        }
+                    },
                     onFocused = {
                         lastFocusedIndex = index
                         onItemFocused?.invoke(itemFocusRequester)
                     },
                     modifier = Modifier
                         .safeFocusRequester(itemFocusRequester)
+                        .then(
+                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                Modifier.safeFocusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {

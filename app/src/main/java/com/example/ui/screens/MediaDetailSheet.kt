@@ -28,9 +28,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -41,7 +39,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.SmartDisplay
@@ -90,13 +87,11 @@ import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbCastMemberDto
 import com.example.data.remote.TmdbEpisodeDto
-import com.example.data.remote.TmdbVideoDto
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.ui.DetailUiState
 import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.MediaCatalogRow
-import com.example.ui.components.animatedPosterShowcase
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
@@ -124,6 +119,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 @Composable
@@ -172,11 +168,14 @@ fun MediaDetailScreen(
         // quando ci si sposta tra le icone pulsanti.
         val tvHeroStageHeight = maxHeight
         val density = LocalDensity.current
-        val revealBelowFoldOffsetPx = remember(tvHeroStageHeight, density) {
-            with(density) { (tvHeroStageHeight * 0.48f).roundToPx().coerceAtLeast(0) }
+        val tvHeroStageHeightPx = remember(tvHeroStageHeight, density) {
+            with(density) { tvHeroStageHeight.roundToPx().coerceAtLeast(1) }
         }
-        val scrollStepPx = remember(density) {
-            with(density) { 220.dp.roundToPx().coerceAtLeast(1) }
+        val topHeaderClearancePx = remember(density) {
+            with(density) { 68.dp.roundToPx().coerceAtLeast(1) }
+        }
+        val bottomEdgeClearancePx = remember(density) {
+            with(density) { 28.dp.roundToPx().coerceAtLeast(1) }
         }
 
         var snapshotsByKey by remember {
@@ -203,9 +202,6 @@ fun MediaDetailScreen(
             }
             val currentItem = currentState.mediaItem
             val details = currentState.details
-            val trailers = remember(details?.trailers) {
-                details?.trailers.orEmpty().distinctBy { it.id.ifBlank { it.key } }
-            }
             val castList = remember(details?.cast) {
                 details?.cast.orEmpty().distinctBy { it.id }
             }
@@ -223,7 +219,6 @@ fun MediaDetailScreen(
             val detailRestartFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailCloseFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailBackFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
-            val firstTrailerFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstCastFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstSeasonFocus = remember(currentItem.uniqueKey) { FocusRequester() }
             val firstEpisodeFocus = remember(currentItem.uniqueKey) { FocusRequester() }
@@ -239,6 +234,27 @@ fun MediaDetailScreen(
             }
             val firstSimilarFocus = remember(currentItem.uniqueKey) { FocusRequester() }
 
+            // Indici deterministici delle sezioni nel LazyColumn per scroll + focus a singola pressione D-Pad
+            val heroItemCount = if (isTvDevice) 1 else 2
+            val hasSeasons = currentItem.isSeries && !details?.seasons.isNullOrEmpty()
+            var nextLazySectionIndex = heroItemCount
+            val castItemIndex: Int? = if (castList.isNotEmpty()) nextLazySectionIndex++ else null
+            val seasonsItemIndex: Int? = if (currentItem.isSeries) nextLazySectionIndex++ else null
+            val episodesStartIndex: Int? = when {
+                !currentItem.isSeries -> null
+                currentState.isLoadingEpisodes -> {
+                    nextLazySectionIndex++
+                    null
+                }
+                episodesList.isNotEmpty() -> {
+                    val start = nextLazySectionIndex
+                    nextLazySectionIndex += episodesList.size
+                    start
+                }
+                else -> null
+            }
+            val similarItemIndex: Int? = if (similarList.isNotEmpty()) nextLazySectionIndex++ else null
+
             // Tracciamento focus non-reattivo per evitare ricomposizioni dell'intera scheda
             // o micro-scroll BringIntoView (es. PivotBringIntoViewSpec su Fire TV Stick) ad ogni pressione D-Pad sui bottoni.
             val focusTracker = remember(currentItem.uniqueKey) {
@@ -248,8 +264,7 @@ fun MediaDetailScreen(
                     var userMovedFocus: Boolean = false
                     var heroStageLockActive: Boolean = true
                     var wasTrailerOpen: Boolean = false
-                    var lastTrailerTriggerRequester: FocusRequester? = null
-                    var lastTrailerTriggerWasBelowFold: Boolean = false
+                    var activeNavJob: Job? = null
                 }
             }
 
@@ -286,24 +301,20 @@ fun MediaDetailScreen(
                     val returnToTrailer = focusTracker.wasTrailerOpen
                     focusTracker.wasTrailerOpen = false
                     focusTracker.userMovedFocus = false
+                    focusTracker.heroStageLockActive = true
                     if (!returnToTrailer) {
-                        focusTracker.heroStageLockActive = true
                         if (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0) {
                             runCatching { listState.scrollToItem(0, 0) }
                         }
                     } else {
-                        focusTracker.heroStageLockActive = !focusTracker.lastTrailerTriggerWasBelowFold
                         focusTracker.trailerFocused = false
                         focusTracker.playFocused = false
                     }
                     val targetRequester = if (returnToTrailer) {
-                        focusTracker.lastTrailerTriggerRequester?.takeIfAttached()
-                            ?: detailTrailerFocusRequester.takeIfAttached()
-                            ?: detailPlayFocusRequester
+                        detailTrailerFocusRequester.takeIfAttached() ?: detailPlayFocusRequester
                     } else {
                         detailPlayFocusRequester
                     }
-                    val expectHeroTrailerFocus = returnToTrailer && !focusTracker.lastTrailerTriggerWasBelowFold
                     androidx.compose.runtime.withFrameNanos { }
                     val retryDelaysMs = longArrayOf(0L, 16L, 45L, 90L, 160L, 280L)
                     for (stepDelay in retryDelaysMs) {
@@ -311,19 +322,16 @@ fun MediaDetailScreen(
                             kotlinx.coroutines.delay(stepDelay)
                         }
                         if (focusTracker.userMovedFocus) break
-                        val targetAlreadyFocused = when {
-                            returnToTrailer && focusTracker.lastTrailerTriggerWasBelowFold -> false
-                            expectHeroTrailerFocus -> focusTracker.trailerFocused
-                            else -> focusTracker.playFocused
+                        val targetAlreadyFocused = if (returnToTrailer) {
+                            focusTracker.trailerFocused
+                        } else {
+                            focusTracker.playFocused
                         }
                         if (targetAlreadyFocused) break
                         val requested = targetRequester.safeRequestFocus()
                         if (requested) {
                             kotlinx.coroutines.yield()
-                            if (returnToTrailer && focusTracker.lastTrailerTriggerWasBelowFold) {
-                                break
-                            }
-                            val focusedAfterYield = if (expectHeroTrailerFocus) {
+                            val focusedAfterYield = if (returnToTrailer) {
                                 focusTracker.trailerFocused
                             } else {
                                 focusTracker.playFocused
@@ -334,28 +342,28 @@ fun MediaDetailScreen(
                 }
             }
 
-            val downTargetFromActions: FocusRequester? = when {
-                trailers.isNotEmpty() -> firstTrailerFocus
-                castList.isNotEmpty() -> firstCastFocus
-                currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
-                currentItem.isSeries && episodesList.isNotEmpty() -> firstEpisodeFocus
-                similarList.isNotEmpty() -> firstSimilarFocus
+            val firstBelowFoldTarget: Pair<Int, FocusRequester>? = when {
+                castItemIndex != null -> castItemIndex to firstCastFocus
+                hasSeasons && seasonsItemIndex != null -> seasonsItemIndex to firstSeasonFocus
+                episodesStartIndex != null -> episodesStartIndex to firstEpisodeFocus
+                similarItemIndex != null -> similarItemIndex to firstSimilarFocus
                 else -> null
             }
 
-            val hasBelowFoldContent = trailers.isNotEmpty() ||
-                castList.isNotEmpty() ||
-                (currentItem.isSeries && (!details?.seasons.isNullOrEmpty() || episodesList.isNotEmpty())) ||
-                similarList.isNotEmpty()
+            val downTargetFromActions: FocusRequester? = firstBelowFoldTarget?.second
+            val hasBelowFoldContent = firstBelowFoldTarget != null
 
             val returnToHeroStage: () -> Boolean = {
+                focusTracker.activeNavJob?.cancel()
                 focusTracker.userMovedFocus = true
                 focusTracker.heroStageLockActive = true
                 if (isTvDevice) {
-                    coroutineScope.launch {
+                    focusTracker.activeNavJob = coroutineScope.launch {
                         runCatching { listState.scrollToItem(0, 0) }
-                        repeat(2) { androidx.compose.runtime.withFrameNanos { } }
-                        detailPlayFocusRequester.safeRequestFocus()
+                        for (attempt in 1..6) {
+                            androidx.compose.runtime.withFrameNanos { }
+                            if (detailPlayFocusRequester.safeRequestFocus()) break
+                        }
                         androidx.compose.runtime.withFrameNanos { }
                         if (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0) {
                             runCatching { listState.scrollToItem(0, 0) }
@@ -363,7 +371,14 @@ fun MediaDetailScreen(
                     }
                     true
                 } else {
-                    detailPlayFocusRequester.safeRequestFocus()
+                    focusTracker.activeNavJob = coroutineScope.launch {
+                        runCatching { listState.scrollToItem(0, 0) }
+                        for (attempt in 1..4) {
+                            androidx.compose.runtime.withFrameNanos { }
+                            if (detailPlayFocusRequester.safeRequestFocus()) break
+                        }
+                    }
+                    true
                 }
             }
 
@@ -386,21 +401,96 @@ fun MediaDetailScreen(
                 handleDetailBack()
             }
 
-            val navigateBelowFold: (FocusRequester?, Boolean) -> Boolean = { targetRequester, isDown ->
-                if (targetRequester == null) {
+            val navigateToDetailSection: (Int?, FocusRequester?, Boolean) -> Boolean = { targetLazyIndex, targetRequester, isMovingDown ->
+                if (targetLazyIndex == null || targetRequester == null) {
                     false
                 } else {
+                    focusTracker.activeNavJob?.cancel()
                     focusTracker.userMovedFocus = true
                     focusTracker.heroStageLockActive = false
-                    if (targetRequester.safeRequestFocus()) {
+
+                    val layoutInfo = listState.layoutInfo
+                    val targetInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetLazyIndex }
+                    val viewportStart = layoutInfo.viewportStartOffset
+                    val viewportEnd = layoutInfo.viewportEndOffset
+                    val isComfortablyVisible = targetInfo != null &&
+                        targetInfo.offset >= viewportStart + (topHeaderClearancePx / 2) &&
+                        (targetInfo.offset + targetInfo.size) <= viewportEnd
+
+                    if (isComfortablyVisible && targetRequester.safeRequestFocus()) {
                         true
                     } else {
-                        coroutineScope.launch {
-                            val delta = if (isDown) scrollStepPx.toFloat() else -scrollStepPx.toFloat()
-                            for (step in 1..4) {
-                                runCatching { listState.scrollBy(delta) }
-                                repeat(2) { androidx.compose.runtime.withFrameNanos { } }
-                                if (targetRequester.safeRequestFocus()) break
+                        val isLeavingTvHero = isTvDevice &&
+                            isMovingDown &&
+                            listState.firstVisibleItemIndex == 0 &&
+                            targetLazyIndex == firstBelowFoldTarget?.first
+                        focusTracker.activeNavJob = coroutineScope.launch {
+                            when {
+                                isLeavingTvHero -> {
+                                    // Porta la prima sezione sotto-piega subito in piena vista sotto la barra superiore,
+                                    // garantendo il montaggio immediato anche delle LazyRow annidate alla prima pressione GIÙ.
+                                    val revealOffset = (tvHeroStageHeightPx - topHeaderClearancePx).coerceAtLeast(0)
+                                    runCatching { listState.scrollToItem(0, revealOffset) }
+                                    var focused = false
+                                    for (attempt in 1..6) {
+                                        androidx.compose.runtime.withFrameNanos { }
+                                        if (targetRequester.safeRequestFocus()) {
+                                            focused = true
+                                            break
+                                        }
+                                    }
+                                    if (!focused) {
+                                        runCatching { listState.scrollToItem(targetLazyIndex, 0) }
+                                        for (attempt in 1..6) {
+                                            androidx.compose.runtime.withFrameNanos { }
+                                            if (targetRequester.safeRequestFocus()) break
+                                        }
+                                    }
+                                }
+                                targetInfo != null -> {
+                                    val scrollDelta = when {
+                                        isMovingDown && (targetInfo.offset + targetInfo.size) > viewportEnd ->
+                                            (targetInfo.offset + targetInfo.size + bottomEdgeClearancePx - viewportEnd).toFloat()
+                                        !isMovingDown && targetInfo.offset < viewportStart + topHeaderClearancePx ->
+                                            (targetInfo.offset - (viewportStart + topHeaderClearancePx)).toFloat()
+                                        else -> 0f
+                                    }
+                                    if (scrollDelta != 0f) {
+                                        runCatching { listState.scrollBy(scrollDelta) }
+                                    }
+                                    var focused = false
+                                    for (attempt in 1..5) {
+                                        androidx.compose.runtime.withFrameNanos { }
+                                        if (targetRequester.safeRequestFocus()) {
+                                            focused = true
+                                            break
+                                        }
+                                    }
+                                    if (!focused) {
+                                        runCatching {
+                                            listState.scrollToItem(targetLazyIndex, 0)
+                                            if (targetLazyIndex > 0) {
+                                                listState.scrollBy(-topHeaderClearancePx.toFloat())
+                                            }
+                                        }
+                                        for (attempt in 1..6) {
+                                            androidx.compose.runtime.withFrameNanos { }
+                                            if (targetRequester.safeRequestFocus()) break
+                                        }
+                                    }
+                                }
+                                else -> {
+                                    runCatching {
+                                        listState.scrollToItem(targetLazyIndex, 0)
+                                        if (targetLazyIndex > 0) {
+                                            listState.scrollBy(-topHeaderClearancePx.toFloat())
+                                        }
+                                    }
+                                    for (attempt in 1..8) {
+                                        androidx.compose.runtime.withFrameNanos { }
+                                        if (targetRequester.safeRequestFocus()) break
+                                    }
+                                }
                             }
                         }
                         true
@@ -409,32 +499,12 @@ fun MediaDetailScreen(
             }
 
             val handleActionDownKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { keyEvent ->
-                if (isTvDevice &&
-                    keyEvent.type == KeyEventType.KeyDown &&
-                    keyEvent.key == Key.DirectionDown
-                ) {
-                    if (!hasBelowFoldContent) {
+                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
+                    val target = firstBelowFoldTarget
+                    if (target == null) {
                         true
                     } else {
-                        focusTracker.userMovedFocus = true
-                        focusTracker.heroStageLockActive = false
-                        coroutineScope.launch {
-                            runCatching {
-                                if (listState.firstVisibleItemIndex == 0 &&
-                                    listState.firstVisibleItemScrollOffset < revealBelowFoldOffsetPx
-                                ) {
-                                    listState.scrollToItem(0, revealBelowFoldOffsetPx)
-                                }
-                            }
-                            repeat(2) { androidx.compose.runtime.withFrameNanos { } }
-                            val focusedOnFirstTry = downTargetFromActions?.safeRequestFocus() == true
-                            if (!focusedOnFirstTry) {
-                                runCatching { listState.scrollToItem(1, 0) }
-                                repeat(2) { androidx.compose.runtime.withFrameNanos { } }
-                                downTargetFromActions?.safeRequestFocus()
-                            }
-                        }
-                        true
+                        navigateToDetailSection(target.first, target.second, true)
                     }
                 } else {
                     false
@@ -483,7 +553,7 @@ fun MediaDetailScreen(
                                     onPlayMain(false)
                                     true
                                 }
-                                Key.Escape -> {
+                                Key.Back, Key.Escape -> {
                                     handleDetailBack()
                                     true
                                 }
@@ -503,18 +573,6 @@ fun MediaDetailScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .then(if (isTvDevice) Modifier else Modifier.navigationBarsPadding())
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (isInteractive &&
-                                isCurrentActive &&
-                                keyEvent.type == KeyEventType.KeyDown &&
-                                (keyEvent.key == Key.Back || keyEvent.key == Key.Escape)
-                            ) {
-                                handleDetailBack()
-                                true
-                            } else {
-                                false
-                            }
-                        }
                         .testTag("media_detail_lazy_column"),
                     contentPadding = if (isTvDevice) PaddingValues(0.dp) else PaddingValues(bottom = 40.dp)
                 ) {
@@ -821,11 +879,7 @@ fun MediaDetailScreen(
                                                     }
                                                 },
                                                 testTag = "detail_watch_trailer_button",
-                                                onClick = {
-                                                    focusTracker.lastTrailerTriggerRequester = detailTrailerFocusRequester
-                                                    focusTracker.lastTrailerTriggerWasBelowFold = false
-                                                    onOpenYouTubeTrailerPopup()
-                                                }
+                                                onClick = onOpenYouTubeTrailerPopup
                                             )
 
                                             DetailRoundActionButton(
@@ -896,9 +950,9 @@ fun MediaDetailScreen(
                                     ) {
                                         Text(
                                             text = if (currentItem.isSeries) {
-                                                "Premi ▼ GIÙ sul telecomando per Episodi, Trailer, Cast e Titoli Simili"
+                                                "Premi ▼ GIÙ sul telecomando per Episodi, Cast e Titoli Simili"
                                             } else {
-                                                "Premi ▼ GIÙ sul telecomando per Trailer, Cast e Titoli Simili"
+                                                "Premi ▼ GIÙ sul telecomando per Cast e Titoli Simili"
                                             },
                                             style = MaterialTheme.typography.labelSmall,
                                             color = NetflixLightGray,
@@ -1103,6 +1157,8 @@ fun MediaDetailScreen(
                                         upFocusRequester = topReturnTarget,
                                         downFocusRequester = downTargetFromActions,
                                         rightFocusRequester = detailTrailerFocusRequester,
+                                        lockHorizontalRow = true,
+                                        onDownKey = handleActionDownKey,
                                         onFocusChange = { focused -> focusTracker.playFocused = focused },
                                         testTag = "detail_play_button",
                                         onClick = { onPlayMain(false) }
@@ -1120,16 +1176,14 @@ fun MediaDetailScreen(
                                         downFocusRequester = downTargetFromActions,
                                         leftFocusRequester = detailPlayFocusRequester,
                                         rightFocusRequester = detailWatchlistFocusRequester,
+                                        lockHorizontalRow = true,
+                                        onDownKey = handleActionDownKey,
                                         onFocusChange = { focused ->
                                             focusTracker.trailerFocused = focused
                                             if (focused) focusTracker.userMovedFocus = true
                                         },
                                         testTag = "detail_watch_trailer_button",
-                                        onClick = {
-                                            focusTracker.lastTrailerTriggerRequester = detailTrailerFocusRequester
-                                            focusTracker.lastTrailerTriggerWasBelowFold = false
-                                            onOpenYouTubeTrailerPopup()
-                                        }
+                                        onClick = onOpenYouTubeTrailerPopup
                                     )
 
                                     DetailRoundActionButton(
@@ -1145,6 +1199,8 @@ fun MediaDetailScreen(
                                         downFocusRequester = downTargetFromActions,
                                         leftFocusRequester = detailTrailerFocusRequester,
                                         rightFocusRequester = if (hasResumeProgress) detailRestartFocusRequester else null,
+                                        lockHorizontalRow = true,
+                                        onDownKey = handleActionDownKey,
                                         onFocusChange = { focused ->
                                             if (focused) focusTracker.userMovedFocus = true
                                         },
@@ -1165,6 +1221,8 @@ fun MediaDetailScreen(
                                             upFocusRequester = topReturnTarget,
                                             downFocusRequester = downTargetFromActions,
                                             leftFocusRequester = detailWatchlistFocusRequester,
+                                            lockHorizontalRow = true,
+                                            onDownKey = handleActionDownKey,
                                             onFocusChange = { focused ->
                                                 if (focused) focusTracker.userMovedFocus = true
                                             },
@@ -1203,129 +1261,12 @@ fun MediaDetailScreen(
                         }
                     }
 
-                    // SEZIONE DEDICATA: Trailer & Video Ufficiali da TMDB (/movie/{id}/videos o /tv/{id}/videos)
-                    if (trailers.isNotEmpty()) {
-                        val downFromTrailers = when {
-                            castList.isNotEmpty() -> firstCastFocus
-                            currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
-                            currentItem.isSeries && episodesList.isNotEmpty() -> firstEpisodeFocus
-                            similarList.isNotEmpty() -> firstSimilarFocus
-                            else -> null
-                        }
-                        item(key = "detail_trailers_section", contentType = "detail_trailers") {
-                            Spacer(modifier = Modifier.height(20.dp))
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("tmdb_trailers_section")
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Movie,
-                                            contentDescription = null,
-                                            tint = NetflixRed,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "Trailer & Anteprime Ufficiali (TMDB)",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = NetflixWhite
-                                        )
-                                    }
-                                    Text(
-                                        text = "${trailers.size} video",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = NetflixMatchGreen
-                                    )
-                                }
-
-                                Text(
-                                    text = "Seleziona un trailer per guardarlo direttamente in-app prima di avviare lo streaming completo.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = NetflixLightGray,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
-                                )
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                val trailersListState = rememberLazyListState()
-                                val firstVisibleTrailerIdx = trailersListState.firstVisibleItemIndex.coerceIn(0, trailers.lastIndex)
-                                val trailerCardFocusRequesters = remember(trailers) {
-                                    trailers.associate { it.id.ifBlank { it.key } to FocusRequester() }
-                                }
-                                LazyRow(
-                                    state = trailersListState,
-                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                                ) {
-                                    itemsIndexed(
-                                        items = trailers,
-                                        key = { _, it -> it.id.ifBlank { it.key } },
-                                        contentType = { _, _ -> "detail_trailer_card" }
-                                    ) { index, video ->
-                                        val cardKey = video.id.ifBlank { video.key }
-                                        val cardRequester = if (index == firstVisibleTrailerIdx) {
-                                            firstTrailerFocus
-                                        } else {
-                                            trailerCardFocusRequesters[cardKey] ?: firstTrailerFocus
-                                        }
-                                        TmdbTrailerCard(
-                                            video = video,
-                                            fallbackBackdropUrl = currentItem.backdropUrl,
-                                            itemIndex = index,
-                                            listState = trailersListState,
-                                            onClick = {
-                                                focusTracker.lastTrailerTriggerRequester = cardRequester
-                                                focusTracker.lastTrailerTriggerWasBelowFold = true
-                                                onOpenYouTubeTrailerPopup()
-                                            },
-                                            modifier = Modifier
-                                                .safeFocusRequester(cardRequester)
-                                                .onPreviewKeyEvent { keyEvent ->
-                                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                                        when (keyEvent.key) {
-                                                            Key.DirectionUp -> returnToHeroStage()
-                                                            Key.DirectionDown -> {
-                                                                if (downFromTrailers != null) {
-                                                                    navigateBelowFold(downFromTrailers, true)
-                                                                } else {
-                                                                    true
-                                                                }
-                                                            }
-                                                            Key.DirectionLeft -> index == 0
-                                                            Key.DirectionRight -> index == trailers.lastIndex
-                                                            else -> false
-                                                        }
-                                                    } else {
-                                                        false
-                                                    }
-                                                }
-                                                .focusProperties {
-                                                    detailPlayFocusRequester.takeIfAttached()?.let { up = it }
-                                                    downFromTrailers?.takeIfAttached()?.let { down = it }
-                                                }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     // Cast TMDB
                     if (castList.isNotEmpty()) {
-                        val upFromCast = if (trailers.isNotEmpty()) firstTrailerFocus else null
-                        val downFromCast = when {
-                            currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
-                            currentItem.isSeries && episodesList.isNotEmpty() -> firstEpisodeFocus
-                            similarList.isNotEmpty() -> firstSimilarFocus
+                        val downFromCastTarget: Pair<Int, FocusRequester>? = when {
+                            hasSeasons && seasonsItemIndex != null -> seasonsItemIndex to firstSeasonFocus
+                            episodesStartIndex != null -> episodesStartIndex to firstEpisodeFocus
+                            similarItemIndex != null -> similarItemIndex to firstSimilarFocus
                             else -> null
                         }
                         item(key = "detail_cast_section", contentType = "detail_cast") {
@@ -1337,7 +1278,17 @@ fun MediaDetailScreen(
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                             )
                             val castListState = rememberLazyListState()
+                            var lastFocusedCastIdx by remember(currentItem.uniqueKey) {
+                                androidx.compose.runtime.mutableIntStateOf(0)
+                            }
                             val firstVisibleCastIdx = castListState.firstVisibleItemIndex.coerceIn(0, castList.lastIndex)
+                            val visibleCastIndices = castListState.layoutInfo.visibleItemsInfo.map { it.index }
+                            val rememberedCastIdx = lastFocusedCastIdx.coerceIn(0, castList.lastIndex)
+                            val targetCastIdx = if (visibleCastIndices.isEmpty() || rememberedCastIdx in visibleCastIndices) {
+                                rememberedCastIdx
+                            } else {
+                                firstVisibleCastIdx
+                            }
                             LazyRow(
                                 state = castListState,
                                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
@@ -1348,25 +1299,32 @@ fun MediaDetailScreen(
                                     key = { _, actor -> actor.id },
                                     contentType = { _, _ -> "detail_cast_card" }
                                 ) { index, actor ->
+                                    val ownActorRequester = remember(actor.id) { FocusRequester() }
                                     CastCard(
                                         actor = actor,
+                                        onFocusChange = { focused ->
+                                            if (focused) {
+                                                lastFocusedCastIdx = index
+                                                focusTracker.userMovedFocus = true
+                                                focusTracker.heroStageLockActive = false
+                                            }
+                                        },
                                         modifier = Modifier
+                                            .safeFocusRequester(ownActorRequester)
                                             .then(
-                                                if (index == firstVisibleCastIdx) Modifier.safeFocusRequester(firstCastFocus) else Modifier
+                                                if (index == targetCastIdx) Modifier.safeFocusRequester(firstCastFocus) else Modifier
                                             )
                                             .onPreviewKeyEvent { keyEvent ->
                                                 if (keyEvent.type == KeyEventType.KeyDown) {
                                                     when (keyEvent.key) {
-                                                        Key.DirectionUp -> {
-                                                            if (upFromCast != null) {
-                                                                navigateBelowFold(upFromCast, false)
-                                                            } else {
-                                                                returnToHeroStage()
-                                                            }
-                                                        }
+                                                        Key.DirectionUp -> returnToHeroStage()
                                                         Key.DirectionDown -> {
-                                                            if (downFromCast != null) {
-                                                                navigateBelowFold(downFromCast, true)
+                                                            if (downFromCastTarget != null) {
+                                                                navigateToDetailSection(
+                                                                    downFromCastTarget.first,
+                                                                    downFromCastTarget.second,
+                                                                    true
+                                                                )
                                                             } else {
                                                                 true
                                                             }
@@ -1380,8 +1338,8 @@ fun MediaDetailScreen(
                                                 }
                                             }
                                             .focusProperties {
-                                                (upFromCast ?: detailPlayFocusRequester).takeIfAttached()?.let { up = it }
-                                                downFromCast?.takeIfAttached()?.let { down = it }
+                                                detailPlayFocusRequester.takeIfAttached()?.let { up = it }
+                                                downFromCastTarget?.second?.takeIfAttached()?.let { down = it }
                                             }
                                     )
                                 }
@@ -1391,14 +1349,11 @@ fun MediaDetailScreen(
 
                     // Selettore Stagioni ed Episodi per Serie TV
                     if (currentItem.isSeries) {
-                        val upFromSeasons = when {
-                            castList.isNotEmpty() -> firstCastFocus
-                            trailers.isNotEmpty() -> firstTrailerFocus
-                            else -> null
-                        }
-                        val downFromSeasons = when {
-                            episodesList.isNotEmpty() -> firstEpisodeFocus
-                            similarList.isNotEmpty() -> firstSimilarFocus
+                        val upFromSeasonsTarget: Pair<Int, FocusRequester>? =
+                            castItemIndex?.let { it to firstCastFocus }
+                        val downFromSeasonsTarget: Pair<Int, FocusRequester>? = when {
+                            episodesStartIndex != null -> episodesStartIndex to firstEpisodeFocus
+                            similarItemIndex != null -> similarItemIndex to firstSimilarFocus
                             else -> null
                         }
                         item(key = "detail_seasons_header", contentType = "detail_seasons") {
@@ -1444,15 +1399,23 @@ fun MediaDetailScreen(
                                                         if (keyEvent.type == KeyEventType.KeyDown) {
                                                             when (keyEvent.key) {
                                                                 Key.DirectionUp -> {
-                                                                    if (upFromSeasons != null) {
-                                                                        navigateBelowFold(upFromSeasons, false)
+                                                                    if (upFromSeasonsTarget != null) {
+                                                                        navigateToDetailSection(
+                                                                            upFromSeasonsTarget.first,
+                                                                            upFromSeasonsTarget.second,
+                                                                            false
+                                                                        )
                                                                     } else {
                                                                         returnToHeroStage()
                                                                     }
                                                                 }
                                                                 Key.DirectionDown -> {
-                                                                    if (downFromSeasons != null) {
-                                                                        navigateBelowFold(downFromSeasons, true)
+                                                                    if (downFromSeasonsTarget != null) {
+                                                                        navigateToDetailSection(
+                                                                            downFromSeasonsTarget.first,
+                                                                            downFromSeasonsTarget.second,
+                                                                            true
+                                                                        )
                                                                     } else {
                                                                         true
                                                                     }
@@ -1466,15 +1429,19 @@ fun MediaDetailScreen(
                                                         }
                                                     }
                                                     .focusProperties {
-                                                        (upFromSeasons ?: detailPlayFocusRequester).takeIfAttached()?.let { up = it }
-                                                        downFromSeasons?.takeIfAttached()?.let { down = it }
+                                                        (upFromSeasonsTarget?.second ?: detailPlayFocusRequester)
+                                                            .takeIfAttached()?.let { up = it }
+                                                        downFromSeasonsTarget?.second?.takeIfAttached()?.let { down = it }
                                                     }
                                                     .tvFocusableControl(
                                                         shape = RoundedCornerShape(8.dp),
                                                         focusedScale = 1.06f,
                                                         focusTag = "detail_season_chip_${season.seasonNumber}",
                                                         onFocusChange = { focused ->
-                                                            if (focused) focusTracker.userMovedFocus = true
+                                                            if (focused) {
+                                                                focusTracker.userMovedFocus = true
+                                                                focusTracker.heroStageLockActive = false
+                                                            }
                                                         },
                                                         onClick = { onSelectSeason(season.seasonNumber) }
                                                     )
@@ -1512,21 +1479,27 @@ fun MediaDetailScreen(
                             ) { epIndex, ep ->
                                 val isFirstEp = epIndex == 0
                                 val isLastEp = epIndex == episodesList.lastIndex
-                                val upFromFirstEp = when {
-                                    !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
-                                    castList.isNotEmpty() -> firstCastFocus
-                                    trailers.isNotEmpty() -> firstTrailerFocus
+                                val upFromFirstEpTarget: Pair<Int, FocusRequester>? = when {
+                                    hasSeasons && seasonsItemIndex != null -> seasonsItemIndex to firstSeasonFocus
+                                    castItemIndex != null -> castItemIndex to firstCastFocus
                                     else -> null
                                 }
                                 val currentEpRequester = episodeFocusRequesters.getOrNull(epIndex)
                                 val prevEpRequester = episodeFocusRequesters.getOrNull(epIndex - 1)
                                 val nextEpRequester = episodeFocusRequesters.getOrNull(epIndex + 1)
+                                val currentEpLazyIndex = (episodesStartIndex ?: 0) + epIndex
                                 EpisodeRowItem(
                                     episode = ep,
                                     savedEpProgress = currentState.episodeProgressMap[ep.episodeNumber],
                                     fallbackBackdropUrl = currentItem.backdropUrl,
                                     onPlayEpisode = {
                                         onPlayEpisode(ep.seasonNumber, ep.episodeNumber, ep.name)
+                                    },
+                                    onFocusChange = { focused ->
+                                        if (focused) {
+                                            focusTracker.userMovedFocus = true
+                                            focusTracker.heroStageLockActive = false
+                                        }
                                     },
                                     modifier = Modifier
                                         .then(
@@ -1541,21 +1514,37 @@ fun MediaDetailScreen(
                                                 when {
                                                     keyEvent.key == Key.DirectionLeft || keyEvent.key == Key.DirectionRight -> true
                                                     isFirstEp && keyEvent.key == Key.DirectionUp -> {
-                                                        if (upFromFirstEp != null) {
-                                                            navigateBelowFold(upFromFirstEp, false)
+                                                        if (upFromFirstEpTarget != null) {
+                                                            navigateToDetailSection(
+                                                                upFromFirstEpTarget.first,
+                                                                upFromFirstEpTarget.second,
+                                                                false
+                                                            )
                                                         } else {
                                                             returnToHeroStage()
                                                         }
                                                     }
                                                     !isFirstEp && keyEvent.key == Key.DirectionUp && prevEpRequester != null -> {
-                                                        navigateBelowFold(prevEpRequester, false)
+                                                        navigateToDetailSection(
+                                                            currentEpLazyIndex - 1,
+                                                            prevEpRequester,
+                                                            false
+                                                        )
                                                     }
                                                     !isLastEp && keyEvent.key == Key.DirectionDown && nextEpRequester != null -> {
-                                                        navigateBelowFold(nextEpRequester, true)
+                                                        navigateToDetailSection(
+                                                            currentEpLazyIndex + 1,
+                                                            nextEpRequester,
+                                                            true
+                                                        )
                                                     }
                                                     isLastEp && keyEvent.key == Key.DirectionDown -> {
-                                                        if (similarList.isNotEmpty()) {
-                                                            navigateBelowFold(firstSimilarFocus, true)
+                                                        if (similarItemIndex != null) {
+                                                            navigateToDetailSection(
+                                                                similarItemIndex,
+                                                                firstSimilarFocus,
+                                                                true
+                                                            )
                                                         } else {
                                                             true
                                                         }
@@ -1568,11 +1557,12 @@ fun MediaDetailScreen(
                                         }
                                         .focusProperties {
                                             if (isFirstEp) {
-                                                (upFromFirstEp ?: detailPlayFocusRequester).takeIfAttached()?.let { up = it }
+                                                (upFromFirstEpTarget?.second ?: detailPlayFocusRequester)
+                                                    .takeIfAttached()?.let { up = it }
                                             } else {
                                                 prevEpRequester?.takeIfAttached()?.let { up = it }
                                             }
-                                            if (isLastEp && similarList.isNotEmpty()) {
+                                            if (isLastEp && similarItemIndex != null) {
                                                 firstSimilarFocus.takeIfAttached()?.let { down = it }
                                             } else if (!isLastEp) {
                                                 nextEpRequester?.takeIfAttached()?.let { down = it }
@@ -1585,40 +1575,39 @@ fun MediaDetailScreen(
 
                     // Contenuti simili da TMDB
                     if (similarList.isNotEmpty()) {
-                        val upToBeforeSimilar = when {
-                            currentItem.isSeries && !currentState.isLoadingEpisodes && episodesList.isNotEmpty() ->
-                                episodeFocusRequesters.lastOrNull() ?: firstEpisodeFocus
-                            currentItem.isSeries && !details?.seasons.isNullOrEmpty() -> firstSeasonFocus
-                            castList.isNotEmpty() -> firstCastFocus
-                            trailers.isNotEmpty() -> firstTrailerFocus
+                        val upToBeforeSimilarTarget: Pair<Int, FocusRequester>? = when {
+                            episodesStartIndex != null && episodesList.isNotEmpty() ->
+                                (episodesStartIndex + episodesList.lastIndex) to (episodeFocusRequesters.lastOrNull() ?: firstEpisodeFocus)
+                            hasSeasons && seasonsItemIndex != null -> seasonsItemIndex to firstSeasonFocus
+                            castItemIndex != null -> castItemIndex to firstCastFocus
                             else -> null
                         }
                         item(key = "detail_similar_section", contentType = "detail_similar") {
                             Spacer(modifier = Modifier.height(20.dp))
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .onPreviewKeyEvent { keyEvent ->
-                                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionUp) {
-                                            if (upToBeforeSimilar != null) {
-                                                navigateBelowFold(upToBeforeSimilar, false)
-                                            } else {
-                                                returnToHeroStage()
-                                            }
-                                        } else {
+                            MediaCatalogRow(
+                                title = "Titoli Simili su TMDB",
+                                items = similarList,
+                                onItemClick = onSelectSimilar,
+                                onItemQuickPlay = { sim -> onSelectSimilar(sim) },
+                                onItemFocused = {
+                                    focusTracker.userMovedFocus = true
+                                    focusTracker.heroStageLockActive = false
+                                },
+                                firstItemFocusRequester = firstSimilarFocus,
+                                upFocusRequester = upToBeforeSimilarTarget?.second ?: detailPlayFocusRequester,
+                                onUpKey = {
+                                    if (upToBeforeSimilarTarget != null) {
+                                        navigateToDetailSection(
+                                            upToBeforeSimilarTarget.first,
+                                            upToBeforeSimilarTarget.second,
                                             false
-                                        }
+                                        )
+                                    } else {
+                                        returnToHeroStage()
                                     }
-                            ) {
-                                MediaCatalogRow(
-                                    title = "Titoli Simili su TMDB",
-                                    items = similarList,
-                                    onItemClick = onSelectSimilar,
-                                    onItemQuickPlay = { sim -> onSelectSimilar(sim) },
-                                    firstItemFocusRequester = firstSimilarFocus,
-                                    upFocusRequester = upToBeforeSimilar ?: detailPlayFocusRequester
-                                )
-                            }
+                                },
+                                onDownKey = { true }
+                            )
                         }
                     }
 
@@ -1914,111 +1903,9 @@ private fun rememberSizedDetailImageRequest(
 }
 
 @Composable
-private fun TmdbTrailerCard(
-    video: TmdbVideoDto,
-    fallbackBackdropUrl: String?,
-    itemIndex: Int,
-    listState: LazyListState?,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var isFocused by remember { mutableStateOf(false) }
-
-    Card(
-        shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-        border = BorderStroke(1.dp, if (isFocused) NetflixWhite else NetflixElevatedSurface),
-        modifier = modifier
-            .width(236.dp)
-            .animatedPosterShowcase(
-                itemIndex = itemIndex,
-                listState = listState,
-                isFocused = isFocused,
-                shape = RoundedCornerShape(10.dp),
-                focusedScale = 1.08f,
-                onFocusedChanged = { isFocused = it },
-                onClick = onClick
-            )
-            .testTag("trailer_card_${video.key}")
-    ) {
-        Column {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(128.dp)
-                    .background(NetflixDarkSurface)
-            ) {
-                AsyncImage(
-                    model = rememberSizedDetailImageRequest(
-                        url = if (video.isYouTube) video.thumbnailUrl else fallbackBackdropUrl,
-                        widthDp = 236.dp,
-                        heightDp = 128.dp
-                    ),
-                    contentDescription = video.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(NetflixBlack.copy(alpha = 0.35f))
-                )
-                Surface(
-                    color = NetflixRed,
-                    shape = RoundedCornerShape(4.dp),
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp)
-                ) {
-                    Text(
-                        text = video.typeBadge,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .align(Alignment.Center)
-                        .clip(CircleShape)
-                        .background(NetflixRed.copy(alpha = 0.9f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Riproduci Trailer in App",
-                        tint = Color.White,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
-            }
-            Column(modifier = Modifier.padding(10.dp)) {
-                Text(
-                    text = video.name,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = NetflixWhite,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Riproduzione In-App • ${video.site} (${video.languageCode?.uppercase() ?: "INT"})",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NetflixLightGray,
-                    maxLines = 1
-                )
-            }
-        }
-    }
-}
-
-
-@Composable
 private fun CastCard(
     actor: TmdbCastMemberDto,
+    onFocusChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -2029,7 +1916,8 @@ private fun CastCard(
                 shape = RoundedCornerShape(10.dp),
                 focusedScale = 1.06f,
                 focusedBorderColor = NetflixWhite,
-                focusTag = "cast_card_${actor.id}"
+                focusTag = "cast_card_${actor.id}",
+                onFocusChange = onFocusChange
             )
             .padding(vertical = 4.dp)
             .testTag("cast_card_${actor.id}"),
@@ -2074,6 +1962,7 @@ private fun EpisodeRowItem(
     savedEpProgress: EpisodeProgressEntity?,
     fallbackBackdropUrl: String?,
     onPlayEpisode: () -> Unit,
+    onFocusChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
@@ -2092,7 +1981,10 @@ private fun EpisodeRowItem(
                 focusedScale = 1.02f,
                 focusedBorderColor = NetflixWhite,
                 focusTag = "episode_card_${episode.seasonNumber}_${episode.episodeNumber}",
-                onFocusChange = { isFocused = it },
+                onFocusChange = { focused ->
+                    isFocused = focused
+                    onFocusChange?.invoke(focused)
+                },
                 onClick = onPlayEpisode
             )
             .testTag("episode_card_${episode.seasonNumber}_${episode.episodeNumber}")

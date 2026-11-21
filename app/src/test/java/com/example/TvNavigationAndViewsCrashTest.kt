@@ -663,17 +663,29 @@ class TvNavigationAndViewsCrashTest {
             kotlin.math.abs(initialPosterBounds.top - afterLeftPosterTop) < 1f
         )
 
-        // 4. Premendo D-Pad Giù dai bottoni rapidi, la scheda deve scorrere sotto (Trailer / Cast / Titoli Simili)
-        // senza alcun flash/snap-back che la blocchi sulla vista d'ingresso
+        // 4. La vecchia striscia orizzontale trailer NON deve esistere, mentre il bottone Trailer sull'Hero resta attivo
+        assertTrue(
+            "Horizontal TMDB trailers strip must be completely removed from detail screen",
+            composeRule.onAllNodesWithTag("tmdb_trailers_section", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "No trailer card should exist in detail screen",
+            composeRule.onAllNodesWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+
+        // Premendo 1 sola volta D-Pad Giù dai bottoni rapidi, si passa direttamente a Cast senza alcun doppio click
         composeRule.onNodeWithTag("detail_watch_trailer_button", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionDown) }
         composeRule.waitForIdle()
 
         assertTrue(
-            "After pressing D-Pad Down from action buttons, below-the-fold Trailer section must be visible in viewport",
-            composeRule.onAllNodesWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
+            "After single D-Pad Down from action buttons, Cast section must be visible and focused",
+            composeRule.onAllNodesWithTag("cast_card_1", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         )
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true).assertIsFocused()
         val scrolledHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
             .fetchSemanticsNode().positionInRoot.y
         assertTrue(
@@ -681,35 +693,26 @@ class TvNavigationAndViewsCrashTest {
             scrolledHeroTop < -50f
         )
 
-        // Premendo ancora D-Pad Giù da Trailer si passa a Cast e poi a Titoli Simili
-        composeRule.onNodeWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
-            .performKeyInput { pressKey(Key.DirectionDown) }
-        composeRule.waitForIdle()
-        assertTrue(
-            "After pressing D-Pad Down from Trailer, Cast section must be visible",
-            composeRule.onAllNodesWithTag("cast_card_1", useUnmergedTree = true)
-                .fetchSemanticsNodes().isNotEmpty()
-        )
-
+        // Premendo ancora 1 sola volta D-Pad Giù da Cast si passa direttamente a Titoli Simili
         composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionDown) }
         composeRule.waitForIdle()
         assertTrue(
-            "After pressing D-Pad Down from Cast, Similar titles must be visible",
+            "After single D-Pad Down from Cast, Similar titles must be visible",
             composeRule.onAllNodesWithTag("poster_card_movie_900", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         )
+        composeRule.onNodeWithTag("poster_card_movie_900", useUnmergedTree = true).assertIsFocused()
 
-        // Premendo D-Pad Su da Titoli Simili -> Cast -> Trailer -> Hero Stage, la scheda torna centrata a top == 0f
+        // Premendo D-Pad Su da Titoli Simili -> Cast -> Hero Stage, la scheda torna centrata a top == 0f
         composeRule.onNodeWithTag("poster_card_movie_900", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionUp) }
         composeRule.waitForIdle()
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true).assertIsFocused()
         composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionUp) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
-            .performKeyInput { pressKey(Key.DirectionUp) }
-        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
 
         val restoredHeroTop = composeRule.onNodeWithTag("detail_tv_hero_stage", useUnmergedTree = true)
             .fetchSemanticsNode().positionInRoot.y
@@ -1227,13 +1230,17 @@ class TvNavigationAndViewsCrashTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
 
-        // Scendi sotto la piega: Trailer -> Cast -> Stagione -> Episodio 1 -> Episodio 2
+        // Scendi sotto la piega con singola pressione per sezione: Cast -> Stagione -> Episodio 1 -> Episodio 2
+        assertTrue(
+            "Horizontal trailer strip must not exist on TV series detail screen",
+            composeRule.onAllNodesWithTag("tmdb_trailers_section", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
         composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionDown) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("trailer_card_TcMBFSGVi1c", useUnmergedTree = true)
-            .performKeyInput { pressKey(Key.DirectionDown) }
-        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("cast_card_11", useUnmergedTree = true).assertIsFocused()
+
         composeRule.onNodeWithTag("cast_card_11", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.DirectionDown) }
         composeRule.waitForIdle()
@@ -1256,11 +1263,12 @@ class TvNavigationAndViewsCrashTest {
         assertTrue("Detail state must still be open after first Back from below fold", viewModel.detailState.value != null)
         composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
 
-        // 2° Indietro mentre siamo sul palco Hero in cima: chiude la scheda dettaglio
+        // 2° Indietro mentre siamo sul palco Hero in cima: chiude la scheda dettaglio e ripristina il focus su poster_card_tv_501
         composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
             .performKeyInput { pressKey(Key.Back) }
         composeRule.waitForIdle()
         assertTrue("Detail state must close on second Back from hero stage", viewModel.detailState.value == null)
+        composeRule.onNodeWithTag("poster_card_tv_501", useUnmergedTree = true).assertIsFocused()
 
         // 3. Griglia Multi-Colonna Genere Film: preserva la colonna quando si scende/sale tra le righe della griglia
         composeRule.onNodeWithTag("tv_rail_movies").performClick()
@@ -1701,6 +1709,223 @@ class TvNavigationAndViewsCrashTest {
             viewModel.playbackSession.value != null
         }
         assertTrue("Pressing Key.MediaPlay on detail screen must start playback session", viewModel.playbackSession.value != null)
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+    fun `detail modal single-press D-Pad scroll and exact poster focus restoration work across repeated open-close cycles for movies and series`() {
+        launchTvApp()
+
+        // 1. HOME (Film): naviga solo con D-Pad fino alla 3ª locandina della riga Film di Tendenza (poster_card_movie_202)
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true).assertIsFocused()
+        // Giù -> Continua a guardare -> Piattaforme streaming -> Top 10 -> Film di Tendenza (200)
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("continue_watching_card_movie_101", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("platform_card_337", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("top10_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_200", useUnmergedTree = true).assertIsFocused()
+
+        // Destra x2 -> poster_card_movie_202
+        composeRule.onNodeWithTag("poster_card_movie_200", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_201", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("poster_card_movie_201", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_202", useUnmergedTree = true).assertIsFocused()
+
+        // Ciclo 1: Apri modale Film solo con D-Pad OK, verifica assenza striscia trailer, scorri con 1 sola pressione GIÙ, chiudi con bottone Chiudi
+        composeRule.onNodeWithTag("poster_card_movie_202", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            val ds = viewModel.detailState.value
+            ds != null && !ds.isLoading && ds.details != null
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+        assertTrue(
+            "Trailer strip must not be rendered in movie detail",
+            composeRule.onAllNodesWithTag("tmdb_trailers_section", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "Hero Trailer action button must remain available",
+            composeRule.onAllNodesWithTag("detail_watch_trailer_button", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        // 1 sola pressione GIÙ -> Cast, 1 sola pressione GIÙ -> Titoli Simili
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_900", useUnmergedTree = true).assertIsFocused()
+
+        // Risali con SU -> Cast -> Play -> Su -> Chiudi -> OK per chiudere la modale
+        composeRule.onNodeWithTag("poster_card_movie_900", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("cast_card_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_close_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("detail_close_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.detailState.value == null
+        }
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(150L)
+        composeRule.waitForIdle()
+
+        // Il focus DEVE tornare esattamente su poster_card_movie_202 (NON su hero_play_button o sulla rail)
+        composeRule.onNodeWithTag("poster_card_movie_202", useUnmergedTree = true).assertIsFocused()
+
+        // Ciclo 2: Riapri la STESSA locandina con OK e chiudi subito con BACK
+        composeRule.onNodeWithTag("poster_card_movie_202", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.detailState.value != null
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Back) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.detailState.value == null
+        }
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(150L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_202", useUnmergedTree = true).assertIsFocused()
+
+        // Ciclo 3: Spostati a destra su poster_card_movie_203, apri e chiudi con BACK -> focus esatto su 203
+        composeRule.onNodeWithTag("poster_card_movie_202", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_203", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("poster_card_movie_203", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.detailState.value != null
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Back) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.detailState.value == null
+        }
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(150L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_movie_203", useUnmergedTree = true).assertIsFocused()
+
+        // 2. SERIE TV: passa alla scheda Serie TV, naviga su poster_card_tv_502, verifica singolo GIÙ fino a Titoli Simili e ripristino focus alla chiusura
+        composeRule.onNodeWithTag("tv_rail_series").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("poster_card_tv_500", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hero_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true).assertIsFocused()
+        composeRule.onNodeWithTag("poster_card_tv_500", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_501", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_502", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("poster_card_tv_502", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            val ds = viewModel.detailState.value
+            ds != null && !ds.isLoading && !ds.isLoadingEpisodes && ds.episodes.size >= 2
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+        assertTrue(
+            "Trailer strip must not be rendered in TV series detail",
+            composeRule.onAllNodesWithTag("tmdb_trailers_section", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty()
+        )
+
+        // Percorso completo verticale a singola pressione GIÙ: Play -> Cast -> Stagione -> Ep1 -> Ep2 -> Titoli Simili
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("cast_card_11", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("cast_card_11", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_season_chip_1", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("detail_season_chip_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("episode_card_1_1", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("episode_card_1_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("episode_card_1_2", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("episode_card_1_2", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_900", useUnmergedTree = true).assertIsFocused()
+
+        // 1° Back torna su detail_play_button, 2° Back chiude e ripristina focus su poster_card_tv_502
+        composeRule.onNodeWithTag("poster_card_tv_900", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Back) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true).assertIsFocused()
+
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.Back) }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.detailState.value == null
+        }
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(150L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("poster_card_tv_502", useUnmergedTree = true).assertIsFocused()
     }
 
     private class FullMockTmdbServer {

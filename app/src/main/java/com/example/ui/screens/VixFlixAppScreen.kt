@@ -230,7 +230,22 @@ fun VixFlixAppScreen(
     ) {
         mutableStateOf<FocusRequester?>(null)
     }
+    // Riferimento dedicato alla locandina/elemento che ha aperto la modale dettaglio o il player,
+    // protetto da eventuali eventi di focus transitori durante l'apertura/chiusura.
+    var detailOriginFocusRequester by remember(
+        selectedTab,
+        movieGenreState.selectedGenre?.id,
+        platformState.selectedProvider?.providerId
+    ) {
+        mutableStateOf<FocusRequester?>(null)
+    }
     var wasOverlayActive by remember { mutableStateOf(false) }
+
+    val openDetailsFromCatalog: (MediaItem) -> Unit = { mediaItem ->
+        detailOriginFocusRequester = lastFocusedContentRequester.takeIfAttached()
+            ?: lastFocusedContentRequester
+        viewModel.openDetails(mediaItem)
+    }
 
     // Memorizza l'ultimo DetailUiState per animarne l'uscita fluida verso il basso senza scatti
     var lastDetailSnapshot by remember { mutableStateOf<DetailUiState?>(null) }
@@ -254,6 +269,7 @@ fun VixFlixAppScreen(
 
     val isDetailVisible = detailState != null
     val isPlayerVisible = playbackSession != null
+    val isOverlayActive = isDetailVisible || isPlayerVisible
     val isUpdateDialogVisible = !isSplashVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
     val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible
     val isCatalogInteractive = !isSplashVisible && !isDetailVisible && !isPlayerVisible
@@ -354,36 +370,69 @@ fun VixFlixAppScreen(
     ) {
         val useTvNavigationRail = isTvDevice || maxWidth >= 600.dp || maxWidth > maxHeight
 
-        // Focus iniziale per cambio scheda / selezione da menu / caricamento completato / uscita dallo splash
+        // Focus iniziale per cambio scheda / selezione da menu / caricamento completato / uscita dallo splash.
+        // NON reagisce alla chiusura di Dettagli/Player (gestita separatamente per ripristinare la locandina esatta).
         LaunchedEffect(
             useTvNavigationRail,
-            isCatalogInteractive,
+            isSplashVisible,
             selectedTab,
             tabScrollResetNonce,
             catalogState is CatalogUiState.Success,
             catalogState is CatalogUiState.Error
         ) {
-            if (useTvNavigationRail && isCatalogInteractive && !isSearchBarVisible) {
+            if (useTvNavigationRail && !isSplashVisible && isCatalogInteractive && !isSearchBarVisible && !wasOverlayActive) {
                 val target = tabContentEntryFocusRequester ?: return@LaunchedEffect
                 for (frame in 1..3) {
                     androidx.compose.runtime.withFrameNanos { }
                     target.safeRequestFocus()
                 }
                 delay(60L)
-                target.safeRequestFocus()
-            }
-        }
-
-        // Ripristino focus sull'ultima locandina alla chiusura di Dettagli / Player
-        LaunchedEffect(isCatalogInteractive, useTvNavigationRail) {
-            if (wasOverlayActive && isCatalogInteractive && useTvNavigationRail && !isSearchBarVisible) {
-                val target = lastFocusedContentRequester.takeIfAttached() ?: tabContentEntryFocusRequester
-                if (target != null) {
-                    delay(120L)
+                if (!wasOverlayActive && isCatalogInteractive && detailOriginFocusRequester == null) {
                     target.safeRequestFocus()
                 }
             }
-            wasOverlayActive = !isCatalogInteractive
+        }
+
+        // Ripristino deterministico del focus sull'esatta locandina originaria alla chiusura di Dettagli / Player
+        LaunchedEffect(isOverlayActive, isCatalogInteractive, useTvNavigationRail) {
+            if (isOverlayActive) {
+                if (detailOriginFocusRequester == null) {
+                    detailOriginFocusRequester = lastFocusedContentRequester.takeIfAttached()
+                        ?: lastFocusedContentRequester
+                }
+                wasOverlayActive = true
+                return@LaunchedEffect
+            }
+            if (wasOverlayActive && isCatalogInteractive) {
+                wasOverlayActive = false
+                val restoreTarget = detailOriginFocusRequester.takeIfAttached()
+                    ?: lastFocusedContentRequester.takeIfAttached()
+                    ?: if (isSearchBarVisible) {
+                        searchFirstItemFocusRequester.takeIfAttached()
+                            ?: searchInputFocusRequester.takeIfAttached()
+                    } else if (useTvNavigationRail) {
+                        tabContentEntryFocusRequester.takeIfAttached()
+                            ?: heroPlayFocusRequester.takeIfAttached()
+                            ?: firstRowFocusRequester.takeIfAttached()
+                    } else {
+                        null
+                    }
+                if (restoreTarget != null) {
+                    var restored = false
+                    for (attempt in 1..8) {
+                        androidx.compose.runtime.withFrameNanos { }
+                        if (restoreTarget.safeRequestFocus()) {
+                            restored = true
+                            break
+                        }
+                    }
+                    if (!restored) {
+                        delay(60L)
+                        restoreTarget.safeRequestFocus()
+                    }
+                    lastFocusedContentRequester = restoreTarget
+                }
+            }
         }
 
         // Ripristino deterministico del focus dopo la chiusura dei dialoghi rapidi TV o del dialogo aggiornamenti GitHub
@@ -469,6 +518,7 @@ fun VixFlixAppScreen(
             onRecoverFocus = {
                 if (isSearchBarVisible) {
                     recoverFocusFromCandidates(
+                        "detail_origin" to detailOriginFocusRequester,
                         "last_focused_content" to lastFocusedContentRequester,
                         "search_input_field" to searchInputFocusRequester,
                         "search_first_item" to searchFirstItemFocusRequester,
@@ -476,6 +526,7 @@ fun VixFlixAppScreen(
                     )
                 } else {
                     recoverFocusFromCandidates(
+                        "detail_origin" to detailOriginFocusRequester,
                         "last_focused_content" to lastFocusedContentRequester,
                         "tab_content_entry" to tabContentEntryFocusRequester,
                         "hero_play_button" to heroPlayFocusRequester,
@@ -519,6 +570,7 @@ fun VixFlixAppScreen(
                                     isSearchBarVisible = false
                                     viewModel.clearSearch()
                                     lastFocusedContentRequester = null
+                                    detailOriginFocusRequester = null
                                     tabScrollResetNonce++
                                     viewModel.selectTab(tab)
                                 },
@@ -628,7 +680,7 @@ fun VixFlixAppScreen(
                                 onItemFocused = { if (isSectionActive) lastFocusedContentRequester = it },
                                 onItemQuickPlay = { item -> viewModel.startPlayback(item) },
                                 onItemLongClick = { item -> tvQuickActionItem = item },
-                                onItemClick = viewModel::openDetails,
+                                onItemClick = openDetailsFromCatalog,
                                 contentPadding = PaddingValues(
                                     top = topBarOffset + 46.dp,
                                     bottom = innerPadding.calculateBottomPadding() + 24.dp,
@@ -685,7 +737,7 @@ fun VixFlixAppScreen(
                                 topBarFocusRequester = activeTopBarFocusRequester,
                                 tabScrollResetNonce = tabScrollResetNonce,
                                 onBrowseCatalog = { viewModel.selectTab(NavTab.HOME) },
-                                onOpenItem = viewModel::openDetails,
+                                onOpenItem = openDetailsFromCatalog,
                                 onPlayItem = { viewModel.startPlayback(it) },
                                 onResumeContinueWatching = viewModel::resumeFromContinueWatching,
                                 onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
@@ -815,11 +867,11 @@ fun VixFlixAppScreen(
                                         onSelectPlatformMediaTypeFilter = viewModel::selectPlatformMediaTypeFilter,
                                         onRetryStreamingPlatform = viewModel::retrySelectedStreamingPlatform,
                                         onPlayItem = { item -> viewModel.startPlayback(item) },
-                                        onOpenDetails = viewModel::openDetails,
+                                        onOpenDetails = openDetailsFromCatalog,
                                         onToggleWatchlist = viewModel::toggleWatchlist,
                                         onResumeContinueWatching = viewModel::resumeFromContinueWatching,
                                         onInfoContinueWatching = { entry ->
-                                            viewModel.openDetails(
+                                            openDetailsFromCatalog(
                                                 MediaItem(
                                                     id = entry.tmdbId,
                                                     mediaType = entry.mediaType,
@@ -860,6 +912,7 @@ fun VixFlixAppScreen(
                             isSearchBarVisible = false
                             viewModel.clearSearch()
                             lastFocusedContentRequester = null
+                            detailOriginFocusRequester = null
                             tabScrollResetNonce++
                             viewModel.selectTab(tab)
                         },
@@ -935,6 +988,7 @@ fun VixFlixAppScreen(
                             val willOpen = !isSearchBarVisible
                             isSearchBarVisible = willOpen
                             lastFocusedContentRequester = null
+                            detailOriginFocusRequester = null
                             if (!willOpen) {
                                 viewModel.clearSearch()
                                 (tabContentEntryFocusRequester.takeIfAttached()
@@ -947,6 +1001,7 @@ fun VixFlixAppScreen(
                             isSearchBarVisible = false
                             viewModel.clearSearch()
                             lastFocusedContentRequester = null
+                            detailOriginFocusRequester = null
                             tabScrollResetNonce++
                             viewModel.selectTab(tab)
                             if (isSameTab) {
@@ -1012,7 +1067,7 @@ fun VixFlixAppScreen(
                 },
                 onOpenDetails = {
                     tvQuickActionEntry = null
-                    viewModel.openDetails(
+                    openDetailsFromCatalog(
                         MediaItem(
                             id = entry.tmdbId,
                             mediaType = entry.mediaType,
@@ -1060,7 +1115,7 @@ fun VixFlixAppScreen(
                 onDismiss = { tvQuickActionItem = null },
                 onOpenDetails = {
                     tvQuickActionItem = null
-                    viewModel.openDetails(item)
+                    openDetailsFromCatalog(item)
                 },
                 onQuickPlay = {
                     tvQuickActionItem = null
@@ -2897,7 +2952,11 @@ private fun CatalogFeedContent(
                                                 MediaPosterCard(
                                                     item = item,
                                                     itemIndex = rowIdx * gridColumns + colIdx,
-                                                    onClick = { onOpenDetails(item) },
+                                                    onClick = {
+                                                        gridRowLastCol[rowKey] = colIdx
+                                                        onRememberContentFocus(itemFocusRequester)
+                                                        onOpenDetails(item)
+                                                    },
                                                     onQuickPlay = { onPlayItem(item) },
                                                     onLongClick = { onTvLongPressPoster(item) },
                                                     onFocused = {
@@ -3308,7 +3367,11 @@ private fun CatalogFeedContent(
                                                 MediaPosterCard(
                                                     item = item,
                                                     itemIndex = rowIdx * gridColumns + colIdx,
-                                                    onClick = { onOpenDetails(item) },
+                                                    onClick = {
+                                                        gridRowLastCol[rowKey] = colIdx
+                                                        onRememberContentFocus(itemFocusRequester)
+                                                        onOpenDetails(item)
+                                                    },
                                                     onQuickPlay = { onPlayItem(item) },
                                                     onLongClick = { onTvLongPressPoster(item) },
                                                     onFocused = {
@@ -3607,7 +3670,10 @@ private fun SearchResultsGrid(
                 MediaPosterCard(
                     item = item,
                     itemIndex = index,
-                    onClick = { onItemClick(item) },
+                    onClick = {
+                        onItemFocused(itemFocusRequester)
+                        onItemClick(item)
+                    },
                     onQuickPlay = { onItemQuickPlay(item) },
                     onLongClick = { onItemLongClick(item) },
                     onFocused = { onItemFocused(itemFocusRequester) },
