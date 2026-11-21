@@ -1388,6 +1388,7 @@ class VixFlixRepository(
                 title = sameSeasonNext.name?.takeIf { it.isNotBlank() },
                 stillUrl = sameSeasonNext.stillUrl,
                 overview = sameSeasonNext.overview?.takeIf { it.isNotBlank() },
+                runtimeMinutes = sameSeasonNext.runtime?.takeIf { it in 1..600 },
                 isCrossSeason = false
             )
         }
@@ -1419,6 +1420,74 @@ class VixFlixRepository(
                     title = firstEp.name?.takeIf { it.isNotBlank() },
                     stillUrl = firstEp.stillUrl,
                     overview = firstEp.overview?.takeIf { it.isNotBlank() },
+                    runtimeMinutes = firstEp.runtime?.takeIf { it in 1..600 },
+                    isCrossSeason = true
+                )
+            }
+        }
+
+        null
+    }
+
+    /**
+     * Verifica in modo rigoroso se esiste realmente un episodio precedente per la serie TV:
+     * 1) Cerca l'episodio precedente nella stagione corrente.
+     * 2) Se l'episodio corrente è il primo della stagione, controlla le stagioni regolari precedenti
+     *    e seleziona l'ultimo episodio reale della stagione precedente valida.
+     * 3) Non inventa mai episodi inesistenti: restituisce `null` per il primo episodio della serie.
+     */
+    suspend fun resolveVerifiedPreviousEpisode(
+        item: MediaItem,
+        currentSeason: Int,
+        currentEpisode: Int,
+        currentSeasonEpisodes: List<TmdbEpisodeDto> = emptyList(),
+        knownSeasons: List<TmdbSeasonSummaryDto> = emptyList()
+    ): com.example.data.local.VerifiedPreviousEpisode? = withContext(Dispatchers.IO) {
+        if (!item.isSeries || currentSeason < 0 || currentEpisode <= 0) return@withContext null
+
+        val episodesInSeason = currentSeasonEpisodes.ifEmpty {
+            fetchSeasonEpisodes(item.id, currentSeason).getOrDefault(emptyList())
+        }.sortedBy { it.episodeNumber }
+
+        // 1. Episodio precedente reale nella stessa stagione
+        val sameSeasonPrev = episodesInSeason.lastOrNull { it.episodeNumber in 1 until currentEpisode }
+        if (sameSeasonPrev != null) {
+            return@withContext com.example.data.local.VerifiedPreviousEpisode(
+                seasonNumber = currentSeason,
+                episodeNumber = sameSeasonPrev.episodeNumber,
+                title = sameSeasonPrev.name?.takeIf { it.isNotBlank() },
+                stillUrl = sameSeasonPrev.stillUrl,
+                overview = sameSeasonPrev.overview?.takeIf { it.isNotBlank() },
+                runtimeMinutes = sameSeasonPrev.runtime?.takeIf { it in 1..600 },
+                isCrossSeason = false
+            )
+        }
+
+        if (episodesInSeason.isEmpty() || currentSeason <= 1) return@withContext null
+
+        // 2. Primo episodio della stagione corrente -> controlla la stagione regolare precedente
+        val seasonsList = knownSeasons.ifEmpty {
+            fetchMediaDetails(item).getOrNull()?.seasons.orEmpty()
+        }
+        val candidatePrevSeasons = seasonsList
+            .filter { season ->
+                season.seasonNumber in 1 until currentSeason && season.episodeCount > 0
+            }
+            .sortedByDescending { it.seasonNumber }
+
+        for (candidate in candidatePrevSeasons) {
+            val prevSeasonEpisodes = fetchSeasonEpisodes(item.id, candidate.seasonNumber)
+                .getOrDefault(emptyList())
+                .sortedBy { it.episodeNumber }
+            val lastEp = prevSeasonEpisodes.lastOrNull { it.episodeNumber > 0 }
+            if (lastEp != null) {
+                return@withContext com.example.data.local.VerifiedPreviousEpisode(
+                    seasonNumber = candidate.seasonNumber,
+                    episodeNumber = lastEp.episodeNumber,
+                    title = lastEp.name?.takeIf { it.isNotBlank() },
+                    stillUrl = lastEp.stillUrl,
+                    overview = lastEp.overview?.takeIf { it.isNotBlank() },
+                    runtimeMinutes = lastEp.runtime?.takeIf { it in 1..600 },
                     isCrossSeason = true
                 )
             }

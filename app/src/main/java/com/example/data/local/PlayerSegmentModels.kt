@@ -69,6 +69,22 @@ data class VerifiedNextEpisode(
     val title: String? = null,
     val stillUrl: String? = null,
     val overview: String? = null,
+    val runtimeMinutes: Int? = null,
+    val isCrossSeason: Boolean = false
+)
+
+/**
+ * Rappresenta un episodio precedente realmente verificato nei metadati TMDB della serie
+ * (stessa stagione o ultima puntata della stagione precedente valida).
+ */
+@Immutable
+data class VerifiedPreviousEpisode(
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val title: String? = null,
+    val stillUrl: String? = null,
+    val overview: String? = null,
+    val runtimeMinutes: Int? = null,
     val isCrossSeason: Boolean = false
 )
 

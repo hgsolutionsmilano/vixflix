@@ -21,6 +21,7 @@ import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.UserProfileEntity
 import com.example.data.local.UserProfileUiState
 import com.example.data.local.VerifiedNextEpisode
+import com.example.data.local.VerifiedPreviousEpisode
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
@@ -144,7 +145,11 @@ data class PlaybackSession(
     val introSegment: IntroSegmentEntity? = null,
     val creditsSegment: CreditsSegmentEntity? = null,
     val verifiedNextEpisode: VerifiedNextEpisode? = null,
-    val hasCheckedNextEpisode: Boolean = false
+    val hasCheckedNextEpisode: Boolean = false,
+    val verifiedPreviousEpisode: VerifiedPreviousEpisode? = null,
+    val hasCheckedPreviousEpisode: Boolean = false,
+    val metadataDurationMs: Long? = null,
+    val sessionToken: Long = 0L
 ) {
     val startSeconds: Long get() = (startPositionMs / 1000L).coerceAtLeast(0L)
     val startMinutes: Int get() = (startSeconds / 60L).toInt()
@@ -332,6 +337,7 @@ class VixFlixViewModel @JvmOverloads constructor(
     private var nextEpisodePreResolveJob: Job? = null
     private var lastPreResolvedEpisodeKey: String? = null
     private val livePlaybackPositionMs = AtomicLong(0L)
+    private val playbackSessionCounter = AtomicLong(0L)
 
     private fun updateDetailStack(newStack: List<DetailUiState>) {
         _detailBackStack.value = newStack
@@ -1244,7 +1250,8 @@ class VixFlixViewModel @JvmOverloads constructor(
         episodeNumber: Int? = null,
         episodeTitle: String? = null,
         explicitStartPositionMs: Long? = null,
-        forceStreamRefresh: Boolean = false
+        forceStreamRefresh: Boolean = false,
+        expectedDurationMs: Long? = null
     ) {
         playbackResolveJob?.cancel()
         nextEpisodePreResolveJob?.cancel()
@@ -1252,12 +1259,11 @@ class VixFlixViewModel @JvmOverloads constructor(
         // Sospende subito eventuali prefetch locandine per dedicare il 100% della banda allo streaming video
         imagePrefetchJob?.cancel()
 
+        val requestToken = playbackSessionCounter.incrementAndGet()
         val lang = streamLanguage.value
         val useWebPlayer = preferWebPlayer.value
-        val cachedDetailEpisodes = _detailState.value
-            ?.takeIf { it.mediaItem.id == item.id }
-            ?.episodes
-            .orEmpty()
+        val cachedDetail = _detailState.value?.takeIf { it.mediaItem.id == item.id }
+        val cachedDetailEpisodes = cachedDetail?.episodes.orEmpty()
 
         val initialSeason = seasonNumber
         val initialEpisode = episodeNumber
@@ -1267,6 +1273,20 @@ class VixFlixViewModel @JvmOverloads constructor(
             seasonNumber = initialSeason,
             episodeNumber = initialEpisode
         )
+        val matchedInitialEpisode = if (item.isSeries && initialSeason != null && initialEpisode != null) {
+            cachedDetailEpisodes.firstOrNull {
+                it.seasonNumber == initialSeason && it.episodeNumber == initialEpisode
+            }
+        } else {
+            null
+        }
+        val initialMetadataDurationMs = expectedDurationMs?.takeIf { it > 0L }
+            ?: matchedInitialEpisode?.runtime?.takeIf { it in 1..600 }?.let { it * 60_000L }
+            ?: if (!item.isSeries) {
+                cachedDetail?.details?.runtimeMinutes?.takeIf { it in 1..600 }?.let { it * 60_000L }
+            } else {
+                null
+            }
         val initialStartPosMs = explicitStartPositionMs ?: 0L
         livePlaybackPositionMs.set(initialStartPosMs)
         val placeholderEmbedUrl = repository.vixSrcResolver.buildVixSrcApiUrl(
@@ -1297,7 +1317,9 @@ class VixFlixViewModel @JvmOverloads constructor(
                 startSeconds = (initialStartPosMs / 1000L).coerceAtLeast(0L),
                 startMinutes = ((initialStartPosMs / 1000L) / 60L).toInt(),
                 isDirectHls = false
-            )
+            ),
+            metadataDurationMs = initialMetadataDurationMs,
+            sessionToken = requestToken
         )
 
         playbackResolveJob = viewModelScope.launch {
@@ -1347,9 +1369,17 @@ class VixFlixViewModel @JvmOverloads constructor(
             )
 
             val currentBeforeResolve = _playbackSession.value
-            if (currentBeforeResolve == null || currentBeforeResolve.mediaItem.id != item.id) {
+            if (currentBeforeResolve == null || currentBeforeResolve.sessionToken != requestToken) {
                 return@launch
             }
+
+            val matchedResolvedEp = if (item.isSeries && targetEpisode != null) {
+                initialSeasonEpisodes.firstOrNull { it.episodeNumber == targetEpisode }
+            } else {
+                null
+            }
+            val updatedMetaDurationMs = currentBeforeResolve.metadataDurationMs
+                ?: matchedResolvedEp?.runtime?.takeIf { it in 1..600 }?.let { it * 60_000L }
 
             _playbackSession.value = currentBeforeResolve.copy(
                 seasonNumber = targetSeason,
@@ -1365,7 +1395,8 @@ class VixFlixViewModel @JvmOverloads constructor(
                     startSeconds = (startPosMs / 1000L).coerceAtLeast(0L),
                     startMinutes = ((startPosMs / 1000L) / 60L).toInt(),
                     isDirectHls = false
-                )
+                ),
+                metadataDurationMs = updatedMetaDurationMs
             )
 
             // Salva subito l'ingresso in "Continua a guardare" per il profilo attivo se parte da un punto salvato
@@ -1377,7 +1408,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                         episodeNumber = targetEpisode,
                         episodeTitle = targetEpTitle,
                         positionMs = startPosMs,
-                        durationMs = 5_400_000L,
+                        durationMs = updatedMetaDurationMs ?: 5_400_000L,
                         profileId = playbackProfileId
                     )
                 }
@@ -1403,11 +1434,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                     episodeNumber = targetEpisode
                 )
                 val active = _playbackSession.value
-                if (active != null &&
-                    active.mediaItem.id == item.id &&
-                    active.seasonNumber == targetSeason &&
-                    active.episodeNumber == targetEpisode
-                ) {
+                if (active != null && active.sessionToken == requestToken) {
                     _playbackSession.value = active.copy(
                         introSegment = intro,
                         creditsSegment = credits
@@ -1415,33 +1442,48 @@ class VixFlixViewModel @JvmOverloads constructor(
                 }
             }
 
-            // Recupera episodi della stagione e verifica l'eventuale episodio successivo reale (incluso cambio stagione)
+            // Recupera episodi della stagione e verifica sia l'episodio precedente sia quello successivo reale (inclusi cambi stagione)
             if (item.isSeries && targetSeason != null && targetEpisode != null) {
                 launch {
                     val seasonEpisodes = initialSeasonEpisodes.ifEmpty {
                         repository.fetchSeasonEpisodes(item.id, resolvedSeason)
                             .getOrDefault(emptyList())
                     }
-                    val verifiedNext = repository.resolveVerifiedNextEpisode(
-                        item = item,
-                        currentSeason = targetSeason,
-                        currentEpisode = targetEpisode,
-                        currentSeasonEpisodes = seasonEpisodes,
-                        knownSeasons = cachedDetailSeasons
-                    )
+                    val verifiedNextDeferred = async {
+                        repository.resolveVerifiedNextEpisode(
+                            item = item,
+                            currentSeason = targetSeason,
+                            currentEpisode = targetEpisode,
+                            currentSeasonEpisodes = seasonEpisodes,
+                            knownSeasons = cachedDetailSeasons
+                        )
+                    }
+                    val verifiedPrevDeferred = async {
+                        repository.resolveVerifiedPreviousEpisode(
+                            item = item,
+                            currentSeason = targetSeason,
+                            currentEpisode = targetEpisode,
+                            currentSeasonEpisodes = seasonEpisodes,
+                            knownSeasons = cachedDetailSeasons
+                        )
+                    }
+                    val verifiedNext = verifiedNextDeferred.await()
+                    val verifiedPrev = verifiedPrevDeferred.await()
                     val active = _playbackSession.value
-                    if (active != null &&
-                        active.mediaItem.id == item.id &&
-                        active.seasonNumber == targetSeason &&
-                        active.episodeNumber == targetEpisode
-                    ) {
+                    if (active != null && active.sessionToken == requestToken) {
+                        val currentEpDto = seasonEpisodes.firstOrNull { it.episodeNumber == targetEpisode }
                         val resolvedEpName = active.episodeTitle?.takeIf { it.isNotBlank() }
-                            ?: seasonEpisodes.firstOrNull { it.episodeNumber == targetEpisode }?.name
+                            ?: currentEpDto?.name
+                        val resolvedMetaDurationMs = active.metadataDurationMs
+                            ?: currentEpDto?.runtime?.takeIf { it in 1..600 }?.let { it * 60_000L }
                         _playbackSession.value = active.copy(
                             seasonEpisodes = seasonEpisodes.ifEmpty { active.seasonEpisodes },
                             episodeTitle = resolvedEpName,
                             verifiedNextEpisode = verifiedNext,
-                            hasCheckedNextEpisode = true
+                            hasCheckedNextEpisode = true,
+                            verifiedPreviousEpisode = verifiedPrev,
+                            hasCheckedPreviousEpisode = true,
+                            metadataDurationMs = resolvedMetaDurationMs
                         )
                     }
                 }
@@ -1460,11 +1502,7 @@ class VixFlixViewModel @JvmOverloads constructor(
 
             val resolved = streamDeferred.await()
             val active = _playbackSession.value
-            if (active != null &&
-                active.mediaItem.id == item.id &&
-                active.seasonNumber == targetSeason &&
-                active.episodeNumber == targetEpisode
-            ) {
+            if (active != null && active.sessionToken == requestToken) {
                 resolved.fold(
                     onSuccess = { stream ->
                         _playbackSession.value = active.copy(
@@ -1654,7 +1692,26 @@ class VixFlixViewModel @JvmOverloads constructor(
             seasonNumber = next.seasonNumber,
             episodeNumber = next.episodeNumber,
             episodeTitle = next.title,
-            explicitStartPositionMs = 0L
+            explicitStartPositionMs = 0L,
+            expectedDurationMs = next.runtimeMinutes?.takeIf { it in 1..600 }?.let { it * 60_000L }
+        )
+    }
+
+    /**
+     * Passa all'episodio precedente reale (stessa stagione o ultimo episodio della stagione precedente).
+     */
+    fun playPreviousEpisode() {
+        val session = _playbackSession.value ?: return
+        if (!session.mediaItem.isSeries) return
+        val prev = session.verifiedPreviousEpisode ?: return
+
+        startPlayback(
+            item = session.mediaItem,
+            seasonNumber = prev.seasonNumber,
+            episodeNumber = prev.episodeNumber,
+            episodeTitle = prev.title,
+            explicitStartPositionMs = 0L,
+            expectedDurationMs = prev.runtimeMinutes?.takeIf { it in 1..600 }?.let { it * 60_000L }
         )
     }
 

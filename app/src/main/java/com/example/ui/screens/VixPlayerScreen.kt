@@ -50,6 +50,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,12 +81,15 @@ import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.SingleSampleMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
@@ -151,6 +155,35 @@ internal fun StreamingBufferPreset.toExoLoadControl(
 }
 
 @OptIn(UnstableApi::class)
+internal fun readVerifiedExoDurationMs(exoPlayer: ExoPlayer): Long {
+    val direct = exoPlayer.duration
+    if (direct != C.TIME_UNSET && direct > 0L) {
+        return direct
+    }
+    val timeline = exoPlayer.currentTimeline
+    if (!timeline.isEmpty) {
+        val windowIndex = exoPlayer.currentMediaItemIndex
+        if (windowIndex in 0 until timeline.windowCount) {
+            val windowDuration = timeline.getWindow(windowIndex, Timeline.Window()).durationMs
+            if (windowDuration != C.TIME_UNSET && windowDuration > 0L) {
+                return windowDuration
+            }
+        }
+    }
+    return 0L
+}
+
+private fun inferSubtitleMimeType(url: String): String {
+    val lower = url.lowercase()
+    return when {
+        lower.contains(".srt") -> MimeTypes.APPLICATION_SUBRIP
+        lower.contains(".ttml") || lower.contains(".xml") -> MimeTypes.APPLICATION_TTML
+        lower.contains(".ass") || lower.contains(".ssa") -> MimeTypes.TEXT_SSA
+        else -> MimeTypes.TEXT_VTT
+    }
+}
+
+@OptIn(UnstableApi::class)
 @Composable
 fun VixPlayerScreen(
     session: PlaybackSession,
@@ -163,6 +196,7 @@ fun VixPlayerScreen(
     onProgressUpdate: (positionMs: Long, durationMs: Long) -> Unit,
     onNextEpisode: () -> Unit,
     onClose: () -> Unit,
+    onPreviousEpisode: () -> Unit = {},
     onInvalidateAndRetryStream: (() -> Unit)? = null,
     onPreResolveNextEpisode: () -> Unit = {},
     advancedSettings: PlayerAdvancedSettings = PlayerAdvancedSettings(),
@@ -173,6 +207,8 @@ fun VixPlayerScreen(
     previewBitmapProvider: ((Long) -> Bitmap?)? = null,
     audioTracksOverrideForTest: List<PlayerAudioTrackOption>? = null,
     onAudioTrackSelectedForTest: ((PlayerAudioTrackOption) -> Unit)? = null,
+    subtitleTracksOverrideForTest: List<PlayerSubtitleTrackOption>? = null,
+    onSubtitleTrackSelectedForTest: ((PlayerSubtitleTrackOption) -> Unit)? = null,
     onOpenVixSrcLinkOverrideForTest: ((String) -> Unit)? = null,
     simulateBufferingOnSeekForTest: Boolean = false
 ) {
@@ -180,40 +216,33 @@ fun VixPlayerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val isLowRamDevice = remember(context) { VixFlixApplication.isLowRamDevice(context) }
     val resolvedStream = session.resolvedStream
+    val episodeKey = "${session.mediaItem.uniqueKey}_s${session.seasonNumber ?: 0}_e${session.episodeNumber ?: 0}_t${session.sessionToken}"
 
+    // Stato persistente unico lungo tutto il ciclo di vita di VixPlayerScreen (MAI ricreato con remember(episodeKey)):
+    // elimina definitivamente qualsiasi closure orfana nei listener di ExoPlayer quando si cambia episodio.
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember(initialReadyForTest) { mutableStateOf(!initialReadyForTest) }
-    var playerErrorMessage by remember(session.errorMessage) { mutableStateOf(session.errorMessage) }
+    var playerErrorMessage by remember { mutableStateOf(session.errorMessage) }
+    LaunchedEffect(session.errorMessage) {
+        playerErrorMessage = session.errorMessage
+    }
 
-    // Stato posizione/durata mantenuto come State holder per evitare ricomposizioni ogni 1s del root
-    val currentPositionMsState = remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableLongStateOf(session.startPositionMs)
+    val currentPositionMsState = remember {
+        mutableLongStateOf(session.startPositionMs.coerceAtLeast(0L))
     }
-    LaunchedEffect(session.startPositionMs, session.isResolvingStream) {
-        if (session.isResolvingStream) {
-            currentPositionMsState.longValue = session.startPositionMs
-        }
+    val durationMsState = remember {
+        mutableLongStateOf(
+            initialDurationMsOverride.takeIf { it > 0L }
+                ?: session.metadataDurationMs?.takeIf { !session.isResolvingStream && it > 0L }
+                ?: 0L
+        )
     }
-    val durationMsState = remember(
-        session.mediaItem.id,
-        session.seasonNumber,
-        session.episodeNumber,
-        initialDurationMsOverride
-    ) {
-        mutableLongStateOf(initialDurationMsOverride)
-    }
-    var hasSeekedInitial by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
-    var hasPreResolvedNext by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
+    var hasSeekedInitial by remember { mutableStateOf(false) }
+    var hasPreResolvedNext by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var interactionTick by remember { mutableLongStateOf(0L) }
     var isRemoteScrubbing by remember { mutableStateOf(false) }
-    var isManualSeekInProgress by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
+    var isManualSeekInProgress by remember { mutableStateOf(false) }
     var isTimeBarFocused by remember { mutableStateOf(false) }
     var focusTimeBarOnReveal by remember { mutableStateOf(false) }
     var wasControlsVisible by remember { mutableStateOf(false) }
@@ -224,37 +253,25 @@ fun VixPlayerScreen(
     var selectedOverrideAudioId by remember(audioTracksOverrideForTest) {
         mutableStateOf(audioTracksOverrideForTest?.firstOrNull { it.isSelected }?.id)
     }
-    var playbackEnded by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
+    var selectedOverrideSubtitleId by remember(subtitleTracksOverrideForTest) {
+        mutableStateOf(subtitleTracksOverrideForTest?.firstOrNull { it.isSelected }?.id)
     }
-    var introSkipped by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
-    var introDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
-    var autoNextDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
-    var movieEndedDismissed by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
-    val autoNextRemainingSecState = remember(
-        session.mediaItem.id,
-        session.seasonNumber,
-        session.episodeNumber,
-        advancedSettings.sanitizedCountdownSec
-    ) {
+    var playbackEnded by remember { mutableStateOf(false) }
+    var introSkipped by remember { mutableStateOf(false) }
+    var introDismissed by remember { mutableStateOf(false) }
+    var autoNextDismissed by remember { mutableStateOf(false) }
+    var movieEndedDismissed by remember { mutableStateOf(false) }
+    val autoNextRemainingSecState = remember {
         mutableIntStateOf(advancedSettings.sanitizedCountdownSec)
     }
     var retryNonce by remember { mutableIntStateOf(0) }
-    var hasAutoRetriedCachedStream by remember(session.mediaItem.id, session.seasonNumber, session.episodeNumber) {
-        mutableStateOf(false)
-    }
+    var hasAutoRetriedCachedStream by remember { mutableStateOf(false) }
 
     val isTvDevice = rememberIsTvDevice()
     val timeBarFocusRequester = remember { FocusRequester() }
+    val previousEpisodeFocusRequester = remember { FocusRequester() }
     val playPauseFocusRequester = remember { FocusRequester() }
+    val nextEpisodeFocusRequester = remember { FocusRequester() }
     val audioButtonFocusRequester = remember { FocusRequester() }
     val vixLinkButtonFocusRequester = remember { FocusRequester() }
     val skipIntroFocusRequester = remember { FocusRequester() }
@@ -268,6 +285,8 @@ fun VixPlayerScreen(
 
     val currentSeason = session.seasonNumber ?: 1
     val currentEpisode = session.episodeNumber ?: 1
+    val verifiedPreviousEpisode = session.verifiedPreviousEpisode
+    val hasVerifiedPreviousEpisode = session.mediaItem.isSeries && verifiedPreviousEpisode != null
     val verifiedNextEpisode = session.verifiedNextEpisode
     val hasVerifiedNextEpisode = session.mediaItem.isSeries && verifiedNextEpisode != null
     val currentError = playerErrorMessage ?: session.errorMessage
@@ -376,6 +395,7 @@ fun VixPlayerScreen(
             parameters = buildUponParameters()
                 .setViewportSizeToPhysicalDisplaySize(context, true)
                 .setForceHighestSupportedBitrate(false)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
         }
         ExoPlayer.Builder(context)
@@ -390,6 +410,87 @@ fun VixPlayerScreen(
             }
     }
 
+    val latestSession by rememberUpdatedState(session)
+    val latestEpisodeKey by rememberUpdatedState(episodeKey)
+    val latestResolvedStream by rememberUpdatedState(resolvedStream)
+    val latestOnProgressUpdate by rememberUpdatedState(onProgressUpdate)
+    val latestOnInvalidateAndRetryStream by rememberUpdatedState(onInvalidateAndRetryStream)
+    val latestOnPreResolveNextEpisode by rememberUpdatedState(onPreResolveNextEpisode)
+    val latestHasVerifiedNextEpisode by rememberUpdatedState(hasVerifiedNextEpisode)
+    val latestIsRemoteScrubbing by rememberUpdatedState(isRemoteScrubbing)
+    val latestInitialReadyForTest by rememberUpdatedState(initialReadyForTest)
+
+    // Reset deterministico e completo dello stato al cambio episodio/contenuto:
+    // azzera posizione, durata, barra, overlay, tracce e vecchi mediaItem prima del caricamento del nuovo episodio.
+    var hasInitializedEpisode by remember { mutableStateOf(false) }
+    LaunchedEffect(episodeKey) {
+        currentPositionMsState.longValue = session.startPositionMs.coerceAtLeast(0L)
+        durationMsState.longValue = initialDurationMsOverride.takeIf { it > 0L }
+            ?: session.metadataDurationMs?.takeIf { !session.isResolvingStream && it > 0L }
+            ?: 0L
+        hasSeekedInitial = false
+        hasPreResolvedNext = false
+        playbackEnded = false
+        introSkipped = false
+        introDismissed = false
+        autoNextDismissed = false
+        movieEndedDismissed = false
+        isRemoteScrubbing = false
+        isManualSeekInProgress = false
+        showAudioSelector = false
+        showVixLinkPanel = false
+        playerErrorMessage = session.errorMessage
+        hasAutoRetriedCachedStream = false
+        isPlaying = true
+        autoNextRemainingSecState.intValue = advancedSettings.sanitizedCountdownSec
+
+        if (hasInitializedEpisode) {
+            controlsVisible = true
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                .buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+            if (!initialReadyForTest) {
+                exoPlayer.stop()
+                exoPlayer.clearMediaItems()
+                isBuffering = true
+            } else {
+                isBuffering = false
+            }
+            tracksVersion++
+        }
+        hasInitializedEpisode = true
+    }
+
+    // Mantiene sincronizzata la posizione iniziale durante la risoluzione e aggiorna subito la durata affidabile
+    // (reale da ExoPlayer o fallback metadati TMDB se lo stream non ha ancora notificato la durata)
+    LaunchedEffect(session.startPositionMs, session.isResolvingStream) {
+        if (session.isResolvingStream) {
+            currentPositionMsState.longValue = session.startPositionMs.coerceAtLeast(0L)
+        }
+    }
+    LaunchedEffect(episodeKey, session.metadataDurationMs, session.isResolvingStream, initialDurationMsOverride) {
+        if (initialDurationMsOverride > 0L) {
+            durationMsState.longValue = initialDurationMsOverride
+        } else if (!session.isResolvingStream) {
+            val exoDur = if (!initialReadyForTest && exoPlayer.currentMediaItem?.mediaId == episodeKey) {
+                readVerifiedExoDurationMs(exoPlayer)
+            } else {
+                0L
+            }
+            if (exoDur > 0L) {
+                durationMsState.longValue = exoDur
+            } else if (durationMsState.longValue <= 0L) {
+                val metaDur = session.metadataDurationMs ?: 0L
+                if (metaDur > 0L) {
+                    durationMsState.longValue = metaDur
+                }
+            }
+        }
+    }
+
     // Mette in pausa il decoder hardware e salva i progressi quando l'app va in background (tasto Home Fire TV)
     DisposableEffect(lifecycleOwner, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
@@ -398,9 +499,9 @@ fun VixPlayerScreen(
                     exoPlayer.pause()
                 }
                 val pos = exoPlayer.currentPosition.coerceAtLeast(currentPositionMsState.longValue)
-                val dur = exoPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: durationMsState.longValue
+                val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L } ?: durationMsState.longValue
                 if (pos > 0L) {
-                    onProgressUpdate(pos, dur)
+                    latestOnProgressUpdate(pos, dur)
                 }
             }
         }
@@ -497,12 +598,10 @@ fun VixPlayerScreen(
         }
     }
 
-    // Configura HlsMediaSource in Media3 ExoPlayer (ri-eseguito anche se exoPlayer viene ricreato da cambio preset buffer)
+    // Configura HlsMediaSource (+ eventuali tracce sottotitoli esterne tramite MergingMediaSource)
     LaunchedEffect(
         exoPlayer,
-        session.mediaItem.uniqueKey,
-        session.seasonNumber,
-        session.episodeNumber,
+        episodeKey,
         resolvedStream?.streamUrl,
         session.isResolvingStream,
         retryNonce
@@ -523,14 +622,34 @@ fun VixPlayerScreen(
         isBuffering = true
         val targetUri = Uri.parse(stream.streamUrl)
         val mediaItem = ExoMediaItem.Builder()
+            .setMediaId(episodeKey)
             .setUri(targetUri)
             .setMimeType(MimeTypes.APPLICATION_M3U8)
             .build()
 
-        val mediaSource = HlsMediaSource.Factory(okHttpDataSourceFactory)
+        val hlsMediaSource = HlsMediaSource.Factory(okHttpDataSourceFactory)
             .setAllowChunklessPreparation(true)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(4))
             .createMediaSource(mediaItem)
+
+        val externalSubtitleSources = stream.subtitles
+            .filter { it.url.isNotBlank() }
+            .mapIndexed { idx, sub ->
+                val subConfig = ExoMediaItem.SubtitleConfiguration.Builder(Uri.parse(sub.url))
+                    .setMimeType(inferSubtitleMimeType(sub.url))
+                    .setLanguage(sub.language.ifBlank { null })
+                    .setLabel(sub.label.ifBlank { null })
+                    .setId("vix_sub_$idx")
+                    .build()
+                SingleSampleMediaSource.Factory(okHttpDataSourceFactory)
+                    .createMediaSource(subConfig, C.TIME_UNSET)
+            }
+
+        val mediaSource = if (externalSubtitleSources.isNotEmpty()) {
+            MergingMediaSource(hlsMediaSource, *externalSubtitleSources.toTypedArray())
+        } else {
+            hlsMediaSource
+        }
 
         val resumePosMs = maxOf(session.startPositionMs, currentPositionMsState.longValue)
         if (resumePosMs > 0L) {
@@ -542,24 +661,38 @@ fun VixPlayerScreen(
         exoPlayer.playWhenReady = true
     }
 
-    // Listener eventi Player + salvataggio su Room Database + aggiornamento tracce audio reali
+    // Listener eventi Player + salvataggio su Room + sincronizzazione affidabile durata/tracce audio e sottotitoli reali
     DisposableEffect(exoPlayer) {
+        fun syncVerifiedDurationFromPlayer() {
+            if (exoPlayer.currentMediaItem?.mediaId != latestEpisodeKey) return
+            val realDuration = readVerifiedExoDurationMs(exoPlayer)
+            if (realDuration > 0L) {
+                durationMsState.longValue = realDuration
+            } else if (durationMsState.longValue <= 0L && !latestSession.isResolvingStream) {
+                val fallbackMeta = latestSession.metadataDurationMs ?: 0L
+                if (fallbackMeta > 0L) {
+                    durationMsState.longValue = fallbackMeta
+                }
+            }
+        }
+
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
+                val currentMediaId = exoPlayer.currentMediaItem?.mediaId
+                if (currentMediaId != latestEpisodeKey) {
+                    return
+                }
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
                     playerErrorMessage = null
                     playbackEnded = false
-                    if (!isRemoteScrubbing) {
+                    if (!latestIsRemoteScrubbing) {
                         isManualSeekInProgress = false
                     }
-                    val d = exoPlayer.duration
-                    if (d != C.TIME_UNSET && d > 0L) {
-                        durationMsState.longValue = d
-                    }
+                    syncVerifiedDurationFromPlayer()
                     if (!hasSeekedInitial) {
                         hasSeekedInitial = true
-                        val targetStart = maxOf(session.startPositionMs, currentPositionMsState.longValue)
+                        val targetStart = maxOf(latestSession.startPositionMs, currentPositionMsState.longValue)
                         val dur = durationMsState.longValue
                         if (targetStart > 0L && dur > 0L) {
                             val maxSafePos = (dur - 5_000L).coerceAtLeast(0L)
@@ -577,24 +710,42 @@ fun VixPlayerScreen(
                 }
             }
 
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                syncVerifiedDurationFromPlayer()
+            }
+
+            override fun onMediaItemTransition(mediaItem: ExoMediaItem?, reason: Int) {
+                if (mediaItem?.mediaId == latestEpisodeKey) {
+                    syncVerifiedDurationFromPlayer()
+                    tracksVersion++
+                }
+            }
+
             override fun onTracksChanged(tracks: Tracks) {
-                tracksVersion++
+                if (exoPlayer.currentMediaItem?.mediaId == latestEpisodeKey) {
+                    syncVerifiedDurationFromPlayer()
+                    tracksVersion++
+                }
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
+                if (exoPlayer.currentMediaItem?.mediaId != latestEpisodeKey) return
                 isPlaying = playing
                 if (!playing && exoPlayer.currentPosition > 0L) {
-                    onProgressUpdate(exoPlayer.currentPosition, exoPlayer.duration.coerceAtLeast(0L))
+                    val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L } ?: durationMsState.longValue
+                    latestOnProgressUpdate(exoPlayer.currentPosition, dur)
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                val currentMediaId = exoPlayer.currentMediaItem?.mediaId
+                if (currentMediaId != null && currentMediaId != latestEpisodeKey) return
                 isManualSeekInProgress = false
-                if (resolvedStream?.fromCache == true && !hasAutoRetriedCachedStream && onInvalidateAndRetryStream != null) {
+                if (latestResolvedStream?.fromCache == true && !hasAutoRetriedCachedStream && latestOnInvalidateAndRetryStream != null) {
                     hasAutoRetriedCachedStream = true
                     isBuffering = true
                     playerErrorMessage = null
-                    onInvalidateAndRetryStream.invoke()
+                    latestOnInvalidateAndRetryStream?.invoke()
                     return
                 }
                 isBuffering = false
@@ -604,33 +755,46 @@ fun VixPlayerScreen(
         exoPlayer.addListener(listener)
         onDispose {
             val finalPos = currentPositionMsState.longValue.coerceAtLeast(exoPlayer.currentPosition)
-            val finalDur = durationMsState.longValue.coerceAtLeast(exoPlayer.duration.coerceAtLeast(0L))
+            val finalDur = durationMsState.longValue.coerceAtLeast(readVerifiedExoDurationMs(exoPlayer))
             if (finalPos > 0L) {
-                onProgressUpdate(finalPos, finalDur)
+                latestOnProgressUpdate(finalPos, finalDur)
             }
             exoPlayer.removeListener(listener)
             exoPlayer.release()
         }
     }
 
-    // Loop di aggiornamento posizione ogni 1s + persistenza su Room ogni 10s + pre-risoluzione silenziosa prossimo episodio
+    // Loop di aggiornamento posizione/durata ogni 1s + persistenza su Room ogni 10s + pre-risoluzione silenziosa prossimo episodio
     LaunchedEffect(exoPlayer) {
         var tick = 0
         while (true) {
-            if (exoPlayer.isPlaying && !isRemoteScrubbing) {
-                val pos = exoPlayer.currentPosition
-                val dur = exoPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: durationMsState.longValue
-                if (pos > 0L) {
-                    currentPositionMsState.longValue = pos
-                    durationMsState.longValue = dur
-                    if (tick % 10 == 0) {
-                        onProgressUpdate(pos, dur)
+            if (!latestInitialReadyForTest && exoPlayer.currentMediaItem?.mediaId == latestEpisodeKey) {
+                val verifiedDur = readVerifiedExoDurationMs(exoPlayer)
+                if (verifiedDur > 0L && durationMsState.longValue != verifiedDur) {
+                    durationMsState.longValue = verifiedDur
+                } else if (durationMsState.longValue <= 0L && !latestSession.isResolvingStream) {
+                    val fallbackMeta = latestSession.metadataDurationMs ?: 0L
+                    if (fallbackMeta > 0L) {
+                        durationMsState.longValue = fallbackMeta
                     }
-                    if (!hasPreResolvedNext && hasVerifiedNextEpisode && dur > 120_000L && pos >= (dur - 90_000L)) {
-                        hasPreResolvedNext = true
-                        onPreResolveNextEpisode()
+                }
+                if (exoPlayer.isPlaying && !latestIsRemoteScrubbing) {
+                    val pos = exoPlayer.currentPosition
+                    val dur = verifiedDur.takeIf { it > 0L } ?: durationMsState.longValue
+                    if (pos > 0L) {
+                        currentPositionMsState.longValue = pos
+                        if (dur > 0L) {
+                            durationMsState.longValue = dur
+                        }
+                        if (tick % 10 == 0) {
+                            latestOnProgressUpdate(pos, dur)
+                        }
+                        if (!hasPreResolvedNext && latestHasVerifiedNextEpisode && dur > 120_000L && pos >= (dur - 90_000L)) {
+                            hasPreResolvedNext = true
+                            latestOnPreResolveNextEpisode()
+                        }
+                        tick++
                     }
-                    tick++
                 }
             }
             delay(1_000L)
@@ -800,6 +964,20 @@ fun VixPlayerScreen(
         }
     }
 
+    val availableSubtitleTracks = remember(exoPlayer, tracksVersion, subtitleTracksOverrideForTest, selectedOverrideSubtitleId) {
+        if (subtitleTracksOverrideForTest != null) {
+            subtitleTracksOverrideForTest.map { option ->
+                if (selectedOverrideSubtitleId != null) {
+                    option.copy(isSelected = option.id == selectedOverrideSubtitleId)
+                } else {
+                    option
+                }
+            }
+        } else {
+            extractPlayerSubtitleTrackOptions(exoPlayer = exoPlayer)
+        }
+    }
+
     val liveVixSrcUrl = remember(
         session.mediaItem.id,
         session.mediaItem.mediaType,
@@ -932,7 +1110,21 @@ fun VixPlayerScreen(
                             }
                             Key.MediaNext -> {
                                 if (hasVerifiedNextEpisode) {
+                                    val pos = currentPositionMsState.longValue
+                                    if (pos > 0L) {
+                                        onProgressUpdate(pos, durationMsState.longValue)
+                                    }
                                     onNextEpisode()
+                                    return@onPreviewKeyEvent true
+                                }
+                            }
+                            Key.MediaPrevious -> {
+                                if (hasVerifiedPreviousEpisode) {
+                                    val pos = currentPositionMsState.longValue
+                                    if (pos > 0L) {
+                                        onProgressUpdate(pos, durationMsState.longValue)
+                                    }
+                                    onPreviousEpisode()
                                     return@onPreviewKeyEvent true
                                 }
                             }
@@ -1230,6 +1422,25 @@ fun VixPlayerScreen(
                                 showAudioSelector = false
                                 showVixLinkPanel = true
                                 interactionTick++
+                            },
+                            isSeries = session.mediaItem.isSeries,
+                            hasPreviousEpisode = hasVerifiedPreviousEpisode,
+                            hasNextEpisode = hasVerifiedNextEpisode,
+                            previousEpisodeFocusRequester = previousEpisodeFocusRequester,
+                            nextEpisodeFocusRequester = nextEpisodeFocusRequester,
+                            onPreviousEpisode = {
+                                val pos = currentPositionMsState.longValue
+                                if (pos > 0L) {
+                                    onProgressUpdate(pos, durationMsState.longValue)
+                                }
+                                onPreviousEpisode()
+                            },
+                            onNextEpisode = {
+                                val pos = currentPositionMsState.longValue
+                                if (pos > 0L) {
+                                    onProgressUpdate(pos, durationMsState.longValue)
+                                }
+                                onNextEpisode()
                             }
                         )
 
@@ -1244,7 +1455,7 @@ fun VixPlayerScreen(
                 }
             }
 
-            // Selettore Tracce Audio (aperto dal pulsante circolare AUDIO in basso a sinistra)
+            // Selettore Tracce Audio & Sottotitoli (aperto dal pulsante circolare AUDIO in basso a sinistra)
             AnimatedVisibility(
                 visible = showAudioSelector && currentError == null && !showLoadingOverlay,
                 enter = fadeIn() + slideInVertically { it / 3 },
@@ -1256,6 +1467,7 @@ fun VixPlayerScreen(
             ) {
                 PlayerAudioSelectorPanel(
                     tracks = availableAudioTracks,
+                    subtitleTracks = availableSubtitleTracks,
                     onSelectTrack = { selected ->
                         selectedOverrideAudioId = selected.id
                         onAudioTrackSelectedForTest?.invoke(selected)
@@ -1264,6 +1476,18 @@ fun VixPlayerScreen(
                                 exoPlayer = exoPlayer,
                                 option = selected,
                                 onToggleLanguage = onToggleLanguage
+                            )
+                            tracksVersion++
+                        }
+                        closeAudioSelector()
+                    },
+                    onSelectSubtitle = { selected ->
+                        selectedOverrideSubtitleId = selected.id
+                        onSubtitleTrackSelectedForTest?.invoke(selected)
+                        if (subtitleTracksOverrideForTest == null) {
+                            applySubtitleTrackSelection(
+                                exoPlayer = exoPlayer,
+                                option = selected
                             )
                             tracksVersion++
                         }

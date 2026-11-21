@@ -2,6 +2,9 @@ package com.example
 
 import android.app.Application
 import android.graphics.Bitmap
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertContentDescriptionEquals
@@ -34,6 +37,7 @@ import com.example.data.local.PlayerAdvancedSettings
 import com.example.data.local.PlayerSegmentKeys
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.VerifiedNextEpisode
+import com.example.data.local.VerifiedPreviousEpisode
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.formatSeriesSeasonEpisodeLine
 import com.example.data.local.isIntroActiveAtPosition
@@ -47,6 +51,7 @@ import com.example.data.repository.VixFlixRepository
 import com.example.ui.GitHubUpdateUiState
 import com.example.ui.PlaybackSession
 import com.example.ui.screens.PlayerAudioTrackOption
+import com.example.ui.screens.PlayerSubtitleTrackOption
 import com.example.ui.screens.SettingsCategory
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.VixPlayerScreen
@@ -1240,5 +1245,508 @@ class AdvancedVideoPlayerTest {
             .performScrollToNode(hasTestTag("settings_countdown_15"))
         composeRule.onNodeWithTag("settings_countdown_15").performClick()
         assertEquals(15, selectedCountdown)
+    }
+
+    @Test
+    fun movieWithoutSubtitles_showsInformativeEmptySubtitleSection_andNeverShowsEpisodeButtons() {
+        val movieSession = PlaybackSession(
+            mediaItem = sampleMovie,
+            startPositionMs = 600_000L,
+            isResolvingStream = false,
+            resolvedStream = ResolvedStream(
+                streamUrl = "https://example.com/movie.m3u8",
+                embedUrl = "https://vixsrc.to/movie/7001",
+                isDirectHls = true
+            ),
+            // Anche se valorizzati accidentalmente su un film, i pulsanti episodio NON devono mai apparire
+            verifiedPreviousEpisode = VerifiedPreviousEpisode(1, 1, "Fake Prev"),
+            verifiedNextEpisode = VerifiedNextEpisode(1, 2, "Fake Next")
+        )
+        val audioTracks = listOf(
+            PlayerAudioTrackOption(id = "it", title = "Italiano (IT)", details = "Stereo 2.0", isSelected = true)
+        )
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = movieSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onNextEpisode = {},
+                    onPreviousEpisode = {},
+                    onClose = {},
+                    initialDurationMsOverride = 5_400_000L,
+                    initialReadyForTest = true,
+                    audioTracksOverrideForTest = audioTracks,
+                    subtitleTracksOverrideForTest = emptyList()
+                )
+            }
+        }
+
+        // 1. Nessun pulsante Episodio Precedente o Prossimo Episodio durante un film
+        composeRule.onNodeWithTag("player_previous_episode_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_next_episode_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("exo_play_pause_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_audio_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_vixsrc_link_button").assertIsDisplayed()
+
+        // 2. Menu Audio organizzato in due sezioni distinte (AUDIO + SOTTOTITOLI) con stato vuoto pulito
+        composeRule.onNodeWithTag("player_audio_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("player_audio_selector_panel").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_audio_section").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_subtitles_section").assertIsDisplayed()
+        composeRule.onNodeWithText("AUDIO").assertIsDisplayed()
+        composeRule.onNodeWithText("SOTTOTITOLI").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_subtitles_empty_message").assertIsDisplayed()
+        composeRule.onNodeWithText("Nessun sottotitolo disponibile per questo flusso.").assertIsDisplayed()
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun audioAndSubtitlesMenu_enablesDisablesHlsSubtitles_switchesAudio_andNavigatesWithDpad() {
+        val seriesSession = PlaybackSession(
+            mediaItem = sampleSeries,
+            seasonNumber = 2,
+            episodeNumber = 3,
+            episodeTitle = "Tracce nel buio",
+            startPositionMs = 120_000L,
+            isResolvingStream = false,
+            resolvedStream = ResolvedStream(
+                streamUrl = "https://example.com/s2e3.m3u8",
+                embedUrl = "https://vixsrc.to/tv/8002/2/3",
+                isDirectHls = true
+            )
+        )
+        val audioTracks = listOf(
+            PlayerAudioTrackOption(id = "aud_it", title = "Italiano (IT)", details = "Surround 5.1 • AAC", isSelected = true),
+            PlayerAudioTrackOption(id = "aud_en", title = "Inglese (EN)", details = "Stereo 2.0 • AAC", isSelected = false)
+        )
+        val subtitleTracks = listOf(
+            PlayerSubtitleTrackOption(id = "sub_off", title = "Disattivati", details = "Nascondi tutti i sottotitoli", isSelected = true, isOffOption = true),
+            PlayerSubtitleTrackOption(id = "sub_it", title = "Italiano (IT)", details = "WebVTT", isSelected = false),
+            PlayerSubtitleTrackOption(id = "sub_en", title = "Inglese (EN)", details = "WebVTT • SDH", isSelected = false)
+        )
+        var lastAudioSelected: PlayerAudioTrackOption? = null
+        var lastSubtitleSelected: PlayerSubtitleTrackOption? = null
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = seriesSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onNextEpisode = {},
+                    onClose = {},
+                    initialDurationMsOverride = 3_000_000L,
+                    initialReadyForTest = true,
+                    audioTracksOverrideForTest = audioTracks,
+                    onAudioTrackSelectedForTest = { lastAudioSelected = it },
+                    subtitleTracksOverrideForTest = subtitleTracks,
+                    onSubtitleTrackSelectedForTest = { lastSubtitleSelected = it }
+                )
+            }
+        }
+
+        // Apri menu Audio & Sottotitoli
+        composeRule.onNodeWithTag("player_audio_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("player_audio_section").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_subtitles_section").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_subtitle_option_sub_off").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_subtitle_option_sub_it").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_subtitle_option_sub_en").assertIsDisplayed()
+
+        // Navigazione D-Pad continua tra sezione AUDIO e sezione SOTTOTITOLI
+        composeRule.onNodeWithTag("player_audio_option_aud_it").requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_audio_option_aud_it").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_audio_option_aud_it").performKeyInput {
+            pressKey(Key.DirectionDown)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_audio_option_aud_en").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_audio_option_aud_en").performKeyInput {
+            pressKey(Key.DirectionDown)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_subtitle_option_sub_off").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_subtitle_option_sub_off").performKeyInput {
+            pressKey(Key.DirectionDown)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_subtitle_option_sub_it").assertIsFocused()
+
+        // 1. Attiva sottotitoli Italiano WebVTT
+        composeRule.onNodeWithTag("player_subtitle_option_sub_it").performClick()
+        composeRule.waitForIdle()
+        assertEquals("sub_it", lastSubtitleSelected?.id)
+        assertFalse(lastSubtitleSelected?.isOffOption ?: true)
+
+        // 2. Riapri menu e disattiva completamente i sottotitoli tramite "Disattivati"
+        composeRule.onNodeWithTag("player_audio_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_subtitle_option_sub_off").performClick()
+        composeRule.waitForIdle()
+        assertEquals("sub_off", lastSubtitleSelected?.id)
+        assertTrue(lastSubtitleSelected?.isOffOption == true)
+
+        // 3. Riapri menu e cambia traccia audio in Inglese
+        composeRule.onNodeWithTag("player_audio_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_audio_option_aud_en").performClick()
+        composeRule.waitForIdle()
+        assertEquals("aud_en", lastAudioSelected?.id)
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun seriesPlayer_showsPreviousAndNextCircularButtonsOnlyWhenAvailable_withFullDpadNavigation() {
+        var sessionState by mutableStateOf(
+            PlaybackSession(
+                mediaItem = sampleSeries,
+                seasonNumber = 2,
+                episodeNumber = 2,
+                episodeTitle = "Secondo atto",
+                startPositionMs = 300_000L,
+                isResolvingStream = false,
+                resolvedStream = ResolvedStream(
+                    streamUrl = "https://example.com/s2e2.m3u8",
+                    embedUrl = "https://vixsrc.to/tv/8002/2/2",
+                    isDirectHls = true
+                ),
+                verifiedPreviousEpisode = VerifiedPreviousEpisode(2, 1, "Primo atto", runtimeMinutes = 46),
+                verifiedNextEpisode = VerifiedNextEpisode(2, 3, "Terzo atto", runtimeMinutes = 48),
+                hasCheckedPreviousEpisode = true,
+                hasCheckedNextEpisode = true,
+                metadataDurationMs = 47 * 60_000L,
+                sessionToken = 10L
+            )
+        )
+        var prevClicked = 0
+        var nextClicked = 0
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = sessionState,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onPreviousEpisode = { prevClicked++ },
+                    onNextEpisode = { nextClicked++ },
+                    onClose = {},
+                    initialDurationMsOverride = 2_820_000L,
+                    initialReadyForTest = true
+                )
+            }
+        }
+
+        // Entrambi i pulsanti circolari visibili in basso a sinistra senza sovrapporsi ai tempi a destra
+        composeRule.onNodeWithTag("player_previous_episode_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("exo_play_pause_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_next_episode_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_audio_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_vixsrc_link_button").assertIsDisplayed()
+
+        val controlsBounds = composeRule.onNodeWithTag("player_controls_row").getUnclippedBoundsInRoot()
+        val timeBounds = composeRule.onNodeWithTag("player_time_display").getUnclippedBoundsInRoot()
+        assertTrue("Controlli serie TV a sinistra non devono sovrapporsi ai tempi a destra", controlsBounds.right < timeBounds.left)
+
+        // Navigazione D-Pad completa: Prev -> Play/Pausa -> Next -> Audio -> Link VixSrc -> Up (SeekBar) -> Down (Play/Pausa)
+        composeRule.onNodeWithTag("player_previous_episode_button").requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_previous_episode_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_previous_episode_button").performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("exo_play_pause_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("exo_play_pause_button").performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_next_episode_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_next_episode_button").performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_audio_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_audio_button").performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_vixsrc_link_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("player_vixsrc_link_button").performKeyInput { pressKey(Key.DirectionUp) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_time_bar").assertIsFocused()
+
+        // Click reali sui pulsanti Episodio Precedente e Prossimo Episodio
+        composeRule.onNodeWithTag("player_previous_episode_button").performClick()
+        composeRule.onNodeWithTag("player_next_episode_button").performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, prevClicked)
+        assertEquals(1, nextClicked)
+
+        // Primo episodio S1E1 (nessun precedente) -> pulsante Episodio Precedente nascosto
+        sessionState = sessionState.copy(
+            seasonNumber = 1,
+            episodeNumber = 1,
+            verifiedPreviousEpisode = null,
+            verifiedNextEpisode = VerifiedNextEpisode(1, 2, "Svolta"),
+            sessionToken = 11L
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_previous_episode_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_next_episode_button").assertIsDisplayed()
+
+        // Episodio finale serie (nessun successivo) -> pulsante Prossimo Episodio nascosto
+        sessionState = sessionState.copy(
+            seasonNumber = 2,
+            episodeNumber = 8,
+            verifiedPreviousEpisode = VerifiedPreviousEpisode(2, 7, "Penultimo"),
+            verifiedNextEpisode = null,
+            sessionToken = 12L
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_previous_episode_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("player_next_episode_button").assertDoesNotExist()
+    }
+
+    @Test
+    fun nextEpisodePopupTransition_resetsSeekBarAndLoadsNewDurationImmediatelyNeverStuckOnPlaceholder() {
+        val creditsEp1 = CreditsSegmentEntity(
+            contentKey = PlayerSegmentKeys.creditsContentKey(sampleSeries.id, "tv", 1, 1),
+            tmdbId = sampleSeries.id,
+            mediaType = "tv",
+            seasonNumber = 1,
+            episodeNumber = 1,
+            creditsStartMs = 2_520_000L, // 00:42:00
+            durationMs = 2_700_000L,     // 00:45:00
+            detectionState = CreditsDetectionState.VERIFIED_METADATA.storageKey
+        )
+        var currentSession by mutableStateOf(
+            PlaybackSession(
+                mediaItem = sampleSeries,
+                seasonNumber = 1,
+                episodeNumber = 1,
+                episodeTitle = "Pilota",
+                startPositionMs = 2_580_000L, // 00:43:00 (dentro titoli di coda -> mostra popup PROSSIMO EPISODIO)
+                isResolvingStream = false,
+                resolvedStream = ResolvedStream(
+                    streamUrl = "https://example.com/s1e1.m3u8",
+                    embedUrl = "https://vixsrc.to/tv/8002/1/1",
+                    isDirectHls = true
+                ),
+                creditsSegment = creditsEp1,
+                verifiedPreviousEpisode = null,
+                verifiedNextEpisode = VerifiedNextEpisode(
+                    seasonNumber = 1,
+                    episodeNumber = 2,
+                    title = "Secondo atto",
+                    runtimeMinutes = 52
+                ),
+                hasCheckedNextEpisode = true,
+                metadataDurationMs = 45 * 60_000L,
+                sessionToken = 100L
+            )
+        )
+        var overrideDurationMs by mutableStateOf(2_700_000L) // 00:45:00 su Ep 1
+
+        composeRule.setContent {
+            VixFlixTheme {
+                VixPlayerScreen(
+                    session = currentSession,
+                    streamLang = "it",
+                    vixSrcResolver = testResolver(),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onNextEpisode = {
+                        // Simula la transizione reale di ViewModel.playNextEpisode():
+                        // azzera posizione a 0, incrementa sessionToken, fornisce metadataDurationMs = 52 min
+                        // e lascia overrideDurationMs = 0L per verificare il caricamento reale senza "--:--:--"
+                        overrideDurationMs = 0L
+                        currentSession = PlaybackSession(
+                            mediaItem = sampleSeries,
+                            seasonNumber = 1,
+                            episodeNumber = 2,
+                            episodeTitle = "Secondo atto",
+                            startPositionMs = 0L,
+                            isResolvingStream = false,
+                            resolvedStream = ResolvedStream(
+                                streamUrl = "https://example.com/s1e2.m3u8",
+                                embedUrl = "https://vixsrc.to/tv/8002/1/2",
+                                isDirectHls = true
+                            ),
+                            verifiedPreviousEpisode = VerifiedPreviousEpisode(1, 1, "Pilota", runtimeMinutes = 45),
+                            verifiedNextEpisode = VerifiedNextEpisode(1, 3, "Terzo atto", runtimeMinutes = 49),
+                            hasCheckedPreviousEpisode = true,
+                            hasCheckedNextEpisode = true,
+                            metadataDurationMs = 52 * 60_000L, // 00:52:00
+                            sessionToken = 101L
+                        )
+                    },
+                    onPreviousEpisode = {
+                        overrideDurationMs = 0L
+                        currentSession = PlaybackSession(
+                            mediaItem = sampleSeries,
+                            seasonNumber = 1,
+                            episodeNumber = 1,
+                            episodeTitle = "Pilota",
+                            startPositionMs = 0L,
+                            isResolvingStream = false,
+                            resolvedStream = ResolvedStream(
+                                streamUrl = "https://example.com/s1e1.m3u8",
+                                embedUrl = "https://vixsrc.to/tv/8002/1/1",
+                                isDirectHls = true
+                            ),
+                            verifiedPreviousEpisode = null,
+                            verifiedNextEpisode = VerifiedNextEpisode(1, 2, "Secondo atto", runtimeMinutes = 52),
+                            hasCheckedPreviousEpisode = true,
+                            hasCheckedNextEpisode = true,
+                            metadataDurationMs = 45 * 60_000L, // 00:45:00
+                            sessionToken = 102L
+                        )
+                    },
+                    onClose = {},
+                    advancedSettings = PlayerAdvancedSettings(autoPlayNextEpisodeEnabled = false),
+                    initialDurationMsOverride = overrideDurationMs,
+                    initialReadyForTest = true
+                )
+            }
+        }
+
+        // 1. Popup "PROSSIMO EPISODIO" visibile su Episodio 1
+        composeRule.onNodeWithTag("auto_next_episode_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("auto_next_play_now_button").performClick()
+        composeRule.waitForIdle()
+
+        // 2. Episodio 2 avviato: popup chiuso, controlli visibili, titolo/episodio aggiornati,
+        //    seek bar azzerata a 00:00:00 e durata IMMEDIATAMENTE "00:52:00" (MAI "--:--:--"!)
+        composeRule.onNodeWithTag("auto_next_episode_card").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_media_series_subtitle")
+            .assertIsDisplayed()
+            .assertTextEquals("STAGIONE 1 • EPISODIO 2 – Secondo atto")
+        composeRule.onNodeWithTag("player_time_display")
+            .assertIsDisplayed()
+            .assertTextEquals("00:00:00 / 00:52:00")
+
+        // 3. Aggiornamento asincrono della durata reale dello stream HLS (es. 00:53:15) -> sostituisce subito il fallback
+        overrideDurationMs = 3_195_000L
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_time_display")
+            .assertTextEquals("00:00:00 / 00:53:15")
+
+        // 4. Transizione indietro tramite pulsante circolare Episodio Precedente -> sincronizza subito S1E1 (00:00:00 / 00:45:00)
+        composeRule.onNodeWithTag("player_previous_episode_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_media_series_subtitle")
+            .assertTextEquals("STAGIONE 1 • EPISODIO 1 – Pilota")
+        composeRule.onNodeWithTag("player_time_display")
+            .assertTextEquals("00:00:00 / 00:45:00")
+    }
+
+    @Test
+    fun resolveVerifiedPreviousEpisode_handlesSameSeason_crossSeasonBackward_andSeriesStart() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = Room.inMemoryDatabaseBuilder(app, VixFlixDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val server = MockWebServer()
+        server.start()
+        try {
+            val repo = VixFlixRepository(
+                dao = db.vixFlixDao(),
+                tmdbBaseUrl = server.url("/").toString()
+            )
+            val season2Episodes = listOf(
+                TmdbEpisodeDto(id = 201, episodeNumber = 1, seasonNumber = 2, name = "Ritorno", overview = "", runtime = 50),
+                TmdbEpisodeDto(id = 202, episodeNumber = 2, seasonNumber = 2, name = "Epilogo", overview = "", runtime = 54)
+            )
+            val seasons = listOf(
+                TmdbSeasonSummaryDto(id = 100, seasonNumber = 0, name = "Specials", episodeCount = 2),
+                TmdbSeasonSummaryDto(id = 101, seasonNumber = 1, name = "Stagione 1", episodeCount = 2),
+                TmdbSeasonSummaryDto(id = 102, seasonNumber = 2, name = "Stagione 2", episodeCount = 2)
+            )
+
+            // 1. Stessa stagione indietro: S2E2 -> S2E1
+            val sameSeasonPrev = repo.resolveVerifiedPreviousEpisode(
+                item = sampleSeries,
+                currentSeason = 2,
+                currentEpisode = 2,
+                currentSeasonEpisodes = season2Episodes,
+                knownSeasons = seasons
+            )
+            assertNotNull(sameSeasonPrev)
+            assertEquals(2, sameSeasonPrev?.seasonNumber)
+            assertEquals(1, sameSeasonPrev?.episodeNumber)
+            assertEquals("Ritorno", sameSeasonPrev?.title)
+            assertEquals(50, sameSeasonPrev?.runtimeMinutes)
+            assertFalse(sameSeasonPrev?.isCrossSeason ?: true)
+
+            // 2. Cambio stagione indietro: S2E1 -> ultimo episodio di S1 (S1E2) via MockWebServer
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .setBody(
+                        """
+                        {
+                          "id": 101,
+                          "season_number": 1,
+                          "name": "Stagione 1",
+                          "episodes": [
+                            { "id": 101, "episode_number": 1, "season_number": 1, "name": "Pilota", "overview": "", "runtime": 44 },
+                            { "id": 102, "episode_number": 2, "season_number": 1, "name": "Finale S1", "overview": "", "runtime": 58 }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+            )
+            val crossSeasonPrev = repo.resolveVerifiedPreviousEpisode(
+                item = sampleSeries,
+                currentSeason = 2,
+                currentEpisode = 1,
+                currentSeasonEpisodes = season2Episodes,
+                knownSeasons = seasons
+            )
+            assertNotNull(crossSeasonPrev)
+            assertEquals(1, crossSeasonPrev?.seasonNumber)
+            assertEquals(2, crossSeasonPrev?.episodeNumber)
+            assertEquals("Finale S1", crossSeasonPrev?.title)
+            assertEquals(58, crossSeasonPrev?.runtimeMinutes)
+            assertTrue(crossSeasonPrev?.isCrossSeason == true)
+
+            // 3. Primo episodio assoluto (S1E1, ignorando Specials S0) -> null
+            val season1Episodes = listOf(
+                TmdbEpisodeDto(id = 101, episodeNumber = 1, seasonNumber = 1, name = "Pilota", overview = "", runtime = 44),
+                TmdbEpisodeDto(id = 102, episodeNumber = 2, seasonNumber = 1, name = "Finale S1", overview = "", runtime = 58)
+            )
+            val seriesStartPrev = repo.resolveVerifiedPreviousEpisode(
+                item = sampleSeries,
+                currentSeason = 1,
+                currentEpisode = 1,
+                currentSeasonEpisodes = season1Episodes,
+                knownSeasons = seasons
+            )
+            assertNull(seriesStartPrev)
+        } finally {
+            server.shutdown()
+            db.close()
+        }
     }
 }

@@ -1277,6 +1277,7 @@ fun VixFlixAppScreen(
                         )
                     },
                     onNextEpisode = viewModel::playNextEpisode,
+                    onPreviousEpisode = viewModel::playPreviousEpisode,
                     onClose = viewModel::closePlayer,
                     onInvalidateAndRetryStream = viewModel::invalidateAndRetryCurrentStream,
                     onPreResolveNextEpisode = viewModel::preResolveNextEpisode,

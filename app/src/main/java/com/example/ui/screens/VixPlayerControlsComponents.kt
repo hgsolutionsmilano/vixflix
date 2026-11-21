@@ -25,8 +25,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Audiotrack
@@ -35,10 +37,14 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -298,10 +304,126 @@ internal fun applyAudioTrackSelection(
 }
 
 /**
- * Fila minimalista di ESCLUSIVAMENTE TRE pulsanti circolari sotto la barra temporale:
- * 1) Play / Pausa
- * 2) Audio (apre selettore tracce audio)
- * 3) Link VixSrc (gestione collegamento VixSrc esistente)
+ * Rappresentazione di una traccia sottotitoli reale esposta da Media3 ExoPlayer (`C.TRACK_TYPE_TEXT`:
+ * WebVTT, playlist HLS `#EXT-X-MEDIA:TYPE=SUBTITLES`, SRT, CEA-608/708, TTML) o opzione "Disattivati".
+ */
+@Immutable
+data class PlayerSubtitleTrackOption(
+    val id: String,
+    val title: String,
+    val details: String? = null,
+    val isSelected: Boolean = false,
+    val isOffOption: Boolean = false,
+    val mediaTrackGroup: TrackGroup? = null,
+    val trackIndex: Int = -1
+)
+
+private fun formatSubtitleDetails(format: Format): String? {
+    val parts = mutableListOf<String>()
+    val mimeLabel = when (format.sampleMimeType) {
+        MimeTypes.TEXT_VTT -> "WebVTT"
+        MimeTypes.APPLICATION_SUBRIP -> "SRT"
+        MimeTypes.APPLICATION_TTML -> "TTML"
+        MimeTypes.APPLICATION_CEA608 -> "CEA-608"
+        MimeTypes.APPLICATION_CEA708 -> "CEA-708"
+        MimeTypes.TEXT_SSA -> "ASS/SSA"
+        else -> null
+    }
+    if (mimeLabel != null) parts.add(mimeLabel)
+    if ((format.selectionFlags and C.SELECTION_FLAG_FORCED) != 0) {
+        parts.add("Forzati")
+    }
+    if ((format.roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND) != 0) {
+        parts.add("SDH")
+    }
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" • ")
+}
+
+/**
+ * Estrae esclusivamente le tracce sottotitoli reali presenti nello stream corrente via Media3 `currentTracks`.
+ * - Se lo stream contiene una o più tracce `C.TRACK_TYPE_TEXT`, restituisce `"Disattivati"` seguito dalle tracce reali.
+ * - Se lo stream non contiene sottotitoli, restituisce lista vuota (nessuna traccia inventata).
+ */
+@OptIn(UnstableApi::class)
+internal fun extractPlayerSubtitleTrackOptions(
+    exoPlayer: ExoPlayer
+): List<PlayerSubtitleTrackOption> {
+    val tracks = exoPlayer.currentTracks
+    val textDisabled = exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+    val realTracks = mutableListOf<PlayerSubtitleTrackOption>()
+
+    var groupIdx = 0
+    for (group in tracks.groups) {
+        if (group.type == C.TRACK_TYPE_TEXT) {
+            for (trackIdx in 0 until group.length) {
+                if (!group.isTrackSupported(trackIdx)) continue
+                val format = group.getTrackFormat(trackIdx)
+                val langTitle = formatLanguageDisplayName(format.language)
+                val rawLabel = format.label?.trim().orEmpty()
+                val title = when {
+                    rawLabel.isNotBlank() && langTitle == "Audio Originale" -> rawLabel
+                    rawLabel.isNotBlank() && !langTitle.contains(rawLabel, ignoreCase = true) -> "$langTitle – $rawLabel"
+                    langTitle == "Audio Originale" -> "Sottotitoli #${realTracks.size + 1}"
+                    else -> langTitle
+                }
+                realTracks.add(
+                    PlayerSubtitleTrackOption(
+                        id = "sub_${groupIdx}_$trackIdx",
+                        title = title,
+                        details = formatSubtitleDetails(format),
+                        isSelected = !textDisabled && group.isTrackSelected(trackIdx),
+                        isOffOption = false,
+                        mediaTrackGroup = group.mediaTrackGroup,
+                        trackIndex = trackIdx
+                    )
+                )
+            }
+            groupIdx++
+        }
+    }
+
+    if (realTracks.isEmpty()) {
+        return emptyList()
+    }
+
+    val noneSelected = textDisabled || realTracks.none { it.isSelected }
+    val offOption = PlayerSubtitleTrackOption(
+        id = "sub_off",
+        title = "Disattivati",
+        details = "Nascondi tutti i sottotitoli",
+        isSelected = noneSelected,
+        isOffOption = true
+    )
+    return listOf(offOption) + realTracks
+}
+
+@OptIn(UnstableApi::class)
+internal fun applySubtitleTrackSelection(
+    exoPlayer: ExoPlayer,
+    option: PlayerSubtitleTrackOption
+) {
+    if (option.isOffOption) {
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+    } else {
+        val group = option.mediaTrackGroup
+        if (group != null && option.trackIndex >= 0) {
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .setOverrideForType(TrackSelectionOverride(group, option.trackIndex))
+                .build()
+        }
+    }
+}
+
+/**
+ * Fila minimalista di pulsanti circolari in basso a sinistra sotto la barra temporale:
+ * - Film: esclusivamente Play/Pausa, Audio (con Sottotitoli) e Link VixSrc.
+ * - Serie TV: aggiunge in modo coerente Episodio Precedente e Prossimo Episodio (solo quando realmente esistenti).
  */
 @Composable
 internal fun PlayerCircularControlsRow(
@@ -313,8 +435,46 @@ internal fun PlayerCircularControlsRow(
     onTogglePlayPause: () -> Unit,
     onOpenAudioSelector: () -> Unit,
     onOpenVixLinkPanel: () -> Unit,
+    isSeries: Boolean = false,
+    hasPreviousEpisode: Boolean = false,
+    hasNextEpisode: Boolean = false,
+    previousEpisodeFocusRequester: FocusRequester? = null,
+    nextEpisodeFocusRequester: FocusRequester? = null,
+    onPreviousEpisode: () -> Unit = {},
+    onNextEpisode: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val showPrevButton = isSeries && hasPreviousEpisode && previousEpisodeFocusRequester != null
+    val showNextButton = isSeries && hasNextEpisode && nextEpisodeFocusRequester != null
+
+    val orderedRequesters = remember(
+        showPrevButton,
+        showNextButton,
+        previousEpisodeFocusRequester,
+        playPauseFocusRequester,
+        nextEpisodeFocusRequester,
+        audioFocusRequester,
+        vixLinkFocusRequester
+    ) {
+        buildList {
+            if (showPrevButton && previousEpisodeFocusRequester != null) add(previousEpisodeFocusRequester)
+            add(playPauseFocusRequester)
+            if (showNextButton && nextEpisodeFocusRequester != null) add(nextEpisodeFocusRequester)
+            add(audioFocusRequester)
+            add(vixLinkFocusRequester)
+        }
+    }
+
+    fun leftNeighborOf(requester: FocusRequester): FocusRequester? {
+        val idx = orderedRequesters.indexOf(requester)
+        return if (idx > 0) orderedRequesters[idx - 1] else null
+    }
+
+    fun rightNeighborOf(requester: FocusRequester): FocusRequester? {
+        val idx = orderedRequesters.indexOf(requester)
+        return if (idx >= 0 && idx < orderedRequesters.lastIndex) orderedRequesters[idx + 1] else null
+    }
+
     Row(
         modifier = modifier
             .focusGroup()
@@ -322,7 +482,58 @@ internal fun PlayerCircularControlsRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.Start),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // EPISODIO PRECEDENTE (visibile esclusivamente per Serie TV con episodio precedente reale)
+        if (showPrevButton && previousEpisodeFocusRequester != null) {
+            val prevLeft = leftNeighborOf(previousEpisodeFocusRequester)
+            val prevRight = rightNeighborOf(previousEpisodeFocusRequester)
+            Surface(
+                color = NetflixCardSurface.copy(alpha = 0.88f),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, NetflixWhite.copy(alpha = 0.28f)),
+                modifier = Modifier
+                    .size(52.dp)
+                    .safeFocusRequester(previousEpisodeFocusRequester)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.DirectionUp -> upToTimeBarFocusRequester.safeRequestFocus()
+                                Key.DirectionLeft -> prevLeft?.safeRequestFocus() ?: true
+                                Key.DirectionRight -> prevRight?.safeRequestFocus() ?: true
+                                Key.DirectionDown -> true
+                                else -> false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    .focusProperties {
+                        upToTimeBarFocusRequester.takeIfAttached()?.let { up = it }
+                        prevLeft.takeIfAttached()?.let { left = it }
+                        prevRight.takeIfAttached()?.let { right = it }
+                    }
+                    .tvFocusableControl(
+                        shape = CircleShape,
+                        focusedBorderColor = NetflixWhite,
+                        focusedScale = 1.12f,
+                        focusTag = "player_previous_episode_button",
+                        onClick = onPreviousEpisode
+                    )
+                    .testTag("player_previous_episode_button")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.SkipPrevious,
+                        contentDescription = "Episodio precedente",
+                        tint = NetflixWhite,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+        }
+
         // 1. PLAY / PAUSA
+        val playLeft = leftNeighborOf(playPauseFocusRequester)
+        val playRight = rightNeighborOf(playPauseFocusRequester)
         IconButton(
             onClick = onTogglePlayPause,
             modifier = Modifier
@@ -332,8 +543,9 @@ internal fun PlayerCircularControlsRow(
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
                             Key.DirectionUp -> upToTimeBarFocusRequester.safeRequestFocus()
-                            Key.DirectionRight -> audioFocusRequester.safeRequestFocus()
-                            Key.DirectionLeft, Key.DirectionDown -> true
+                            Key.DirectionLeft -> playLeft?.safeRequestFocus() ?: true
+                            Key.DirectionRight -> playRight?.safeRequestFocus() ?: true
+                            Key.DirectionDown -> true
                             else -> false
                         }
                     } else {
@@ -342,7 +554,8 @@ internal fun PlayerCircularControlsRow(
                 }
                 .focusProperties {
                     upToTimeBarFocusRequester.takeIfAttached()?.let { up = it }
-                    audioFocusRequester.takeIfAttached()?.let { right = it }
+                    playLeft.takeIfAttached()?.let { left = it }
+                    playRight.takeIfAttached()?.let { right = it }
                 }
                 .tvFocusableControl(
                     shape = CircleShape,
@@ -362,7 +575,58 @@ internal fun PlayerCircularControlsRow(
             )
         }
 
-        // 2. AUDIO
+        // PROSSIMO EPISODIO (visibile esclusivamente per Serie TV con episodio successivo reale)
+        if (showNextButton && nextEpisodeFocusRequester != null) {
+            val nextLeft = leftNeighborOf(nextEpisodeFocusRequester)
+            val nextRight = rightNeighborOf(nextEpisodeFocusRequester)
+            Surface(
+                color = NetflixCardSurface.copy(alpha = 0.88f),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, NetflixWhite.copy(alpha = 0.28f)),
+                modifier = Modifier
+                    .size(52.dp)
+                    .safeFocusRequester(nextEpisodeFocusRequester)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.DirectionUp -> upToTimeBarFocusRequester.safeRequestFocus()
+                                Key.DirectionLeft -> nextLeft?.safeRequestFocus() ?: true
+                                Key.DirectionRight -> nextRight?.safeRequestFocus() ?: true
+                                Key.DirectionDown -> true
+                                else -> false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    .focusProperties {
+                        upToTimeBarFocusRequester.takeIfAttached()?.let { up = it }
+                        nextLeft.takeIfAttached()?.let { left = it }
+                        nextRight.takeIfAttached()?.let { right = it }
+                    }
+                    .tvFocusableControl(
+                        shape = CircleShape,
+                        focusedBorderColor = NetflixWhite,
+                        focusedScale = 1.12f,
+                        focusTag = "player_next_episode_button",
+                        onClick = onNextEpisode
+                    )
+                    .testTag("player_next_episode_button")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "Prossimo episodio",
+                        tint = NetflixWhite,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+        }
+
+        // 2. AUDIO & SOTTOTITOLI
+        val audioLeft = leftNeighborOf(audioFocusRequester)
+        val audioRight = rightNeighborOf(audioFocusRequester)
         Surface(
             color = NetflixCardSurface.copy(alpha = 0.88f),
             shape = CircleShape,
@@ -374,8 +638,8 @@ internal fun PlayerCircularControlsRow(
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
                             Key.DirectionUp -> upToTimeBarFocusRequester.safeRequestFocus()
-                            Key.DirectionLeft -> playPauseFocusRequester.safeRequestFocus()
-                            Key.DirectionRight -> vixLinkFocusRequester.safeRequestFocus()
+                            Key.DirectionLeft -> audioLeft?.safeRequestFocus() ?: true
+                            Key.DirectionRight -> audioRight?.safeRequestFocus() ?: true
                             Key.DirectionDown -> true
                             else -> false
                         }
@@ -385,8 +649,8 @@ internal fun PlayerCircularControlsRow(
                 }
                 .focusProperties {
                     upToTimeBarFocusRequester.takeIfAttached()?.let { up = it }
-                    playPauseFocusRequester.takeIfAttached()?.let { left = it }
-                    vixLinkFocusRequester.takeIfAttached()?.let { right = it }
+                    audioLeft.takeIfAttached()?.let { left = it }
+                    audioRight.takeIfAttached()?.let { right = it }
                 }
                 .tvFocusableControl(
                     shape = CircleShape,
@@ -400,7 +664,7 @@ internal fun PlayerCircularControlsRow(
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Default.Audiotrack,
-                    contentDescription = "Seleziona traccia audio",
+                    contentDescription = "Audio e sottotitoli",
                     tint = NetflixWhite,
                     modifier = Modifier.size(24.dp)
                 )
@@ -408,6 +672,7 @@ internal fun PlayerCircularControlsRow(
         }
 
         // 3. LINK VIXSRC
+        val linkLeft = leftNeighborOf(vixLinkFocusRequester)
         Surface(
             color = NetflixCardSurface.copy(alpha = 0.88f),
             shape = CircleShape,
@@ -419,7 +684,7 @@ internal fun PlayerCircularControlsRow(
                     if (keyEvent.type == KeyEventType.KeyDown) {
                         when (keyEvent.key) {
                             Key.DirectionUp -> upToTimeBarFocusRequester.safeRequestFocus()
-                            Key.DirectionLeft -> audioFocusRequester.safeRequestFocus()
+                            Key.DirectionLeft -> linkLeft?.safeRequestFocus() ?: true
                             Key.DirectionRight, Key.DirectionDown -> true
                             else -> false
                         }
@@ -429,7 +694,7 @@ internal fun PlayerCircularControlsRow(
                 }
                 .focusProperties {
                     upToTimeBarFocusRequester.takeIfAttached()?.let { up = it }
-                    audioFocusRequester.takeIfAttached()?.let { left = it }
+                    linkLeft.takeIfAttached()?.let { left = it }
                 }
                 .tvFocusableControl(
                     shape = CircleShape,
@@ -453,26 +718,33 @@ internal fun PlayerCircularControlsRow(
 }
 
 /**
- * Selettore D-Pad delle tracce audio disponibili nel player.
+ * Menu Audio & Sottotitoli navigabile al 100% con D-Pad, organizzato in due sezioni distinte:
+ * 1) AUDIO: tutte le tracce audio disponibili nello stream.
+ * 2) SOTTOTITOLI: opzione "Disattivati" + tutte le tracce sottotitoli reali presenti nel flusso HLS,
+ *    oppure messaggio informativo pulito se lo stream non contiene sottotitoli.
  */
 @Composable
 internal fun PlayerAudioSelectorPanel(
     tracks: List<PlayerAudioTrackOption>,
+    subtitleTracks: List<PlayerSubtitleTrackOption> = emptyList(),
     onSelectTrack: (PlayerAudioTrackOption) -> Unit,
+    onSelectSubtitle: (PlayerSubtitleTrackOption) -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val itemFocusRequesters = remember(tracks.size) {
-        List(tracks.size) { FocusRequester() }
+    val totalSelectableCount = tracks.size + subtitleTracks.size
+    val allFocusRequesters = remember(totalSelectableCount) {
+        List(totalSelectableCount) { FocusRequester() }
     }
-    val initialFocusIndex = remember(tracks) {
+    val initialFocusIndex = remember(tracks, subtitleTracks) {
         tracks.indexOfFirst { it.isSelected }.takeIf { it >= 0 } ?: 0
     }
+    val scrollState = rememberScrollState()
 
-    LaunchedEffect(tracks.size) {
-        if (itemFocusRequesters.isNotEmpty()) {
+    LaunchedEffect(totalSelectableCount) {
+        if (allFocusRequesters.isNotEmpty()) {
             delay(50L)
-            itemFocusRequesters[initialFocusIndex.coerceIn(itemFocusRequesters.indices)].safeRequestFocus()
+            allFocusRequesters[initialFocusIndex.coerceIn(allFocusRequesters.indices)].safeRequestFocus()
         }
     }
 
@@ -482,125 +754,231 @@ internal fun PlayerAudioSelectorPanel(
         border = BorderStroke(1.5.dp, NetflixWhite.copy(alpha = 0.22f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 20.dp),
         modifier = modifier
-            .widthIn(max = 420.dp)
+            .widthIn(max = 440.dp)
             .fillMaxWidth()
+            .heightIn(max = 460.dp)
             .testTag("player_audio_selector_panel")
     ) {
         Column(
             modifier = Modifier
+                .verticalScroll(scrollState)
                 .padding(18.dp)
                 .focusGroup(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            // SEZIONE AUDIO
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("player_audio_section")
             ) {
-                Icon(
-                    imageVector = Icons.Default.Audiotrack,
-                    contentDescription = null,
-                    tint = NetflixRed,
-                    modifier = Modifier.size(22.dp)
-                )
-                Text(
-                    text = "TRACCE AUDIO",
-                    style = MaterialTheme.typography.titleSmall.copy(
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.8.sp
-                    ),
-                    color = NetflixWhite
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Audiotrack,
+                        contentDescription = null,
+                        tint = NetflixRed,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "AUDIO",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.8.sp
+                        ),
+                        color = NetflixWhite
+                    )
+                }
+
+                tracks.forEachIndexed { index, track ->
+                    val requester = allFocusRequesters[index]
+                    val prevRequester = allFocusRequesters.getOrNull(index - 1)
+                    val nextRequester = allFocusRequesters.getOrNull(index + 1)
+
+                    PlayerTrackOptionRow(
+                        title = track.title,
+                        details = track.details,
+                        isSelected = track.isSelected,
+                        testTag = "player_audio_option_${track.id}",
+                        focusRequester = requester,
+                        prevRequester = prevRequester,
+                        nextRequester = nextRequester,
+                        onClick = { onSelectTrack(track) },
+                        onDismiss = onDismiss
+                    )
+                }
             }
 
-            tracks.forEachIndexed { index, track ->
-                val requester = itemFocusRequesters[index]
-                val prevRequester = itemFocusRequesters.getOrNull(index - 1)
-                val nextRequester = itemFocusRequesters.getOrNull(index + 1)
+            HorizontalDivider(
+                color = NetflixElevatedSurface.copy(alpha = 0.9f),
+                thickness = 1.dp,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
 
-                Surface(
-                    color = if (track.isSelected) {
-                        NetflixRed.copy(alpha = 0.2f)
-                    } else {
-                        NetflixDarkSurface.copy(alpha = 0.9f)
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (track.isSelected) NetflixRed else NetflixElevatedSurface
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 50.dp)
-                        .safeFocusRequester(requester)
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionUp -> prevRequester?.safeRequestFocus() ?: true
-                                    Key.DirectionDown -> nextRequester?.safeRequestFocus() ?: true
-                                    Key.DirectionLeft, Key.DirectionRight -> true
-                                    Key.Escape -> {
-                                        onDismiss()
-                                        true
-                                    }
-                                    else -> false
-                                }
-                            } else {
-                                false
-                            }
-                        }
-                        .focusProperties {
-                            prevRequester.takeIfAttached()?.let { up = it }
-                            nextRequester.takeIfAttached()?.let { down = it }
-                        }
-                        .tvFocusableControl(
-                            shape = RoundedCornerShape(12.dp),
-                            focusedBorderColor = NetflixWhite,
-                            focusedScale = 1.03f,
-                            focusTag = "player_audio_option_${track.id}",
-                            onClick = { onSelectTrack(track) }
-                        )
-                        .testTag("player_audio_option_${track.id}")
+            // SEZIONE SOTTOTITOLI
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("player_subtitles_section")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                    Icon(
+                        imageVector = Icons.Default.Subtitles,
+                        contentDescription = null,
+                        tint = NetflixRed,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "SOTTOTITOLI",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.8.sp
+                        ),
+                        color = NetflixWhite
+                    )
+                }
+
+                if (subtitleTracks.isEmpty()) {
+                    Surface(
+                        color = NetflixDarkSurface.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .testTag("player_subtitles_empty_message")
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = track.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = NetflixWhite,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (!track.details.isNullOrBlank()) {
-                                Text(
-                                    text = track.details,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = NetflixLightGray,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
+                        Text(
+                            text = "Nessun sottotitolo disponibile per questo flusso.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NetflixLightGray,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+                        )
+                    }
+                } else {
+                    subtitleTracks.forEachIndexed { subIdx, subtitle ->
+                        val globalIndex = tracks.size + subIdx
+                        val requester = allFocusRequesters[globalIndex]
+                        val prevRequester = allFocusRequesters.getOrNull(globalIndex - 1)
+                        val nextRequester = allFocusRequesters.getOrNull(globalIndex + 1)
 
-                        if (track.isSelected) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Traccia attiva",
-                                tint = NetflixMatchGreen,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+                        PlayerTrackOptionRow(
+                            title = subtitle.title,
+                            details = subtitle.details,
+                            isSelected = subtitle.isSelected,
+                            testTag = "player_subtitle_option_${subtitle.id}",
+                            focusRequester = requester,
+                            prevRequester = prevRequester,
+                            nextRequester = nextRequester,
+                            onClick = { onSelectSubtitle(subtitle) },
+                            onDismiss = onDismiss
+                        )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerTrackOptionRow(
+    title: String,
+    details: String?,
+    isSelected: Boolean,
+    testTag: String,
+    focusRequester: FocusRequester,
+    prevRequester: FocusRequester?,
+    nextRequester: FocusRequester?,
+    onClick: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        color = if (isSelected) {
+            NetflixRed.copy(alpha = 0.2f)
+        } else {
+            NetflixDarkSurface.copy(alpha = 0.9f)
+        },
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isSelected) NetflixRed else NetflixElevatedSurface
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .safeFocusRequester(focusRequester)
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.key) {
+                        Key.DirectionUp -> prevRequester?.safeRequestFocus() ?: true
+                        Key.DirectionDown -> nextRequester?.safeRequestFocus() ?: true
+                        Key.DirectionLeft, Key.DirectionRight -> true
+                        Key.Escape -> {
+                            onDismiss()
+                            true
+                        }
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            }
+            .focusProperties {
+                prevRequester.takeIfAttached()?.let { up = it }
+                nextRequester.takeIfAttached()?.let { down = it }
+            }
+            .tvFocusableControl(
+                shape = RoundedCornerShape(12.dp),
+                focusedBorderColor = NetflixWhite,
+                focusedScale = 1.03f,
+                focusTag = testTag,
+                onClick = onClick
+            )
+            .testTag(testTag)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = NetflixWhite,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!details.isNullOrBlank()) {
+                    Text(
+                        text = details,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NetflixLightGray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            if (isSelected) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Selezionato",
+                    tint = NetflixMatchGreen,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     }
