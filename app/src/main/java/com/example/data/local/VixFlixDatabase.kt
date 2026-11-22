@@ -30,7 +30,7 @@ import com.example.data.local.simkl.SimklProfileSyncMetaEntity
         SimklPlaybackBaselineEntity::class,
         SimklPendingScrobbleEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class VixFlixDatabase : RoomDatabase() {
@@ -526,6 +526,15 @@ abstract class VixFlixDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `simkl_library_item` ADD COLUMN `posterPath` TEXT")
+                db.execSQL("ALTER TABLE `simkl_library_item` ADD COLUMN `backdropPath` TEXT")
+                db.execSQL("ALTER TABLE `simkl_library_item` ADD COLUMN `overview` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `simkl_library_item` ADD COLUMN `voteAverage` REAL NOT NULL DEFAULT 0.0")
+            }
+        }
+
         fun getInstance(context: Context): VixFlixDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -534,7 +543,7 @@ abstract class VixFlixDatabase : RoomDatabase() {
                     "vixflix_stream.db"
                 )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

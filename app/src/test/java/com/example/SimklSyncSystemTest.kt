@@ -5,13 +5,22 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToKey
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.requestFocus
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
@@ -19,6 +28,7 @@ import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
 import com.example.data.local.MAX_USER_PROFILES
+import com.example.data.local.UserProfileEntity
 import com.example.data.local.UserProfileUiState
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
@@ -47,6 +57,7 @@ import com.example.data.repository.VixFlixRepository
 import com.example.ui.VixFlixViewModel
 import com.example.ui.components.SimklQrConnectDialog
 import com.example.ui.components.SimklQrGenerator
+import com.example.ui.screens.MyListScreen
 import com.example.ui.screens.ProfileSelectionScreen
 import com.example.ui.screens.SettingsCategory
 import com.example.ui.screens.SettingsScreen
@@ -416,7 +427,8 @@ class SimklSyncSystemTest {
                 VixFlixDatabase.MIGRATION_3_4,
                 VixFlixDatabase.MIGRATION_4_5,
                 VixFlixDatabase.MIGRATION_5_6,
-                VixFlixDatabase.MIGRATION_6_7
+                VixFlixDatabase.MIGRATION_6_7,
+                VixFlixDatabase.MIGRATION_7_8
             )
             .allowMainThreadQueries()
             .build()
@@ -435,10 +447,15 @@ class SimklSyncSystemTest {
                     mediaCategory = "shows",
                     tmdbMediaType = "tv",
                     title = "Migrated Show",
-                    status = "watching"
+                    status = "plantowatch",
+                    posterPath = "/migrated.jpg",
+                    overview = "Descrizione migrata"
                 )
             )
-            assertEquals(1, mDao.getSimklLibraryForProfile("profile_primary").size)
+            val lib = mDao.getSimklLibraryForProfile("profile_primary")
+            assertEquals(1, lib.size)
+            assertEquals("/migrated.jpg", lib.first().posterPath)
+            assertEquals("Descrizione migrata", lib.first().overview)
         } finally {
             migrated.close()
             app.deleteDatabase(dbName)
@@ -1605,6 +1622,483 @@ class SimklSyncSystemTest {
         composeRule.onNodeWithTag("simkl_sync_summary_panel", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("simkl_summary_counts", useUnmergedTree = true).assertTextContains("Serie TV: 12 / 12", substring = true)
         composeRule.onNodeWithTag("simkl_summary_diagnostics", useUnmergedTree = true).assertTextContains("TMDB non riconosciuti: 1", substring = true)
+    }
+
+    // 51. Plan to Watch: import multiplo Film + Serie TV + Anime, arricchimento TMDB, isolamento da Continua a guardare/Completati, zero duplicati
+    @Test
+    fun `51 plan to watch imports multiple movies shows and anime isolates from continue watching and avoids duplicates`() = runBlocking {
+        tokenStore.saveTokens(
+            DEFAULT_PRIMARY_PROFILE_ID,
+            SimklTokenBundle("ptw_tok", "ptw_ref", nowMs() + 90_000_000L)
+        )
+        db.vixFlixDao().upsertSimklProfileMeta(
+            SimklProfileSyncMetaEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                connectionState = SimklConnectionState.CONNECTED_SYNCED.name,
+                accountDisplayName = "Marco",
+                initialFullImportDone = false
+            )
+        )
+        server.activitiesJson = """
+            {
+              "all": "2026-11-20T10:00:00Z",
+              "movies": { "all": "2026-11-20T10:00:00Z", "plan_to_watch": "2026-11-20T10:00:00Z" },
+              "tv_shows": { "all": "2026-11-20T10:00:00Z", "plan_to_watch": "2026-11-20T10:00:00Z" },
+              "anime": { "all": "2026-11-20T10:00:00Z", "plan_to_watch": "2026-11-20T10:00:00Z" }
+            }
+        """.trimIndent()
+        server.allMoviesJson = """
+            {
+              "movies": [
+                {
+                  "added_to_watchlist_at": "2026-11-18T09:00:00Z",
+                  "status": "plantowatch",
+                  "movie": { "title": "Dune: Parte Due", "year": 2024, "ids": { "simkl": 81001, "tmdb": 693134 } }
+                },
+                {
+                  "added_to_watchlist_at": "2026-11-19T09:00:00Z",
+                  "status": "plantowatch",
+                  "movie": { "title": "Interstellar", "year": 2014, "ids": { "simkl": 81002, "tmdb": "157336" } }
+                },
+                {
+                  "last_watched_at": "2026-11-10T20:00:00Z",
+                  "status": "completed",
+                  "movie": { "title": "Inception", "year": 2010, "ids": { "simkl": 81003, "tmdb": 27205 } }
+                }
+              ]
+            }
+        """.trimIndent()
+        server.allShowsJson = """
+            {
+              "shows": [
+                {
+                  "added_to_watchlist_at": "2026-11-19T11:00:00Z",
+                  "status": "plantowatch",
+                  "show": { "title": "Severance", "year": 2022, "status": "ended", "ids": { "simkl": 82001, "tmdb": 95396 } }
+                },
+                {
+                  "added_to_watchlist_at": "2026-11-19T12:00:00Z",
+                  "status": "plantowatch",
+                  "show": { "title": "Fallout", "year": 2024, "ids": { "simkl": 82002, "tmdb": 106379 } }
+                },
+                {
+                  "added_to_watchlist_at": "2026-11-19T13:00:00Z",
+                  "status": "plantowatch",
+                  "show": { "title": "Serie Senza Match TMDB", "year": 2025, "ids": { "simkl": 82003 } }
+                },
+                {
+                  "last_watched_at": "2026-11-19T18:00:00Z",
+                  "status": "watching",
+                  "next_to_watch": "S01E03",
+                  "show": { "title": "The Bear", "year": 2022, "ids": { "simkl": 82004, "tmdb": 136315 } },
+                  "seasons": [{ "number": 1, "episodes": [{ "number": 1 }, { "number": 2 }] }]
+                }
+              ]
+            }
+        """.trimIndent()
+        server.allAnimeJson = """
+            {
+              "anime": [
+                {
+                  "added_to_watchlist_at": "2026-11-19T14:00:00Z",
+                  "status": "plantowatch",
+                  "show": { "title": "Frieren", "year": 2023, "ids": { "simkl": 83001, "tmdb": 209867 } }
+                },
+                {
+                  "added_to_watchlist_at": "2026-11-19T15:00:00Z",
+                  "status": "plantowatch",
+                  "show": { "title": "Dandadan", "year": 2024, "ids": { "simkl": 83002, "tmdb": 240411 } }
+                }
+              ]
+            }
+        """.trimIndent()
+        server.tmdbMovieJson[693134] = """{"id":693134,"title":"Dune: Parte Due","overview":"Arrakis","poster_path":"/dune2.jpg","backdrop_path":"/dune2_bg.jpg","vote_average":8.4,"release_date":"2024-02-27","runtime":166}"""
+        server.tmdbMovieJson[157336] = """{"id":157336,"title":"Interstellar","overview":"Spazio","poster_path":"/interstellar.jpg","backdrop_path":"/interstellar_bg.jpg","vote_average":8.6,"release_date":"2014-11-05","runtime":169}"""
+        server.tmdbTvJson[95396] = """{"id":95396,"name":"Severance","overview":"Lumon","poster_path":"/severance.jpg","backdrop_path":"/severance_bg.jpg","vote_average":8.4,"first_air_date":"2022-02-18"}"""
+        server.tmdbTvJson[106379] = """{"id":106379,"name":"Fallout","overview":"Vault","poster_path":"/fallout.jpg","backdrop_path":"/fallout_bg.jpg","vote_average":8.3,"first_air_date":"2024-04-10"}"""
+        server.tmdbTvJson[209867] = """{"id":209867,"name":"Frieren","overview":"Viaggio","poster_path":"/frieren.jpg","backdrop_path":"/frieren_bg.jpg","vote_average":8.9,"first_air_date":"2023-09-29"}"""
+        server.tmdbTvJson[240411] = """{"id":240411,"name":"Dandadan","overview":"Occulto","poster_path":"/dandadan.jpg","backdrop_path":"/dandadan_bg.jpg","vote_average":8.6,"first_air_date":"2024-10-04"}"""
+
+        val manager = buildManager()
+        assertTrue(manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.POST_AUTH))
+
+        val ptwList = repo.observeSimklPlanToWatch(DEFAULT_PRIMARY_PROFILE_ID).first()
+        assertEquals("Attesi 7 contenuti Plan to Watch (2 film + 3 serie + 2 anime)", 7, ptwList.size)
+        assertEquals(2, ptwList.count { it.mediaCategory == "movies" })
+        assertEquals(3, ptwList.count { it.mediaCategory == "shows" })
+        assertEquals(2, ptwList.count { it.mediaCategory == "anime" })
+
+        // Il campo top-level status="plantowatch" NON deve essere confuso con show.status="ended"
+        val severance = ptwList.first { it.simklId == 82001L }
+        assertEquals("plantowatch", severance.status)
+        assertEquals("/severance.jpg", severance.posterPath)
+        assertEquals(2022, severance.year)
+        assertEquals(95396, severance.tmdbId)
+
+        val dune2 = ptwList.first { it.simklId == 81001L }
+        assertEquals("/dune2.jpg", dune2.posterPath)
+        assertEquals("movie", dune2.tmdbMediaType)
+
+        // L'elemento senza match TMDB è importato senza bloccare gli altri
+        val unmatched = ptwList.first { it.simklId == 82003L }
+        assertNull(unmatched.tmdbId)
+        assertEquals("Serie Senza Match TMDB", unmatched.title)
+
+        // Separazione rigorosa: NESSUN Plan to Watch in Continua a guardare né in Completati
+        val continueWatchingIds = db.vixFlixDao().getWatchProgressListForProfile(DEFAULT_PRIMARY_PROFILE_ID).map { it.tmdbId }.toSet()
+        val ptwTmdbIds = setOf(693134, 157336, 95396, 106379, 209867, 240411)
+        assertTrue("Nessun Plan to Watch deve entrare in Continua a guardare", ptwTmdbIds.none { it in continueWatchingIds })
+        assertNull("Nessun film Plan to Watch deve essere marcato completato", db.vixFlixDao().getCompletedMedia("movie_693134", DEFAULT_PRIMARY_PROFILE_ID))
+        assertNull("Nessun film Plan to Watch deve essere marcato completato", db.vixFlixDao().getCompletedMedia("movie_157336", DEFAULT_PRIMARY_PROFILE_ID))
+        assertTrue("La serie watching deve invece comparire in Continua a guardare", 136315 in continueWatchingIds)
+        assertNotNull("Il film completed deve invece comparire in Completati", db.vixFlixDao().getCompletedMedia("movie_27205", DEFAULT_PRIMARY_PROFILE_ID))
+
+        // Sincronizzazioni ripetute: zero duplicati
+        assertTrue(manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.MANUAL))
+        assertTrue(manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.CONTINUE_WATCHING_OPEN))
+        val afterRepeated = repo.observeSimklPlanToWatch(DEFAULT_PRIMARY_PROFILE_ID).first()
+        assertEquals("Zero duplicati dopo sincronizzazioni ripetute", 7, afterRepeated.size)
+        assertEquals(7, afterRepeated.map { it.stableKey }.toSet().size)
+    }
+
+    // 52. Plan to Watch: sync incrementale multi-dispositivo, rimozione da Simkl, transizioni di stato remote e avvio riproduzione locale
+    @Test
+    fun `52 plan to watch supports multi-device incremental sync removals state transitions and local playback start`() = runBlocking {
+        tokenStore.saveTokens(
+            DEFAULT_PRIMARY_PROFILE_ID,
+            SimklTokenBundle("ptw_tok_52", "ptw_ref_52", nowMs() + 90_000_000L)
+        )
+        db.vixFlixDao().upsertSimklProfileMeta(
+            SimklProfileSyncMetaEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                connectionState = SimklConnectionState.CONNECTED_SYNCED.name,
+                accountDisplayName = "Marco",
+                initialFullImportDone = false
+            )
+        )
+        server.activitiesJson = """
+            {
+              "all": "2026-11-20T10:00:00Z",
+              "movies": { "plan_to_watch": "2026-11-20T10:00:00Z" },
+              "tv_shows": { "plan_to_watch": "2026-11-20T10:00:00Z" },
+              "anime": { "plan_to_watch": "2026-11-20T10:00:00Z" }
+            }
+        """.trimIndent()
+        server.allMoviesJson = """
+            {
+              "movies": [
+                { "status": "plantowatch", "movie": { "title": "Oppenheimer", "year": 2023, "ids": { "simkl": 91001, "tmdb": 872585 } } },
+                { "status": "plantowatch", "movie": { "title": "Blade Runner 2049", "year": 2017, "ids": { "simkl": 91002, "tmdb": 335984 } } }
+              ]
+            }
+        """.trimIndent()
+        server.allShowsJson = """
+            {
+              "shows": [
+                { "status": "plantowatch", "show": { "title": "Silo", "year": 2023, "ids": { "simkl": 92001, "tmdb": 125988 } } }
+              ]
+            }
+        """.trimIndent()
+        server.allAnimeJson = """{ "anime": [] }"""
+        server.tmdbMovieJson[872585] = """{"id":872585,"title":"Oppenheimer","poster_path":"/opp.jpg","runtime":180}"""
+        server.tmdbMovieJson[335984] = """{"id":335984,"title":"Blade Runner 2049","poster_path":"/br2049.jpg","runtime":164}"""
+        server.tmdbTvJson[125988] = """{"id":125988,"name":"Silo","poster_path":"/silo.jpg"}"""
+
+        val manager = buildManager()
+        assertTrue(manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.POST_AUTH))
+        assertEquals(3, repo.observeSimklPlanToWatch(DEFAULT_PRIMARY_PROFILE_ID).first().size)
+
+        // Fase 2 (Multi-dispositivo): su un altro dispositivo l'utente:
+        // - aggiunge un nuovo film Plan to Watch (91003)
+        // - rimuove Oppenheimer (91001) da Simkl
+        // - sposta Silo (92001) da plantowatch -> watching
+        server.recordedRequests.clear()
+        server.activitiesJson = """
+            {
+              "all": "2026-11-20T12:30:00Z",
+              "movies": { "plan_to_watch": "2026-11-20T12:30:00Z", "removed_from_list": "2026-11-20T12:30:00Z" },
+              "tv_shows": { "watching": "2026-11-20T12:30:00Z", "plan_to_watch": "2026-11-20T12:30:00Z" }
+            }
+        """.trimIndent()
+        server.allItemsDeltaJson = """
+            {
+              "movies": [
+                { "status": "plantowatch", "movie": { "title": "Arrival", "year": 2016, "ids": { "simkl": 91003, "tmdb": 329865 } } }
+              ],
+              "shows": [
+                {
+                  "status": "watching",
+                  "last_watched_at": "2026-11-20T12:25:00Z",
+                  "next_to_watch": "S01E02",
+                  "show": { "title": "Silo", "year": 2023, "ids": { "simkl": 92001, "tmdb": 125988 } },
+                  "seasons": [{ "number": 1, "episodes": [{ "number": 1 }] }]
+                }
+              ]
+            }
+        """.trimIndent()
+        server.simklIdsOnlyMoviesJson = """{"movies":[{"ids":{"simkl":91002}},{"ids":{"simkl":91003}}]}"""
+        server.simklIdsOnlyShowsJson = """{"shows":[{"ids":{"simkl":92001}}]}"""
+        server.tmdbMovieJson[329865] = """{"id":329865,"title":"Arrival","poster_path":"/arrival.jpg","runtime":116}"""
+
+        assertTrue(manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.CONTINUE_WATCHING_OPEN))
+
+        assertTrue(
+            "La sync incrementale deve interrogare /sync/all-items con date_from",
+            server.recordedRequests.any { it.path == "/sync/all-items" && it.query.contains("date_from=") }
+        )
+
+        val ptwAfterDelta = repo.observeSimklPlanToWatch(DEFAULT_PRIMARY_PROFILE_ID).first()
+        assertEquals(
+            "Oppenheimer rimosso, Silo passato a watching, Arrival aggiunto -> devono restare Blade Runner 2049 e Arrival",
+            setOf(91002L, 91003L),
+            ptwAfterDelta.mapNotNull { it.simklId }.toSet()
+        )
+        // Silo deve esistere una sola volta nella libreria con stato aggiornato a watching (zero duplicati)
+        val allLibrary = db.vixFlixDao().getSimklLibraryForProfile(DEFAULT_PRIMARY_PROFILE_ID)
+        val siloRecords = allLibrary.filter { it.simklId == 92001L }
+        assertEquals(1, siloRecords.size)
+        assertEquals("watching", siloRecords.first().status)
+
+        // Fase 3: l'utente avvia la riproduzione locale di Blade Runner 2049 -> transizione pulita plantowatch -> watching
+        val bladeRunner = MediaItem(
+            id = 335984,
+            mediaType = "movie",
+            title = "Blade Runner 2049",
+            overview = "",
+            posterPath = "/br2049.jpg",
+            backdropPath = null,
+            voteAverage = 8.0,
+            releaseYear = "2017"
+        )
+        manager.enqueueScrobbleStart(
+            profileId = DEFAULT_PRIMARY_PROFILE_ID,
+            item = bladeRunner,
+            seasonNumber = null,
+            episodeNumber = null,
+            positionMs = 60_000L,
+            durationMs = 9_840_000L
+        )
+        waitUntil {
+            val ids = repo.observeSimklPlanToWatch(DEFAULT_PRIMARY_PROFILE_ID).first().mapNotNull { it.simklId }.toSet()
+            91002L !in ids
+        }
+        val brRecords = db.vixFlixDao().getSimklLibraryForProfile(DEFAULT_PRIMARY_PROFILE_ID).filter { it.simklId == 91002L }
+        assertEquals(1, brRecords.size)
+        assertEquals("watching", brRecords.first().status)
+    }
+
+    // 53. Isolamento rigoroso dei contenuti Plan to Watch per profilo VixFlix / account Simkl
+    @Test
+    fun `53 plan to watch is strictly isolated per vixflix profile and simkl account`() = runBlocking {
+        val profileB = repo.createProfile("Profilo B", "blue_wave", 0xFF06B6D4L).getOrThrow()
+        tokenStore.saveTokens(DEFAULT_PRIMARY_PROFILE_ID, SimklTokenBundle("tok_prof_a", "ref_a", nowMs() + 90_000_000L))
+        tokenStore.saveTokens(profileB.id, SimklTokenBundle("tok_prof_b", "ref_b", nowMs() + 90_000_000L))
+        db.vixFlixDao().upsertSimklProfileMeta(
+            SimklProfileSyncMetaEntity(DEFAULT_PRIMARY_PROFILE_ID, SimklConnectionState.CONNECTED_SYNCED.name, accountDisplayName = "SimklA")
+        )
+        db.vixFlixDao().upsertSimklProfileMeta(
+            SimklProfileSyncMetaEntity(profileB.id, SimklConnectionState.CONNECTED_SYNCED.name, accountDisplayName = "SimklB")
+        )
+
+        val manager = buildManager()
+
+        // Sync Profilo A
+        server.activitiesJson = """{"all":"2026-11-20T08:00:00Z"}"""
+        server.allMoviesJson = """{"movies":[{"status":"plantowatch","movie":{"title":"Film Profilo A","year":2024,"ids":{"simkl":7001,"tmdb":5001}}}]}"""
+        server.allShowsJson = """{"shows":[]}"""
+        server.allAnimeJson = """{"anime":[]}"""
+        assertTrue(manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.POST_AUTH))
+
+        // Sync Profilo B
+        server.activitiesJson = """{"all":"2026-11-20T09:00:00Z"}"""
+        server.allMoviesJson = """{"movies":[]}"""
+        server.allShowsJson = """{"shows":[{"status":"plantowatch","show":{"title":"Serie Profilo B","year":2025,"ids":{"simkl":7002,"tmdb":5002}}}]}"""
+        server.allAnimeJson = """{"anime":[]}"""
+        assertTrue(manager.syncProfileNow(profileB.id, SimklSyncTrigger.POST_AUTH))
+
+        val listA = repo.observeSimklPlanToWatch(DEFAULT_PRIMARY_PROFILE_ID).first()
+        val listB = repo.observeSimklPlanToWatch(profileB.id).first()
+
+        assertEquals(listOf("Film Profilo A"), listA.map { it.title })
+        assertEquals(listOf("Serie Profilo B"), listB.map { it.title })
+        assertTrue(listA.none { it.title == "Serie Profilo B" })
+        assertTrue(listB.none { it.title == "Film Profilo A" })
+    }
+
+    // 54. UI "La mia lista" (MyListScreen): rendering locandine Plan to Watch, badge "DA GUARDARE", nessun testo tecnico "plantowatch", click apre dettaglio senza auto-play, navigazione D-Pad
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun `54 my list screen renders plan to watch posters with da guardare badge opens details without autoplay and supports dpad`() {
+        val openedItems = mutableListOf<MediaItem>()
+        val unresolvedOpened = mutableListOf<SimklLibraryItemEntity>()
+        val autoPlayedItems = mutableListOf<MediaItem>()
+        val resumedEntries = mutableListOf<WatchProgressEntity>()
+
+        val continueWatching = listOf(
+            WatchProgressEntity(
+                id = "tv_136315",
+                tmdbId = 136315,
+                mediaType = "tv",
+                title = "The Bear",
+                overview = "Cucina",
+                posterPath = "/thebear.jpg",
+                backdropPath = "/thebear_bg.jpg",
+                voteAverage = 8.5,
+                releaseYear = "2022",
+                seasonNumber = 1,
+                episodeNumber = 3,
+                episodeTitle = "Brigade",
+                positionMs = 600_000L,
+                durationMs = 1_800_000L,
+                updatedAt = 1_700_000_000_000L,
+                profileId = DEFAULT_PRIMARY_PROFILE_ID
+            )
+        )
+        val planToWatch = listOf(
+            SimklLibraryItemEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                stableKey = "simkl_movies_81001",
+                simklId = 81001L,
+                tmdbId = 693134,
+                mediaCategory = "movies",
+                tmdbMediaType = "movie",
+                title = "Dune: Parte Due",
+                year = 2024,
+                status = "plantowatch",
+                posterPath = "/dune2.jpg",
+                voteAverage = 8.4
+            ),
+            SimklLibraryItemEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                stableKey = "simkl_movies_81002",
+                simklId = 81002L,
+                tmdbId = 157336,
+                mediaCategory = "movies",
+                tmdbMediaType = "movie",
+                title = "Interstellar",
+                year = 2014,
+                status = "plantowatch",
+                posterPath = "/interstellar.jpg",
+                voteAverage = 8.6
+            ),
+            SimklLibraryItemEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                stableKey = "simkl_shows_82001",
+                simklId = 82001L,
+                tmdbId = 95396,
+                mediaCategory = "shows",
+                tmdbMediaType = "tv",
+                title = "Severance",
+                year = 2022,
+                status = "plantowatch",
+                posterPath = "/severance.jpg",
+                voteAverage = 8.4
+            ),
+            SimklLibraryItemEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                stableKey = "simkl_anime_83001",
+                simklId = 83001L,
+                tmdbId = null,
+                mediaCategory = "anime",
+                tmdbMediaType = "tv",
+                title = "Anime Indipendente",
+                year = 2025,
+                status = "plantowatch",
+                posterPath = null
+            )
+        )
+
+        val profile = UserProfileEntity(
+            id = DEFAULT_PRIMARY_PROFILE_ID,
+            name = "Marco",
+            avatarId = "avatar_red",
+            accentColorHex = 0xFFE50914L,
+            isPrimary = true
+        )
+        val firstRowFocus = FocusRequester()
+        val navRailFocus = FocusRequester()
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                MyListScreen(
+                    activeProfile = profile,
+                    watchlist = emptyList(),
+                    continueWatching = continueWatching,
+                    simklPlanToWatch = planToWatch,
+                    isTvLayout = true,
+                    firstRowFocusRequester = firstRowFocus,
+                    navRailFocusRequester = navRailFocus,
+                    topBarFocusRequester = null,
+                    onBrowseCatalog = {},
+                    onOpenItem = { openedItems.add(it) },
+                    onOpenUnresolvedPlanToWatch = { unresolvedOpened.add(it) },
+                    onPlayItem = { autoPlayedItems.add(it) },
+                    onResumeContinueWatching = { resumedEntries.add(it) },
+                    onRemoveContinueWatching = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. Verifica visualizzazione righe, titolo, anno, tipologia e indicatore discreto "DA GUARDARE"
+        composeRule.onNodeWithTag("my_list_screen").performScrollToKey("my_list_plan_to_watch_movies")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81001", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("plan_to_watch_badge_simkl_movies_81001", useUnmergedTree = true).assertTextContains("DA GUARDARE")
+        composeRule.onNodeWithText("Dune: Parte Due", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Film • 2024", useUnmergedTree = true).assertIsDisplayed()
+
+        // 2. Verifica che l'etichetta tecnica "plantowatch" NON compaia MAI nella UI visibile
+        val technicalNodes = composeRule.onAllNodesWithText(
+            text = "plantowatch",
+            substring = true,
+            ignoreCase = true,
+            useUnmergedTree = true
+        ).fetchSemanticsNodes()
+        assertEquals("L'etichetta tecnica plantowatch non deve mai apparire in UI", 0, technicalNodes.size)
+
+        // 3. Click apre dettaglio senza auto-play + navigazione D-Pad destra tra le locandine Plan to Watch
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81001").performClick()
+        composeRule.waitForIdle()
+        assertEquals("Il click deve aprire la schermata dettaglio senza avviare la riproduzione", 1, openedItems.size)
+        assertEquals(693134, openedItems.first().id)
+        assertEquals("movie", openedItems.first().mediaType)
+        assertEquals("/dune2.jpg", openedItems.first().posterPath)
+        assertTrue("Il click su Plan to Watch non deve avviare auto-play", autoPlayedItems.isEmpty())
+        assertTrue("Il click su Plan to Watch non deve chiamare resume Continue Watching", resumedEntries.isEmpty())
+
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81001").requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81001").assertIsFocused()
+
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81001").performKeyInput {
+            pressKey(Key.DirectionRight)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81002").assertIsFocused()
+
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81002").performKeyInput {
+            pressKey(Key.DirectionLeft)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_movies_81001").assertIsFocused()
+
+        // 4. Verifica riga Serie TV e Anime
+        composeRule.onNodeWithTag("my_list_screen").performScrollToKey("my_list_plan_to_watch_series")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_shows_82001", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Severance", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Serie TV • 2022", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("plan_to_watch_badge_simkl_shows_82001", useUnmergedTree = true).assertTextContains("DA GUARDARE")
+
+        composeRule.onNodeWithTag("my_list_screen").performScrollToKey("my_list_plan_to_watch_anime")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_anime_83001", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("plan_to_watch_card_simkl_anime_83001").performClick()
+        composeRule.waitForIdle()
+        assertEquals("Elemento senza TMDB ID gestito in modo sicuro tramite callback dedicato", 1, unresolvedOpened.size)
+        assertEquals("Anime Indipendente", unresolvedOpened.first().title)
+        assertTrue("Nessun auto-play neanche per elementi non risolti", autoPlayedItems.isEmpty())
     }
 
     // 40. Full ISO/IEC 18004 decoder verification (Finder, Dark Module, Format BCH both copies, Version BCH, RS syndromes, UTF-8 round-trip)

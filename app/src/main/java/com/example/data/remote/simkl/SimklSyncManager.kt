@@ -1308,7 +1308,10 @@ class SimklSyncManager(
             if (resolvedPct <= 0.0 && action != "start") return@launch
 
             val contentKey = buildContentKey(item.mediaType, item.id, seasonNumber, episodeNumber)
-            val now = clockMs()
+            val prevUpdatedAt = dao.getSimklPendingScrobbles(profileId)
+                .firstOrNull { it.contentKey == contentKey }
+                ?.updatedAtMs ?: 0L
+            val now = maxOf(clockMs(), prevUpdatedAt + 1L)
             dao.upsertSimklPendingScrobble(
                 SimklPendingScrobbleEntity(
                     profileId = profileId,
@@ -1328,11 +1331,25 @@ class SimklSyncManager(
                     nextRetryAtMs = 0L
                 )
             )
+            if (action == "start") {
+                transitionLibraryStatusOnPlayback(
+                    profileId = profileId,
+                    tmdbId = item.id,
+                    tmdbMediaType = item.mediaType,
+                    action = action,
+                    progressPercent = resolvedPct,
+                    minProgress = minProgress
+                )
+            }
             val flushed = flushPendingQueueInternal(profileId)
+            val meta = dao.getSimklProfileMeta(profileId)
             if (!flushed) {
-                val meta = dao.getSimklProfileMeta(profileId)
                 if (meta != null && meta.connectionState != SimklConnectionState.AUTH_EXPIRED.name) {
                     updateMetaState(profileId, SimklConnectionState.OFFLINE_QUEUE_PENDING)
+                }
+            } else if (meta != null && meta.connectionState == SimklConnectionState.OFFLINE_QUEUE_PENDING.name) {
+                if (dao.getSimklPendingScrobbles(profileId).isEmpty()) {
+                    updateMetaState(profileId, SimklConnectionState.CONNECTED_SYNCED, clearError = true)
                 }
             }
         }
@@ -1343,83 +1360,133 @@ class SimklSyncManager(
     }
 
     private suspend fun flushPendingQueueInternal(profileId: String): Boolean {
-        val pending = dao.getSimklPendingScrobbles(profileId)
-        if (pending.isEmpty()) return true
-        val now = clockMs()
-        var allSucceeded = true
+        return writeMutexFor(profileId).withLock {
+            var allSucceeded = true
+            var safetyPass = 0
+            while (safetyPass < 6) {
+                safetyPass++
+                val pending = dao.getSimklPendingScrobbles(profileId)
+                if (pending.isEmpty()) break
 
-        for (entry in pending) {
-            if (entry.nextRetryAtMs > now) {
-                allSucceeded = false
-                continue
-            }
-            val token = getValidAccessToken(profileId, forceRefresh = false)
-            if (token == null) {
-                allSucceeded = false
-                break
-            }
+                val now = clockMs()
+                var sentOrRetriedAnyInPass = false
+                var newerArrivalDetected = false
+                allSucceeded = true
 
-            writeMutexFor(profileId).withLock {
-                val lastPost = lastPostAtByProfile[profileId] ?: 0L
-                val elapsed = clockMs() - lastPost
-                if (elapsed in 0 until minPostIntervalMs) {
-                    delay(minPostIntervalMs - elapsed)
-                }
+                for (entry in pending) {
+                    if (entry.nextRetryAtMs > now) {
+                        allSucceeded = false
+                        continue
+                    }
+                    val token = getValidAccessToken(profileId, forceRefresh = false)
+                    if (token == null) {
+                        allSucceeded = false
+                        break
+                    }
 
-                val result = try {
-                    sendSinglePendingEntry(profileId, token, entry)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: IOException) {
-                    WriteOutcome.RETRY(delayMs = computeBackoffMs(entry.attemptCount))
-                } catch (_: Exception) {
-                    WriteOutcome.RETRY(delayMs = computeBackoffMs(entry.attemptCount))
-                } finally {
-                    lastPostAtByProfile[profileId] = clockMs()
-                }
+                    val lastPost = lastPostAtByProfile[profileId] ?: 0L
+                    val elapsed = clockMs() - lastPost
+                    if (elapsed in 0 until minPostIntervalMs) {
+                        delay(minPostIntervalMs - elapsed)
+                    }
 
-                when (result) {
-                    is WriteOutcome.SUCCESS -> {
-                        dao.deleteSimklPendingScrobble(profileId, entry.contentKey)
-                        val existingBaseline = dao.getSimklBaseline(profileId, entry.contentKey)
-                        if (entry.action == "delete_playback" || (entry.action == "stop" && entry.progressPercent >= entry.minProgress.toDouble())) {
-                            dao.deleteSimklBaseline(profileId, entry.contentKey)
-                        } else {
-                            val nowSaved = clockMs()
-                            dao.upsertSimklBaseline(
-                                (existingBaseline ?: SimklPlaybackBaselineEntity(
-                                    profileId = profileId,
-                                    contentKey = entry.contentKey,
-                                    tmdbId = entry.tmdbId,
-                                    mediaType = entry.mediaType,
-                                    seasonNumber = entry.seasonNumber,
-                                    episodeNumber = entry.episodeNumber
-                                )).copy(
-                                    simklPlaybackId = result.simklId ?: existingBaseline?.simklPlaybackId,
-                                    lastSyncedProgressPercent = entry.progressPercent,
-                                    lastLocalUpdatedAtMs = maxOf(entry.updatedAtMs, existingBaseline?.lastLocalUpdatedAtMs ?: 0L),
-                                    localDirty = false,
-                                    updatedAtMs = nowSaved
+                    val result = try {
+                        sendSinglePendingEntry(profileId, token, entry)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: IOException) {
+                        WriteOutcome.RETRY(delayMs = computeBackoffMs(entry.attemptCount))
+                    } catch (_: Exception) {
+                        WriteOutcome.RETRY(delayMs = computeBackoffMs(entry.attemptCount))
+                    } finally {
+                        lastPostAtByProfile[profileId] = clockMs()
+                    }
+
+                    when (result) {
+                        is WriteOutcome.SUCCESS -> {
+                            sentOrRetriedAnyInPass = true
+                            val latestInDb = dao.getSimklPendingScrobbles(profileId)
+                                .firstOrNull { it.contentKey == entry.contentKey }
+                            val supersededByNewer = latestInDb != null && (
+                                latestInDb.updatedAtMs > entry.updatedAtMs ||
+                                    latestInDb.action != entry.action ||
+                                    latestInDb.progressPercent != entry.progressPercent ||
+                                    latestInDb.minProgress != entry.minProgress
                                 )
-                            )
+                            if (supersededByNewer) {
+                                newerArrivalDetected = true
+                                allSucceeded = false
+                            } else {
+                                dao.deleteSimklPendingScrobble(profileId, entry.contentKey)
+                            }
+                            if (entry.action == "start" || entry.action == "pause" || entry.action == "stop") {
+                                transitionLibraryStatusOnPlayback(
+                                    profileId = profileId,
+                                    tmdbId = entry.tmdbId,
+                                    tmdbMediaType = entry.mediaType,
+                                    action = entry.action,
+                                    progressPercent = entry.progressPercent,
+                                    minProgress = entry.minProgress
+                                )
+                            }
+                            val existingBaseline = dao.getSimklBaseline(profileId, entry.contentKey)
+                            if (entry.action == "delete_playback" || (entry.action == "stop" && entry.progressPercent >= entry.minProgress.toDouble())) {
+                                dao.deleteSimklBaseline(profileId, entry.contentKey)
+                            } else {
+                                val nowSaved = clockMs()
+                                dao.upsertSimklBaseline(
+                                    (existingBaseline ?: SimklPlaybackBaselineEntity(
+                                        profileId = profileId,
+                                        contentKey = entry.contentKey,
+                                        tmdbId = entry.tmdbId,
+                                        mediaType = entry.mediaType,
+                                        seasonNumber = entry.seasonNumber,
+                                        episodeNumber = entry.episodeNumber
+                                    )).copy(
+                                        simklPlaybackId = result.simklId ?: existingBaseline?.simklPlaybackId,
+                                        lastSyncedProgressPercent = entry.progressPercent,
+                                        lastLocalUpdatedAtMs = maxOf(entry.updatedAtMs, existingBaseline?.lastLocalUpdatedAtMs ?: 0L),
+                                        localDirty = false,
+                                        updatedAtMs = nowSaved
+                                    )
+                                )
+                            }
+                        }
+                        is WriteOutcome.RETRY -> {
+                            sentOrRetriedAnyInPass = true
+                            allSucceeded = false
+                            val latestInDb = dao.getSimklPendingScrobbles(profileId)
+                                .firstOrNull { it.contentKey == entry.contentKey }
+                            val supersededByNewer = latestInDb != null && (
+                                latestInDb.updatedAtMs > entry.updatedAtMs ||
+                                    latestInDb.action != entry.action ||
+                                    latestInDb.progressPercent != entry.progressPercent ||
+                                    latestInDb.minProgress != entry.minProgress
+                                )
+                            if (supersededByNewer) {
+                                // Un nuovo aggiornamento coalesced è arrivato durante la richiesta: non sovrascriverlo con backoff vecchio
+                                newerArrivalDetected = true
+                            } else {
+                                dao.upsertSimklPendingScrobble(
+                                    entry.copy(
+                                        attemptCount = entry.attemptCount + 1,
+                                        nextRetryAtMs = clockMs() + result.delayMs
+                                    )
+                                )
+                            }
+                        }
+                        WriteOutcome.AUTH_FAILED -> {
+                            allSucceeded = false
                         }
                     }
-                    is WriteOutcome.RETRY -> {
-                        allSucceeded = false
-                        dao.upsertSimklPendingScrobble(
-                            entry.copy(
-                                attemptCount = entry.attemptCount + 1,
-                                nextRetryAtMs = clockMs() + result.delayMs
-                            )
-                        )
-                    }
-                    WriteOutcome.AUTH_FAILED -> {
-                        allSucceeded = false
-                    }
+                }
+
+                if (!newerArrivalDetected || !sentOrRetriedAnyInPass) {
+                    break
                 }
             }
+            allSucceeded
         }
-        return allSucceeded
     }
 
     private sealed interface WriteOutcome {
@@ -2091,7 +2158,7 @@ class SimklSyncManager(
     }
 
     private fun parseRetryAfterMs(headerValue: String?, attemptCount: Int): Long {
-        val parsedSec = headerValue?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+        val parsedSec = headerValue?.trim()?.toLongOrNull()?.takeIf { it >= 0L }
         return if (parsedSec != null) {
             (parsedSec * 1000L).coerceAtMost(300_000L)
         } else {
@@ -2575,6 +2642,42 @@ class SimklSyncManager(
                     tmdbUnrecognizedCount++
                 }
 
+                var enrichedPoster = existing?.takeIf { it.tmdbId == resolvedTmdbId }?.posterPath
+                var enrichedBackdrop = existing?.takeIf { it.tmdbId == resolvedTmdbId }?.backdropPath
+                var enrichedOverview = existing?.takeIf { it.tmdbId == resolvedTmdbId }?.overview.orEmpty()
+                var enrichedVoteAverage = existing?.takeIf { it.tmdbId == resolvedTmdbId }?.voteAverage ?: 0.0
+                var enrichedYear = item.year
+
+                if (resolvedTmdbId != null && (enrichedPoster == null || enrichedOverview.isBlank())) {
+                    val probeMedia = MediaItem(
+                        id = resolvedTmdbId,
+                        mediaType = item.tmdbMediaType,
+                        title = item.title,
+                        overview = enrichedOverview,
+                        posterPath = enrichedPoster,
+                        backdropPath = enrichedBackdrop,
+                        voteAverage = enrichedVoteAverage,
+                        releaseYear = item.year?.toString().orEmpty()
+                    )
+                    val cachedDetails = runCatching { repository.getCachedMediaDetails(probeMedia)?.value }.getOrNull()
+                    val tmdbDetails = cachedDetails ?: if (item.status == SimklLibraryJsonParser.STATUS_PLAN_TO_WATCH) {
+                        runCatching { repository.fetchMediaDetails(probeMedia).getOrNull() }.getOrNull()
+                    } else {
+                        null
+                    }
+                    if (tmdbDetails != null) {
+                        enrichedPoster = tmdbDetails.item.posterPath ?: enrichedPoster
+                        enrichedBackdrop = tmdbDetails.item.backdropPath ?: enrichedBackdrop
+                        enrichedOverview = tmdbDetails.item.overview.takeIf { it.isNotBlank() } ?: enrichedOverview
+                        if (tmdbDetails.item.voteAverage > 0.0) {
+                            enrichedVoteAverage = tmdbDetails.item.voteAverage
+                        }
+                        if (enrichedYear == null) {
+                            enrichedYear = tmdbDetails.item.releaseYear.take(4).toIntOrNull()
+                        }
+                    }
+                }
+
                 val seasonsJson = SimklLibraryJsonParser.serializeSeasonsJson(item.seasons)
                 val lastWatchedMs = parseIsoUtcMillis(item.lastWatchedAt)
                 val entity = SimklLibraryItemEntity(
@@ -2588,7 +2691,7 @@ class SimklSyncManager(
                     tvdbId = item.tvdbId ?: existing?.tvdbId,
                     slug = item.slug ?: existing?.slug,
                     title = item.title,
-                    year = item.year,
+                    year = enrichedYear,
                     status = item.status,
                     watchedEpisodesCount = item.watchedEpisodesCount,
                     totalEpisodesCount = item.totalEpisodesCount,
@@ -2598,6 +2701,10 @@ class SimklSyncManager(
                     lastWatchedEpisodeCode = item.lastWatchedEpisodeCode,
                     seasonsJson = seasonsJson,
                     tmdbResolved = resolvedTmdbId != null,
+                    posterPath = enrichedPoster,
+                    backdropPath = enrichedBackdrop,
+                    overview = enrichedOverview,
+                    voteAverage = enrichedVoteAverage,
                     updatedAtMs = clockMs()
                 )
                 entitiesToUpsert.add(entity)
@@ -2667,12 +2774,51 @@ class SimklSyncManager(
         }.getOrNull()
     }
 
+    private suspend fun transitionLibraryStatusOnPlayback(
+        profileId: String,
+        tmdbId: Int,
+        tmdbMediaType: String,
+        action: String,
+        progressPercent: Double,
+        minProgress: Int
+    ) {
+        if (tmdbId <= 0) return
+        val normalizedType = if (tmdbMediaType == "tv") "tv" else "movie"
+        val matchingItems = dao.getSimklLibraryByTmdb(profileId, tmdbId, normalizedType)
+        if (matchingItems.isEmpty()) return
+        val now = clockMs()
+        for (libraryItem in matchingItems) {
+            val targetStatus = when {
+                normalizedType == "movie" &&
+                    action == "stop" &&
+                    progressPercent >= minProgress.toDouble() &&
+                    libraryItem.status != SimklLibraryJsonParser.STATUS_COMPLETED ->
+                    SimklLibraryJsonParser.STATUS_COMPLETED
+                libraryItem.status == SimklLibraryJsonParser.STATUS_PLAN_TO_WATCH ->
+                    SimklLibraryJsonParser.STATUS_WATCHING
+                else -> null
+            }
+            if (targetStatus != null) {
+                dao.updateSimklLibraryItemStatus(
+                    profileId = profileId,
+                    stableKey = libraryItem.stableKey,
+                    newStatus = targetStatus,
+                    updatedAtMs = now
+                )
+            }
+        }
+    }
+
     private suspend fun propagateLibraryItemToLocalProgress(
         profileId: String,
         item: SimklLibraryParsedItem,
         tmdbId: Int,
         lastWatchedMs: Long
     ) {
+        // I contenuti Plan to Watch NON devono mai generare progressi di riproduzione o stato completato
+        if (item.status == SimklLibraryJsonParser.STATUS_PLAN_TO_WATCH) {
+            return
+        }
         val completedTimestamp = if (lastWatchedMs > 0L) lastWatchedMs else clockMs()
         if (item.tmdbMediaType == "movie") {
             if (item.status == SimklLibraryJsonParser.STATUS_COMPLETED) {
@@ -2791,7 +2937,8 @@ class SimklSyncManager(
             oldEntity.nextToWatch != newEntity.nextToWatch ||
             oldEntity.lastWatchedEpisodeCode != newEntity.lastWatchedEpisodeCode ||
             oldEntity.seasonsJson != newEntity.seasonsJson ||
-            oldEntity.tmdbResolved != newEntity.tmdbResolved
+            oldEntity.tmdbResolved != newEntity.tmdbResolved ||
+            oldEntity.posterPath != newEntity.posterPath
     }
 
     private fun deduplicateParsedItems(

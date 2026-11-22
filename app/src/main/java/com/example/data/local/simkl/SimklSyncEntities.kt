@@ -74,6 +74,10 @@ data class SimklLibraryItemEntity(
     val lastWatchedEpisodeCode: String? = null,
     val seasonsJson: String? = null,
     val tmdbResolved: Boolean = false,
+    val posterPath: String? = null,
+    val backdropPath: String? = null,
+    val overview: String = "",
+    val voteAverage: Double = 0.0,
     val updatedAtMs: Long = System.currentTimeMillis()
 )
 

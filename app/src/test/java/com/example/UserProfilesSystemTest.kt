@@ -233,7 +233,8 @@ class UserProfilesSystemTest {
                 VixFlixDatabase.MIGRATION_3_4,
                 VixFlixDatabase.MIGRATION_4_5,
                 VixFlixDatabase.MIGRATION_5_6,
-                VixFlixDatabase.MIGRATION_6_7
+                VixFlixDatabase.MIGRATION_6_7,
+                VixFlixDatabase.MIGRATION_7_8
             )
             .allowMainThreadQueries()
             .build()

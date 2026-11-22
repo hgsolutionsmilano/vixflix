@@ -256,14 +256,20 @@ object SimklLibraryJsonParser {
             ?: "Simkl #$simklId"
 
         val year = parseFlexibleInt(metaObj, "year") ?: parseFlexibleInt(itemObj, "year")
-        val lastWatchedAt = optNonBlankString(itemObj, "last_watched_at")
+        val explicitWatchedAt = optNonBlankString(itemObj, "last_watched_at")
             ?: optNonBlankString(itemObj, "watched_at")
-            ?: optNonBlankString(itemObj, "added_to_watchlist_at")
+        val addedToWatchlistAt = optNonBlankString(itemObj, "added_to_watchlist_at")
+        val lastWatchedAt = explicitWatchedAt ?: addedToWatchlistAt
 
+        val rawStatusField = forcedStatus ?: optNonBlankString(itemObj, "status")
         val normalizedStatus = normalizeStatus(
-            rawStatus = forcedStatus ?: optNonBlankString(itemObj, "status"),
+            rawStatus = rawStatusField ?: if (explicitWatchedAt.isNullOrBlank() && !addedToWatchlistAt.isNullOrBlank()) {
+                STATUS_PLAN_TO_WATCH
+            } else {
+                null
+            },
             category = category,
-            hasWatchedAt = !lastWatchedAt.isNullOrBlank()
+            hasWatchedAt = !explicitWatchedAt.isNullOrBlank()
         )
 
         val tmdbMediaType = if (category == CATEGORY_MOVIES) "movie" else "tv"

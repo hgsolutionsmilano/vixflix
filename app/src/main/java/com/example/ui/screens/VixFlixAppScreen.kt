@@ -130,10 +130,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.UserProfileEntity
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.simkl.SimklAuthFlowMode
+import com.example.data.remote.simkl.SimklLibraryJsonParser
 import com.example.data.repository.CatalogFeed
 import com.example.ui.ActorDetailUiState
 import com.example.ui.CatalogUiState
@@ -156,6 +158,7 @@ import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
 import com.example.ui.components.PlatformLogoBadge
 import com.example.ui.components.ProfileAvatarArtwork
+import com.example.ui.components.SimklPlanToWatchRow
 import com.example.ui.components.SimklQrConnectDialog
 import com.example.ui.components.StreamingPlatformsStrip
 import com.example.ui.components.Top10Section
@@ -194,6 +197,7 @@ fun VixFlixAppScreen(
     val profileUiState by viewModel.profileUiState.collectAsStateWithLifecycle()
     val continueWatching by viewModel.continueWatching.collectAsStateWithLifecycle()
     val watchlist by viewModel.watchlist.collectAsStateWithLifecycle()
+    val simklPlanToWatch by viewModel.simklPlanToWatch.collectAsStateWithLifecycle()
     val streamLang by viewModel.streamLanguage.collectAsStateWithLifecycle()
     val preferWebPlayer by viewModel.preferWebPlayer.collectAsStateWithLifecycle()
     val bufferPreset by viewModel.bufferPreset.collectAsStateWithLifecycle()
@@ -836,6 +840,7 @@ fun VixFlixAppScreen(
                                 activeProfile = profileUiState.activeProfile,
                                 watchlist = watchlist,
                                 continueWatching = continueWatching,
+                                simklPlanToWatch = simklPlanToWatch,
                                 isTvLayout = useTvNavigationRail,
                                 firstRowFocusRequester = sectionFirstRowFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
@@ -843,6 +848,10 @@ fun VixFlixAppScreen(
                                 tabScrollResetNonce = tabScrollResetNonce,
                                 onBrowseCatalog = { viewModel.selectTab(NavTab.HOME) },
                                 onOpenItem = openDetailsFromCatalog,
+                                onOpenUnresolvedPlanToWatch = { entity ->
+                                    isSearchBarVisible = true
+                                    viewModel.onSearchQueryChange(entity.title)
+                                },
                                 onPlayItem = { viewModel.startPlayback(it) },
                                 onResumeContinueWatching = viewModel::resumeFromContinueWatching,
                                 onRemoveContinueWatching = { viewModel.removeContinueWatching(it.id) },
@@ -3715,11 +3724,18 @@ private fun SearchResultsGrid(
     }
 }
 
+private data class MyListFocusSection(
+    val id: String,
+    val lazyIndex: Int,
+    val focusRequester: FocusRequester
+)
+
 @Composable
-private fun MyListScreen(
+internal fun MyListScreen(
     activeProfile: UserProfileEntity?,
     watchlist: List<WatchlistEntity>,
     continueWatching: List<WatchProgressEntity>,
+    simklPlanToWatch: List<SimklLibraryItemEntity> = emptyList(),
     isTvLayout: Boolean,
     firstRowFocusRequester: FocusRequester,
     navRailFocusRequester: FocusRequester,
@@ -3727,13 +3743,14 @@ private fun MyListScreen(
     tabScrollResetNonce: Int = 0,
     onBrowseCatalog: () -> Unit,
     onOpenItem: (MediaItem) -> Unit,
+    onOpenUnresolvedPlanToWatch: (SimklLibraryItemEntity) -> Unit = {},
     onPlayItem: (MediaItem) -> Unit = onOpenItem,
     onResumeContinueWatching: (WatchProgressEntity) -> Unit,
     onRemoveContinueWatching: (WatchProgressEntity) -> Unit,
     onTvLongPressContinueWatching: (WatchProgressEntity) -> Unit = {},
     onTvLongPressPoster: (MediaItem) -> Unit = {},
     onRememberContentFocus: (FocusRequester) -> Unit = {},
-    contentPadding: PaddingValues
+    contentPadding: PaddingValues = PaddingValues()
 ) {
     val safeWatchlist = remember(watchlist) { watchlist.distinctBy { it.id } }
     val mappedItems = remember(safeWatchlist) {
@@ -3753,11 +3770,56 @@ private fun MyListScreen(
     val favoriteMovies = remember(mappedItems) { mappedItems.filter { !it.isSeries } }
     val favoriteSeries = remember(mappedItems) { mappedItems.filter { it.isSeries } }
 
+    // Contenuti Simkl con stato esclusivamente Plan to Watch (deduplicati tramite chiave stabile Simkl)
+    val safePlanToWatch = remember(simklPlanToWatch) {
+        simklPlanToWatch
+            .asSequence()
+            .filter { it.status == SimklLibraryJsonParser.STATUS_PLAN_TO_WATCH }
+            .distinctBy { it.stableKey }
+            .toList()
+    }
+    val planToWatchMovies = remember(safePlanToWatch) {
+        safePlanToWatch.filter { it.mediaCategory == SimklLibraryJsonParser.CATEGORY_MOVIES }
+    }
+    val planToWatchSeries = remember(safePlanToWatch) {
+        safePlanToWatch.filter { it.mediaCategory == SimklLibraryJsonParser.CATEGORY_SHOWS }
+    }
+    val planToWatchAnime = remember(safePlanToWatch) {
+        safePlanToWatch.filter { it.mediaCategory == SimklLibraryJsonParser.CATEGORY_ANIME }
+    }
+
+    val openPlanToWatchItem: (SimklLibraryItemEntity) -> Unit = { entity ->
+        val resolvedTmdb = entity.tmdbId?.takeIf { it > 0 }
+        if (resolvedTmdb != null) {
+            onOpenItem(
+                MediaItem(
+                    id = resolvedTmdb,
+                    mediaType = if (entity.tmdbMediaType == "movie") "movie" else "tv",
+                    title = entity.title,
+                    overview = entity.overview,
+                    posterPath = entity.posterPath,
+                    backdropPath = entity.backdropPath,
+                    voteAverage = entity.voteAverage,
+                    releaseYear = entity.year?.toString().orEmpty()
+                )
+            )
+        } else {
+            onOpenUnresolvedPlanToWatch(entity)
+        }
+    }
+
     val myListState = rememberLazyListState()
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+    val planMoviesRowRequester = remember { FocusRequester() }
+    val planSeriesRowRequester = remember { FocusRequester() }
+    val planAnimeRowRequester = remember { FocusRequester() }
     val favoriteMoviesRowRequester = remember { FocusRequester() }
     val favoriteSeriesRowRequester = remember { FocusRequester() }
+
     val hasContinueWatching = continueWatching.isNotEmpty()
+    val hasPlanMovies = planToWatchMovies.isNotEmpty()
+    val hasPlanSeries = planToWatchSeries.isNotEmpty()
+    val hasPlanAnime = planToWatchAnime.isNotEmpty()
     val hasMovies = favoriteMovies.isNotEmpty()
     val hasSeries = favoriteSeries.isNotEmpty()
 
@@ -3812,15 +3874,41 @@ private fun MyListScreen(
         topBarFocusRequester.safeRequestFocus()
     }
 
+    // Mappa dinamica e deterministica di tutte le righe attive per una navigazione D-Pad continua senza salti
     val headerOffset = if (activeProfile != null) 1 else 0
-    val continueIdx = headerOffset
-    val moviesIdx = headerOffset + (if (hasContinueWatching) 1 else 0)
-    val seriesIdx = moviesIdx + (if (hasMovies) 1 else 0)
+    val activeSections = remember(
+        headerOffset,
+        hasContinueWatching,
+        hasPlanMovies,
+        hasPlanSeries,
+        hasPlanAnime,
+        hasMovies,
+        hasSeries
+    ) {
+        val list = ArrayList<MyListFocusSection>(6)
+        var nextLazyIdx = headerOffset
+        fun addSection(id: String, fallbackRequester: FocusRequester) {
+            val assignedRequester = if (list.isEmpty()) firstRowFocusRequester else fallbackRequester
+            list.add(MyListFocusSection(id = id, lazyIndex = nextLazyIdx, focusRequester = assignedRequester))
+            nextLazyIdx++
+        }
+        if (hasContinueWatching) addSection("continue", firstRowFocusRequester)
+        if (hasPlanMovies) addSection("plan_movies", planMoviesRowRequester)
+        if (hasPlanSeries) addSection("plan_series", planSeriesRowRequester)
+        if (hasPlanAnime) addSection("plan_anime", planAnimeRowRequester)
+        if (hasMovies) addSection("fav_movies", favoriteMoviesRowRequester)
+        if (hasSeries) addSection("fav_series", favoriteSeriesRowRequester)
+        list
+    }
 
-    val moviesRequester = if (!hasContinueWatching) firstRowFocusRequester else favoriteMoviesRowRequester
-    val seriesRequester = when {
-        !hasContinueWatching && !hasMovies -> firstRowFocusRequester
-        else -> favoriteSeriesRowRequester
+    fun sectionNeighbors(sectionId: String): Triple<MyListFocusSection?, MyListFocusSection?, MyListFocusSection?> {
+        val pos = activeSections.indexOfFirst { it.id == sectionId }
+        if (pos < 0) return Triple(null, null, null)
+        return Triple(
+            activeSections.getOrNull(pos - 1),
+            activeSections[pos],
+            activeSections.getOrNull(pos + 1)
+        )
     }
 
     LazyColumn(
@@ -3854,8 +3942,13 @@ private fun MyListScreen(
                             fontWeight = FontWeight.Bold,
                             color = NetflixWhite
                         )
+                        val summaryLine = if (safePlanToWatch.isNotEmpty()) {
+                            "${safePlanToWatch.size} da guardare • ${favoriteMovies.size} film preferiti • ${favoriteSeries.size} serie TV preferite"
+                        } else {
+                            "${favoriteMovies.size} film preferiti • ${favoriteSeries.size} serie TV preferite"
+                        }
                         Text(
-                            text = "${favoriteMovies.size} film preferiti • ${favoriteSeries.size} serie TV preferite",
+                            text = summaryLine,
                             style = MaterialTheme.typography.bodySmall,
                             color = NetflixLightGray
                         )
@@ -3865,12 +3958,7 @@ private fun MyListScreen(
         }
 
         if (hasContinueWatching) {
-            val nextDownRequester = when {
-                hasMovies -> moviesRequester
-                hasSeries -> seriesRequester
-                else -> null
-            }
-            val nextDownIdx = if (hasMovies) moviesIdx else seriesIdx
+            val (_, currentSec, nextSec) = sectionNeighbors("continue")
             item(key = "my_list_continue_watching", contentType = "continue_watching") {
                 ContinueWatchingSection(
                     entries = continueWatching,
@@ -3893,13 +3981,13 @@ private fun MyListScreen(
                     onTvLongPress = onTvLongPressContinueWatching,
                     onItemFocused = onRememberContentFocus,
                     isTvLayout = isTvLayout,
-                    firstItemFocusRequester = firstRowFocusRequester,
+                    firstItemFocusRequester = currentSec?.focusRequester ?: firstRowFocusRequester,
                     upFocusRequester = topBarFocusRequester,
-                    downFocusRequester = nextDownRequester,
+                    downFocusRequester = nextSec?.focusRequester,
                     onUpKey = handleTopBoundaryUp,
                     onDownKey = {
-                        if (nextDownRequester != null) {
-                            navigateMyListSection(nextDownIdx, nextDownRequester, false)
+                        if (nextSec != null) {
+                            navigateMyListSection(nextSec.lazyIndex, nextSec.focusRequester, false)
                         } else {
                             false
                         }
@@ -3910,7 +3998,7 @@ private fun MyListScreen(
             }
         }
 
-        if (safeWatchlist.isEmpty() && continueWatching.isEmpty()) {
+        if (safeWatchlist.isEmpty() && continueWatching.isEmpty() && safePlanToWatch.isEmpty()) {
             item(key = "my_list_empty", contentType = "empty_state") {
                 Box(
                     modifier = Modifier
@@ -3933,7 +4021,7 @@ private fun MyListScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Aggiungi film e serie TV ai preferiti del profilo attivo o inizia a guardare un titolo per riprenderlo qui.",
+                            text = "Aggiungi film e serie TV ai preferiti del profilo attivo, collega Simkl per importare i titoli da guardare o inizia a guardare un titolo per riprenderlo qui.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = NetflixLightGray,
                             textAlign = TextAlign.Center
@@ -3983,8 +4071,104 @@ private fun MyListScreen(
                 }
             }
         } else {
+            if (hasPlanMovies) {
+                val (prevSec, currentSec, nextSec) = sectionNeighbors("plan_movies")
+                item(key = "my_list_plan_to_watch_movies", contentType = "plan_to_watch_row") {
+                    SimklPlanToWatchRow(
+                        title = "Da guardare • Film (${planToWatchMovies.size})",
+                        items = planToWatchMovies,
+                        onItemClick = openPlanToWatchItem,
+                        onItemFocused = onRememberContentFocus,
+                        firstItemFocusRequester = currentSec?.focusRequester ?: planMoviesRowRequester,
+                        upFocusRequester = prevSec?.focusRequester ?: topBarFocusRequester,
+                        downFocusRequester = nextSec?.focusRequester,
+                        onUpKey = {
+                            if (prevSec == null) {
+                                handleTopBoundaryUp()
+                            } else {
+                                navigateMyListSection(prevSec.lazyIndex, prevSec.focusRequester, prevSec.lazyIndex == headerOffset)
+                            }
+                        },
+                        onDownKey = {
+                            if (nextSec != null) {
+                                navigateMyListSection(nextSec.lazyIndex, nextSec.focusRequester, false)
+                            } else {
+                                false
+                            }
+                        },
+                        navRailFocusRequester = navRailFocusRequester,
+                        rowTestTag = "plan_to_watch_movies_row"
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
+
+            if (hasPlanSeries) {
+                val (prevSec, currentSec, nextSec) = sectionNeighbors("plan_series")
+                item(key = "my_list_plan_to_watch_series", contentType = "plan_to_watch_row") {
+                    SimklPlanToWatchRow(
+                        title = "Da guardare • Serie TV (${planToWatchSeries.size})",
+                        items = planToWatchSeries,
+                        onItemClick = openPlanToWatchItem,
+                        onItemFocused = onRememberContentFocus,
+                        firstItemFocusRequester = currentSec?.focusRequester ?: planSeriesRowRequester,
+                        upFocusRequester = prevSec?.focusRequester ?: topBarFocusRequester,
+                        downFocusRequester = nextSec?.focusRequester,
+                        onUpKey = {
+                            if (prevSec == null) {
+                                handleTopBoundaryUp()
+                            } else {
+                                navigateMyListSection(prevSec.lazyIndex, prevSec.focusRequester, prevSec.lazyIndex == headerOffset)
+                            }
+                        },
+                        onDownKey = {
+                            if (nextSec != null) {
+                                navigateMyListSection(nextSec.lazyIndex, nextSec.focusRequester, false)
+                            } else {
+                                false
+                            }
+                        },
+                        navRailFocusRequester = navRailFocusRequester,
+                        rowTestTag = "plan_to_watch_series_row"
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
+
+            if (hasPlanAnime) {
+                val (prevSec, currentSec, nextSec) = sectionNeighbors("plan_anime")
+                item(key = "my_list_plan_to_watch_anime", contentType = "plan_to_watch_row") {
+                    SimklPlanToWatchRow(
+                        title = "Da guardare • Anime (${planToWatchAnime.size})",
+                        items = planToWatchAnime,
+                        onItemClick = openPlanToWatchItem,
+                        onItemFocused = onRememberContentFocus,
+                        firstItemFocusRequester = currentSec?.focusRequester ?: planAnimeRowRequester,
+                        upFocusRequester = prevSec?.focusRequester ?: topBarFocusRequester,
+                        downFocusRequester = nextSec?.focusRequester,
+                        onUpKey = {
+                            if (prevSec == null) {
+                                handleTopBoundaryUp()
+                            } else {
+                                navigateMyListSection(prevSec.lazyIndex, prevSec.focusRequester, prevSec.lazyIndex == headerOffset)
+                            }
+                        },
+                        onDownKey = {
+                            if (nextSec != null) {
+                                navigateMyListSection(nextSec.lazyIndex, nextSec.focusRequester, false)
+                            } else {
+                                false
+                            }
+                        },
+                        navRailFocusRequester = navRailFocusRequester,
+                        rowTestTag = "plan_to_watch_anime_row"
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
+
             if (hasMovies) {
-                val moviesIsFirstRow = !hasContinueWatching
+                val (prevSec, currentSec, nextSec) = sectionNeighbors("fav_movies")
                 item(key = "my_list_favorite_movies", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Film preferiti (${favoriteMovies.size})",
@@ -3993,19 +4177,19 @@ private fun MyListScreen(
                         onItemQuickPlay = onPlayItem,
                         onItemLongClick = onTvLongPressPoster,
                         onItemFocused = onRememberContentFocus,
-                        firstItemFocusRequester = moviesRequester,
-                        upFocusRequester = if (moviesIsFirstRow) topBarFocusRequester else firstRowFocusRequester,
-                        downFocusRequester = if (hasSeries) seriesRequester else null,
+                        firstItemFocusRequester = currentSec?.focusRequester ?: favoriteMoviesRowRequester,
+                        upFocusRequester = prevSec?.focusRequester ?: topBarFocusRequester,
+                        downFocusRequester = nextSec?.focusRequester,
                         onUpKey = {
-                            if (moviesIsFirstRow) {
+                            if (prevSec == null) {
                                 handleTopBoundaryUp()
                             } else {
-                                navigateMyListSection(continueIdx, firstRowFocusRequester, true)
+                                navigateMyListSection(prevSec.lazyIndex, prevSec.focusRequester, prevSec.lazyIndex == headerOffset)
                             }
                         },
                         onDownKey = {
-                            if (hasSeries) {
-                                navigateMyListSection(seriesIdx, seriesRequester, false)
+                            if (nextSec != null) {
+                                navigateMyListSection(nextSec.lazyIndex, nextSec.focusRequester, false)
                             } else {
                                 false
                             }
@@ -4017,13 +4201,7 @@ private fun MyListScreen(
             }
 
             if (hasSeries) {
-                val seriesIsFirstRow = !hasContinueWatching && !hasMovies
-                val seriesUpRequester = when {
-                    hasMovies -> moviesRequester
-                    hasContinueWatching -> firstRowFocusRequester
-                    else -> topBarFocusRequester
-                }
-                val seriesUpIdx = if (hasMovies) moviesIdx else continueIdx
+                val (prevSec, currentSec, nextSec) = sectionNeighbors("fav_series")
                 item(key = "my_list_favorite_series", contentType = "media_row") {
                     MediaCatalogRow(
                         title = "Serie TV preferite (${favoriteSeries.size})",
@@ -4032,13 +4210,21 @@ private fun MyListScreen(
                         onItemQuickPlay = onPlayItem,
                         onItemLongClick = onTvLongPressPoster,
                         onItemFocused = onRememberContentFocus,
-                        firstItemFocusRequester = seriesRequester,
-                        upFocusRequester = seriesUpRequester,
+                        firstItemFocusRequester = currentSec?.focusRequester ?: favoriteSeriesRowRequester,
+                        upFocusRequester = prevSec?.focusRequester ?: topBarFocusRequester,
+                        downFocusRequester = nextSec?.focusRequester,
                         onUpKey = {
-                            if (seriesIsFirstRow) {
+                            if (prevSec == null) {
                                 handleTopBoundaryUp()
                             } else {
-                                navigateMyListSection(seriesUpIdx, seriesUpRequester ?: firstRowFocusRequester, seriesUpIdx == continueIdx)
+                                navigateMyListSection(prevSec.lazyIndex, prevSec.focusRequester, prevSec.lazyIndex == headerOffset)
+                            }
+                        },
+                        onDownKey = {
+                            if (nextSec != null) {
+                                navigateMyListSection(nextSec.lazyIndex, nextSec.focusRequester, false)
+                            } else {
+                                false
                             }
                         },
                         navRailFocusRequester = navRailFocusRequester

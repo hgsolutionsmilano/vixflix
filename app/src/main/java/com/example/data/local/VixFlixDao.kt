@@ -356,6 +356,15 @@ interface VixFlixDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSimklLibraryItems(entities: List<SimklLibraryItemEntity>)
 
+    @Query("SELECT * FROM simkl_library_item WHERE profileId = :profileId AND status = 'plantowatch' ORDER BY updatedAtMs DESC, lastWatchedAtMs DESC, title ASC")
+    fun observeSimklPlanToWatch(profileId: String): Flow<List<SimklLibraryItemEntity>>
+
+    @Query("SELECT * FROM simkl_library_item WHERE profileId = :profileId AND tmdbId = :tmdbId AND tmdbMediaType = :tmdbMediaType")
+    suspend fun getSimklLibraryByTmdb(profileId: String, tmdbId: Int, tmdbMediaType: String): List<SimklLibraryItemEntity>
+
+    @Query("UPDATE simkl_library_item SET status = :newStatus, updatedAtMs = :updatedAtMs WHERE profileId = :profileId AND stableKey = :stableKey")
+    suspend fun updateSimklLibraryItemStatus(profileId: String, stableKey: String, newStatus: String, updatedAtMs: Long)
+
     @Query("DELETE FROM simkl_library_item WHERE profileId = :profileId AND stableKey IN (:stableKeys)")
     suspend fun deleteSimklLibraryItemsByKeys(profileId: String, stableKeys: List<String>)
 }

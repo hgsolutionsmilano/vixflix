@@ -321,9 +321,9 @@ data class TmdbTvDetailsDto(
 @Immutable
 @JsonClass(generateAdapter = true)
 data class TmdbEpisodeDto(
-    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "id") val id: Int = 0,
     @param:Json(name = "episode_number") val episodeNumber: Int,
-    @param:Json(name = "season_number") val seasonNumber: Int,
+    @param:Json(name = "season_number") val seasonNumber: Int = 0,
     @param:Json(name = "name") val name: String? = null,
     @param:Json(name = "overview") val overview: String? = null,
     @param:Json(name = "still_path") val stillPath: String? = null,
@@ -337,7 +337,7 @@ data class TmdbEpisodeDto(
 
 @JsonClass(generateAdapter = true)
 data class TmdbSeasonDetailsDto(
-    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "id") val id: Int = 0,
     @param:Json(name = "season_number") val seasonNumber: Int,
     @param:Json(name = "name") val name: String? = null,
     @param:Json(name = "episodes") val episodes: List<TmdbEpisodeDto> = emptyList()

@@ -72,11 +72,11 @@ data class SimklActivitiesResponse(
     val showsWatchedTimestamp: String?
         get() = shows?.watchedAt ?: shows?.completed ?: tvShows?.watchedAt ?: shows?.all
     val showsAllTimestamp: String?
-        get() = shows?.all ?: tvShows?.all
+        get() = shows?.latestListActivityTimestamp ?: tvShows?.latestListActivityTimestamp
     val moviesAllTimestamp: String?
-        get() = movies?.all
+        get() = movies?.latestListActivityTimestamp
     val animeAllTimestamp: String?
-        get() = anime?.all
+        get() = anime?.latestListActivityTimestamp
     val showsRemovedTimestamp: String?
         get() = shows?.removedFromList ?: tvShows?.removedFromList
     val moviesRemovedTimestamp: String?
@@ -99,7 +99,10 @@ data class SimklActivityBucketDto(
     @param:Json(name = "rated_at") val ratedAt: String? = null,
     @param:Json(name = "rated") val rated: String? = null,
     @param:Json(name = "removed_from_list") val removedFromList: String? = null
-)
+) {
+    val latestListActivityTimestamp: String?
+        get() = listOfNotNull(all, watching, planToWatch, hold, dropped, watchlist, watchedAt, completed).maxOrNull()
+}
 
 @JsonClass(generateAdapter = true)
 data class SimklIdsDto(

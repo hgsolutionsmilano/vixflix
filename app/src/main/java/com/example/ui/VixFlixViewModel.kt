@@ -27,6 +27,7 @@ import com.example.data.local.VerifiedPreviousEpisode
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.local.simkl.SimklSecureTokenStore
 import com.example.data.remote.ActorDetails
 import com.example.data.remote.simkl.SimklAuthFlowMode
@@ -318,6 +319,11 @@ class VixFlixViewModel @JvmOverloads constructor(
     @OptIn(ExperimentalCoroutinesApi::class)
     val watchlist: StateFlow<List<WatchlistEntity>> = _activeProfileId
         .flatMapLatest { profileId -> repository.observeWatchlist(profileId) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val simklPlanToWatch: StateFlow<List<SimklLibraryItemEntity>> = _activeProfileId
+        .flatMapLatest { profileId -> repository.observeSimklPlanToWatch(profileId) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)

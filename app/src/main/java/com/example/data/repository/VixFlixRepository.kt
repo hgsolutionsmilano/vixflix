@@ -216,6 +216,11 @@ class VixFlixRepository(
     val continueWatchingFlow: Flow<List<WatchProgressEntity>> = dao.observeContinueWatching(DEFAULT_PRIMARY_PROFILE_ID)
     val watchlistFlow: Flow<List<WatchlistEntity>> = dao.observeWatchlist(DEFAULT_PRIMARY_PROFILE_ID)
 
+    fun observeSimklPlanToWatch(
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<List<com.example.data.local.simkl.SimklLibraryItemEntity>> =
+        dao.observeSimklPlanToWatch(profileId)
+
     // --- User Profiles (Offline Local Persistence) ---
     fun observeProfiles(): Flow<List<UserProfileEntity>> = dao.observeAllProfiles()
 

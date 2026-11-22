@@ -40,6 +40,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
@@ -1832,6 +1833,327 @@ fun MediaPosterCard(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun SimklPlanToWatchRow(
+    title: String,
+    items: List<com.example.data.local.simkl.SimklLibraryItemEntity>,
+    onItemClick: (com.example.data.local.simkl.SimklLibraryItemEntity) -> Unit,
+    onItemFocused: ((FocusRequester) -> Unit)? = null,
+    firstItemFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null,
+    downFocusRequester: FocusRequester? = null,
+    onUpKey: (() -> Boolean)? = null,
+    onDownKey: (() -> Boolean)? = null,
+    navRailFocusRequester: FocusRequester? = null,
+    rowTestTag: String = "simkl_plan_to_watch_row",
+    modifier: Modifier = Modifier
+) {
+    val safeItems = remember(items) { items.distinctBy { it.stableKey } }
+    if (safeItems.isEmpty()) return
+
+    val listState = rememberLazyListState()
+    var lastFocusedIndex by androidx.compose.runtime.saveable.rememberSaveable(title) {
+        androidx.compose.runtime.mutableIntStateOf(0)
+    }
+    val targetFocusIdx by remember(listState, safeItems.size) {
+        derivedStateOf {
+            val maxIdx = (safeItems.size - 1).coerceAtLeast(0)
+            val firstVisibleIdx = listState.firstVisibleItemIndex.coerceIn(0, maxIdx)
+            val rememberedIdx = lastFocusedIndex.coerceIn(0, maxIdx)
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty() || visibleItems.any { it.index == rememberedIdx }) {
+                rememberedIdx
+            } else {
+                firstVisibleIdx
+            }
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .testTag(rowTestTag)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            color = NetflixWhite,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+        )
+
+        LazyRow(
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            itemsIndexed(
+                items = safeItems,
+                key = { _, item -> "${rowTestTag}_${item.stableKey}" },
+                contentType = { _, _ -> "plan_to_watch_poster_card" }
+            ) { index, item ->
+                val itemFocusRequester = remember("${rowTestTag}_${item.stableKey}") { FocusRequester() }
+                SimklPlanToWatchPosterCard(
+                    item = item,
+                    itemIndex = index,
+                    listState = listState,
+                    onClick = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                        onItemClick(item)
+                    },
+                    onFocused = {
+                        lastFocusedIndex = index
+                        onItemFocused?.invoke(itemFocusRequester)
+                    },
+                    modifier = Modifier
+                        .safeFocusRequester(itemFocusRequester)
+                        .then(
+                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                Modifier.safeFocusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionDown -> {
+                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                        if (!moved && downFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionUp -> {
+                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                        if (!moved && upFocusRequester == null) true else moved
+                                    }
+                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                    Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        .focusProperties {
+                            if (index == 0) {
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            }
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
+                        }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SimklPlanToWatchPosterCard(
+    item: com.example.data.local.simkl.SimklLibraryItemEntity,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    itemIndex: Int = 0,
+    listState: LazyListState? = null,
+    onFocused: () -> Unit = {}
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val isMovie = item.tmdbMediaType == "movie"
+    val isAnime = item.mediaCategory == com.example.data.remote.simkl.SimklLibraryJsonParser.CATEGORY_ANIME
+    val topBadgeLabel = when {
+        isMovie -> "FILM"
+        isAnime -> "ANIME"
+        else -> "SERIE TV"
+    }
+    val readableTypeLabel = when {
+        isMovie -> "Film"
+        isAnime -> "Serie TV • Anime"
+        else -> "Serie TV"
+    }
+    val metaSubtitle = remember(readableTypeLabel, item.year) {
+        val yearStr = item.year?.takeIf { it > 0 }?.toString()
+        if (yearStr != null) "$readableTypeLabel • $yearStr" else readableTypeLabel
+    }
+    val posterUrl = remember(item.posterPath, item.backdropPath) {
+        item.posterPath?.takeIf { it.isNotBlank() }?.let { "https://image.tmdb.org/t/p/w500$it" }
+            ?: item.backdropPath?.takeIf { it.isNotBlank() }?.let { "https://image.tmdb.org/t/p/w500$it" }
+    }
+
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+        modifier = modifier
+            .width(130.dp)
+            .animatedPosterShowcase(
+                itemIndex = itemIndex,
+                listState = listState,
+                isFocused = isFocused,
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.12f,
+                focusTag = "plan_to_watch_card_${item.stableKey}",
+                onFocusedChanged = { focused ->
+                    isFocused = focused
+                    if (focused) onFocused()
+                },
+                onLongClick = null,
+                onQuickPlay = null,
+                onClick = onClick
+            )
+            .testTag("plan_to_watch_card_${item.stableKey}")
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(0.67f)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(NetflixElevatedSurface, NetflixCardSurface, NetflixBlack)
+                        )
+                    )
+            ) {
+                if (posterUrl != null) {
+                    AsyncImage(
+                        model = rememberSizedImageRequest(posterUrl, 130.dp, 194.dp),
+                        contentDescription = item.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bookmark,
+                            contentDescription = item.title,
+                            tint = NetflixMutedGray.copy(alpha = 0.65f),
+                            modifier = Modifier.size(34.dp)
+                        )
+                    }
+                }
+
+                // Scrim discreto inferiore per leggibilità del badge "DA GUARDARE"
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(Color.Transparent, NetflixBlack.copy(alpha = 0.86f))
+                            )
+                        )
+                )
+
+                // Badge tipologia in alto a sinistra (coerente con MediaPosterCard)
+                Surface(
+                    color = NetflixBlack.copy(alpha = 0.80f),
+                    shape = RoundedCornerShape(bottomEnd = 6.dp),
+                    modifier = Modifier.align(Alignment.TopStart)
+                ) {
+                    Text(
+                        text = topBadgeLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (!isMovie) NetflixRed else NetflixWhite,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+
+                // Voto TMDB in alto a destra se disponibile
+                if (item.voteAverage > 0.0) {
+                    Surface(
+                        color = NetflixBlack.copy(alpha = 0.78f),
+                        shape = RoundedCornerShape(bottomStart = 6.dp),
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = NetflixGold,
+                                modifier = Modifier.size(10.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            val formattedVote = remember(item.voteAverage) {
+                                String.format(Locale.US, "%.1f", item.voteAverage)
+                            }
+                            Text(
+                                text = formattedVote,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp,
+                                color = NetflixWhite
+                            )
+                        }
+                    }
+                }
+
+                // Indicatore discreto "DA GUARDARE" (mai etichette tecniche come "plantowatch")
+                Surface(
+                    color = NetflixBlack.copy(alpha = 0.82f),
+                    shape = RoundedCornerShape(5.dp),
+                    border = BorderStroke(0.75.dp, NetflixWhite.copy(alpha = 0.24f)),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bookmark,
+                            contentDescription = null,
+                            tint = NetflixGold,
+                            modifier = Modifier.size(9.dp)
+                        )
+                        Text(
+                            text = "DA GUARDARE",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = NetflixWhite,
+                            modifier = Modifier.testTag("plan_to_watch_badge_${item.stableKey}")
+                        )
+                    }
+                }
+            }
+
+            // Metadati compatti: Titolo, Tipologia e Anno
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(NetflixCardSurface)
+                    .padding(horizontal = 8.dp, vertical = 7.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = metaSubtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    color = NetflixLightGray,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
