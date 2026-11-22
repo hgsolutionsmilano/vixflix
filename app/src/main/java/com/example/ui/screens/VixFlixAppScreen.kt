@@ -88,6 +88,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -122,6 +123,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.UserProfileEntity
 import com.example.data.local.WatchProgressEntity
@@ -151,6 +155,7 @@ import com.example.ui.components.NetflixHeroBanner
 import com.example.ui.components.NetflixTopBar
 import com.example.ui.components.PlatformLogoBadge
 import com.example.ui.components.ProfileAvatarArtwork
+import com.example.ui.components.SimklQrConnectDialog
 import com.example.ui.components.StreamingPlatformsStrip
 import com.example.ui.components.Top10Section
 import com.example.ui.components.VixFlixSplashScreen
@@ -209,6 +214,20 @@ fun VixFlixAppScreen(
     val gitHubState by viewModel.gitHubState.collectAsStateWithLifecycle()
     val movieGenreState by viewModel.movieGenreState.collectAsStateWithLifecycle()
     val platformState by viewModel.platformState.collectAsStateWithLifecycle()
+    val simklUiState by viewModel.simklUiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                viewModel.onAppForeground()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     var isSplashVisible by remember { mutableStateOf(splashMinDurationMs > 0L) }
     var isSearchBarVisible by remember { mutableStateOf(false) }
@@ -293,7 +312,8 @@ fun VixFlixAppScreen(
     val isPlayerVisible = playbackSession != null
     val isOverlayActive = isDetailVisible || isPlayerVisible
     val isUpdateDialogVisible = !isSplashVisible && !isProfileSelectorVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
-    val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible || showExitConfirmDialog
+    val isSimklQrDialogVisible = !isSplashVisible && !isProfileSelectorVisible && simklUiState.qrDialogState != null
+    val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible || isSimklQrDialogVisible || showExitConfirmDialog
     val isCatalogInteractive = !isSplashVisible && !isProfileSelectorVisible && !isDetailVisible && !isPlayerVisible
     val activeDpadScope = when {
         isSplashVisible -> DpadFocusScope.SPLASH
@@ -519,6 +539,7 @@ fun VixFlixAppScreen(
         // 3. Sulla schermata principale mostra il popup di conferma uscita "VUOI USCIRE DA VIXFLIX?"
         val handleCatalogBack: () -> Unit = {
             when {
+                isSimklQrDialogVisible -> viewModel.dismissSimklConnectDialog()
                 showExitConfirmDialog -> showExitConfirmDialog = false
                 tvQuickActionEntry != null -> tvQuickActionEntry = null
                 tvQuickActionItem != null -> tvQuickActionItem = null
@@ -785,6 +806,10 @@ fun VixFlixAppScreen(
                                 },
                                 onSetAutoLoginProfile = viewModel::setAutoLoginProfile,
                                 onSetDefaultProfileId = viewModel::setDefaultProfileId,
+                                simklUiState = simklUiState,
+                                onConnectSimkl = viewModel::openSimklConnectDialog,
+                                onSyncSimklNow = viewModel::syncSimklNow,
+                                onUnlinkSimkl = viewModel::unlinkSimklAccount,
                                 playerAdvancedSettings = playerAdvancedSettings,
                                 onSetSkipIntroEnabled = viewModel::setSkipIntroEnabled,
                                 onSetNextEpisodePromptEnabled = viewModel::setNextEpisodePromptEnabled,
@@ -1198,6 +1223,18 @@ fun VixFlixAppScreen(
                 }
             )
         }
+
+        // Modale TV collegamento Simkl tramite QR Code AUTH V2
+        if (isSimklQrDialogVisible) {
+            simklUiState.qrDialogState?.let { qrState ->
+                SimklQrConnectDialog(
+                    state = qrState,
+                    profileName = profileUiState.activeProfile?.name ?: "Profilo Principale",
+                    onRegenerate = viewModel::retrySimklDeviceFlow,
+                    onDismiss = viewModel::dismissSimklConnectDialog
+                )
+            }
+        }
         }
 
         // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (con stack cronologico tra Titoli Simili e Attori)
@@ -1317,7 +1354,10 @@ fun VixFlixAppScreen(
                     onPreResolveNextEpisode = viewModel::preResolveNextEpisode,
                     advancedSettings = playerAdvancedSettings,
                     onCompleteMovieAndClose = viewModel::completeCurrentMovieAndClose,
-                    onSaveIntroSegment = viewModel::saveCurrentEpisodeIntroSegment
+                    onSaveIntroSegment = viewModel::saveCurrentEpisodeIntroSegment,
+                    onScrobbleStart = viewModel::onPlayerScrobbleStart,
+                    onScrobblePause = viewModel::onPlayerScrobblePause,
+                    onScrobbleStop = viewModel::onPlayerScrobbleStop
                 )
             }
         }

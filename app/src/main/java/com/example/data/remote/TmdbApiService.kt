@@ -208,5 +208,12 @@ interface TmdbApiService {
         @Query("language") language: String = "it-IT",
         @Query("page") page: Int = 1
     ): TmdbPagedResponse<TmdbMediaItemDto>
+
+    @GET("find/{external_id}")
+    suspend fun findByExternalId(
+        @Path("external_id") externalId: String,
+        @Query("external_source") externalSource: String,
+        @Query("language") language: String = "it-IT"
+    ): TmdbFindResponse
 }
 

@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
@@ -46,13 +47,16 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
@@ -106,6 +110,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.launch
 import com.example.BuildConfig
 import com.example.data.local.CacheStatsSummary
@@ -113,6 +118,8 @@ import com.example.data.local.PlayerAdvancedSettings
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.UserProfileUiState
 import com.example.data.remote.TmdbApiConfig
+import com.example.data.remote.simkl.SimklConnectionState
+import com.example.data.remote.simkl.SimklProfileUiState
 import com.example.ui.GitHubUpdateUiState
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
@@ -179,6 +186,10 @@ fun SettingsScreen(
     onOpenProfileSelector: (Boolean) -> Unit = {},
     onSetAutoLoginProfile: (Boolean) -> Unit = {},
     onSetDefaultProfileId: (String?) -> Unit = {},
+    simklUiState: SimklProfileUiState = SimklProfileUiState(),
+    onConnectSimkl: () -> Unit = {},
+    onSyncSimklNow: () -> Unit = {},
+    onUnlinkSimkl: () -> Unit = {},
     playerAdvancedSettings: PlayerAdvancedSettings = PlayerAdvancedSettings(),
     onSetSkipIntroEnabled: (Boolean) -> Unit = {},
     onSetNextEpisodePromptEnabled: (Boolean) -> Unit = {},
@@ -431,6 +442,10 @@ fun SettingsScreen(
                         onOpenProfileSelector = onOpenProfileSelector,
                         onSetAutoLoginProfile = onSetAutoLoginProfile,
                         onSetDefaultProfileId = onSetDefaultProfileId,
+                        simklUiState = simklUiState,
+                        onConnectSimkl = onConnectSimkl,
+                        onSyncSimklNow = onSyncSimklNow,
+                        onUnlinkSimkl = onUnlinkSimkl,
                         onSetBackgroundPrefetch = onSetBackgroundPrefetch,
                         onRefreshCatalog = onRefreshCatalog,
                         onClearLocalCache = onClearLocalCache,
@@ -1608,6 +1623,10 @@ private fun SystemSettingsPanel(
     onOpenProfileSelector: (Boolean) -> Unit,
     onSetAutoLoginProfile: (Boolean) -> Unit,
     onSetDefaultProfileId: (String?) -> Unit,
+    simklUiState: SimklProfileUiState,
+    onConnectSimkl: () -> Unit,
+    onSyncSimklNow: () -> Unit,
+    onUnlinkSimkl: () -> Unit,
     onSetBackgroundPrefetch: (Boolean) -> Unit,
     onRefreshCatalog: () -> Unit,
     onClearLocalCache: () -> Unit,
@@ -1619,13 +1638,29 @@ private fun SystemSettingsPanel(
     navRailFocusRequester: FocusRequester?
 ) {
     var clearedFeedback by remember { mutableStateOf(false) }
+    var showUnlinkSimklConfirm by remember(simklUiState.profileId) { mutableStateOf(false) }
     val switchProfileFocusRequester = firstControlFocusRequester ?: remember { FocusRequester() }
     val manageProfilesFocusRequester = remember { FocusRequester() }
     val autoLoginFocusRequester = remember { FocusRequester() }
+    val simklConnectFocusRequester = remember { FocusRequester() }
+    val simklSyncFocusRequester = remember { FocusRequester() }
+    val simklUnlinkFocusRequester = remember { FocusRequester() }
     val prefetchFocusRequester = remember { FocusRequester() }
     val refreshCacheFocusRequester = remember { FocusRequester() }
     val clearCacheFocusRequester = remember { FocusRequester() }
     val clearContinueWatchingFocusRequester = remember { FocusRequester() }
+
+    if (showUnlinkSimklConfirm) {
+        SimklUnlinkConfirmDialog(
+            profileName = profileUiState.activeProfile?.name ?: "Profilo attivo",
+            accountDisplayName = simklUiState.accountDisplayName,
+            onDismiss = { showUnlinkSimklConfirm = false },
+            onConfirmUnlink = {
+                showUnlinkSimklConfirm = false
+                onUnlinkSimkl()
+            }
+        )
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         // Sezione Profili Utente & Avvio (100% locale e navigabile con D-Pad)
@@ -1880,6 +1915,21 @@ private fun SystemSettingsPanel(
             }
         }
 
+        SimklSettingsSectionCard(
+            activeProfileName = activeProfile?.name ?: "Profilo Principale",
+            simklUiState = simklUiState,
+            connectFocusRequester = simklConnectFocusRequester,
+            syncFocusRequester = simklSyncFocusRequester,
+            unlinkFocusRequester = simklUnlinkFocusRequester,
+            upFocusRequester = autoLoginFocusRequester,
+            downFocusRequester = prefetchFocusRequester,
+            navRailFocusRequester = navRailFocusRequester,
+            onRememberContentFocus = onRememberContentFocus,
+            onConnect = onConnectSimkl,
+            onSyncNow = onSyncSimklNow,
+            onRequestUnlink = { showUnlinkSimklConfirm = true }
+        )
+
         SettingsSectionCard(
             title = "Cache & Prestazioni",
             subtitle = "Avvio immediato da Room, link stream validi e precaricamento locandine Coil",
@@ -1940,8 +1990,11 @@ private fun SystemSettingsPanel(
                 checked = backgroundPrefetchEnabled,
                 onCheckedChange = onSetBackgroundPrefetch,
                 focusRequester = prefetchFocusRequester,
-                upFocusRequester = autoLoginFocusRequester,
-                onUpKey = { autoLoginFocusRequester.safeRequestFocus() },
+                upFocusRequester = if (simklUiState.isConnected) simklSyncFocusRequester else simklConnectFocusRequester,
+                onUpKey = {
+                    val target = if (simklUiState.isConnected) simklSyncFocusRequester else simklConnectFocusRequester
+                    target.safeRequestFocus()
+                },
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 testTagName = "settings_prefetch_switch"
@@ -2181,6 +2234,425 @@ private fun formatRelativeCacheAge(updatedAtMs: Long?): String {
         diffSec < 3600L -> "${diffSec / 60L} min fa"
         diffSec < 86_400L -> "${diffSec / 3600L} ore fa"
         else -> "${diffSec / 86_400L} giorni fa"
+    }
+}
+
+@Composable
+private fun SimklSettingsSectionCard(
+    activeProfileName: String,
+    simklUiState: SimklProfileUiState,
+    connectFocusRequester: FocusRequester,
+    syncFocusRequester: FocusRequester,
+    unlinkFocusRequester: FocusRequester,
+    upFocusRequester: FocusRequester,
+    downFocusRequester: FocusRequester,
+    navRailFocusRequester: FocusRequester?,
+    onRememberContentFocus: (FocusRequester) -> Unit,
+    onConnect: () -> Unit,
+    onSyncNow: () -> Unit,
+    onRequestUnlink: () -> Unit
+) {
+    val (badgeLabel, badgeColor) = when (simklUiState.connectionState) {
+        SimklConnectionState.NOT_CONNECTED -> "NON COLLEGATO" to NetflixLightGray
+        SimklConnectionState.AUTHORIZATION_WAITING -> "ATTESA QR" to Color(0xFFFFB74D)
+        SimklConnectionState.AUTHORIZING_POLLING -> "VERIFICA QR…" to Color(0xFFFFB74D)
+        SimklConnectionState.CONNECTED_SYNCED -> "COLLEGATO" to NetflixMatchGreen
+        SimklConnectionState.SYNCING -> "SINCRONIZZAZIONE…" to Color(0xFF4FC3F7)
+        SimklConnectionState.OFFLINE_QUEUE_PENDING -> "CODA OFFLINE (${simklUiState.pendingQueueCount})" to Color(0xFFFFB74D)
+        SimklConnectionState.AUTH_EXPIRED -> "SESSIONE SCADUTA" to NetflixRed
+        SimklConnectionState.ERROR -> "ERRORE SYNC" to NetflixRed
+    }
+
+    val statusDescription = when (simklUiState.connectionState) {
+        SimklConnectionState.NOT_CONNECTED -> "Collega un account Simkl tramite QR Code per sincronizzare in cloud questo profilo."
+        SimklConnectionState.AUTHORIZATION_WAITING -> "Preparazione codice QR Simkl AUTH V2…"
+        SimklConnectionState.AUTHORIZING_POLLING -> "In attesa di conferma sullo smartphone…"
+        SimklConnectionState.CONNECTED_SYNCED -> "Sincronizzazione cloud bidirezionale attiva e aggiornata."
+        SimklConnectionState.SYNCING -> "Scambio progressi di film ed episodi con Simkl in corso…"
+        SimklConnectionState.OFFLINE_QUEUE_PENDING -> "${simklUiState.pendingQueueCount} aggiornamenti locali in coda: invio automatico appena online."
+        SimklConnectionState.AUTH_EXPIRED -> simklUiState.errorMessage ?: "Sessione Simkl scaduta o revocata. Ricollega l'account (i dati locali restano intatti)."
+        SimklConnectionState.ERROR -> simklUiState.errorMessage ?: "Errore temporaneo di sincronizzazione. Riprova."
+    }
+
+    Box(modifier = Modifier.testTag("simkl_settings_card")) {
+        SettingsSectionCard(
+            title = "SINCRONIZZAZIONE SIMKL",
+            subtitle = "Stato cloud per \"$activeProfileName\" (AUTH V2 + QR Code TV)",
+            icon = Icons.Default.Sync,
+            badgeText = badgeLabel,
+            badgeColor = badgeColor
+        ) {
+            if (!simklUiState.isClientIdConfigured) {
+                Surface(
+                    color = Color(0xFFFFB74D).copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Color(0xFFFFB74D).copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "SIMKL_CLIENT_ID non configurato: inseriscilo nel pannello Secrets di AI Studio per abilitare il collegamento Simkl.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NetflixWhite,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
+            Surface(
+                color = NetflixDarkSurface,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, NetflixElevatedSurface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(12.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Stato connessione",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NetflixLightGray
+                        )
+                        Text(
+                            text = badgeLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = badgeColor,
+                            modifier = Modifier.testTag("simkl_connection_badge")
+                        )
+                    }
+                    if (!simklUiState.accountDisplayName.isNullOrBlank()) {
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Account Simkl",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = NetflixLightGray
+                            )
+                            Text(
+                                text = buildString {
+                                    append(simklUiState.accountDisplayName)
+                                    if (!simklUiState.accountId.isNullOrBlank()) {
+                                        append(" (#${simklUiState.accountId})")
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = NetflixWhite,
+                                modifier = Modifier.testTag("simkl_account_label")
+                            )
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Ultima sincronizzazione",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NetflixLightGray
+                        )
+                        Text(
+                            text = formatRelativeCacheAge(simklUiState.lastSyncAtMs),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NetflixWhite,
+                            modifier = Modifier.testTag("simkl_last_sync_label")
+                        )
+                    }
+                    Text(
+                        text = statusDescription,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (simklUiState.connectionState == SimklConnectionState.AUTH_EXPIRED ||
+                            simklUiState.connectionState == SimklConnectionState.ERROR
+                        ) {
+                            NetflixRed
+                        } else {
+                            NetflixLightGray
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            val showConnectedActions = simklUiState.isConnected ||
+                (simklUiState.connectionState == SimklConnectionState.ERROR && !simklUiState.accountDisplayName.isNullOrBlank())
+
+            if (!showConnectedActions) {
+                Button(
+                    onClick = onConnect,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NetflixRed,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .safeFocusRequester(connectFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> upFocusRequester.safeRequestFocus()
+                                    Key.DirectionDown -> downFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                    Key.DirectionRight -> true
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        .focusProperties {
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.02f,
+                            focusTag = "simkl_connect_button",
+                            onFocusChange = { focused ->
+                                if (focused) onRememberContentFocus(connectFocusRequester)
+                            }
+                        )
+                        .testTag("simkl_connect_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.QrCode2,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (simklUiState.connectionState == SimklConnectionState.AUTH_EXPIRED) {
+                            "RICOLLEGA ACCOUNT SIMKL"
+                        } else {
+                            "COLLEGA ACCOUNT SIMKL"
+                        },
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            } else {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusGroup()
+                ) {
+                    Button(
+                        onClick = onSyncNow,
+                        enabled = simklUiState.connectionState != SimklConnectionState.SYNCING,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = NetflixRed,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .safeFocusRequester(syncFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> upFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> downFocusRequester.safeRequestFocus()
+                                        Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                        Key.DirectionRight -> unlinkFocusRequester.safeRequestFocus()
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                unlinkFocusRequester.takeIfAttached()?.let { right = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.02f,
+                                focusTag = "simkl_sync_now_button",
+                                onFocusChange = { focused ->
+                                    if (focused) onRememberContentFocus(syncFocusRequester)
+                                }
+                            )
+                            .testTag("simkl_sync_now_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (simklUiState.connectionState == SimklConnectionState.SYNCING) {
+                                "SINCRONIZZAZIONE…"
+                            } else {
+                                "SINCRONIZZA ORA"
+                            },
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onRequestUnlink,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, NetflixRed),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .safeFocusRequester(unlinkFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> upFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> downFocusRequester.safeRequestFocus()
+                                        Key.DirectionLeft -> syncFocusRequester.safeRequestFocus()
+                                        Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
+                                syncFocusRequester.takeIfAttached()?.let { left = it }
+                            }
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.02f,
+                                focusTag = "simkl_unlink_button",
+                                onFocusChange = { focused ->
+                                    if (focused) onRememberContentFocus(unlinkFocusRequester)
+                                }
+                            )
+                            .testTag("simkl_unlink_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LinkOff,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "SCOLLEGA ACCOUNT SIMKL",
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SimklUnlinkConfirmDialog(
+    profileName: String,
+    accountDisplayName: String?,
+    onDismiss: () -> Unit,
+    onConfirmUnlink: () -> Unit
+) {
+    val cancelFocusRequester = remember { FocusRequester() }
+    val confirmFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        repeat(2) { withFrameNanos { } }
+        cancelFocusRequester.safeRequestFocus()
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        BackHandler(onBack = onDismiss)
+        Surface(
+            color = NetflixCardSurface,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, NetflixElevatedSurface),
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 500.dp)
+                .testTag("simkl_unlink_confirm_dialog")
+        ) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(22.dp)
+            ) {
+                Text(
+                    text = "SCOLLEGA ACCOUNT SIMKL?",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = NetflixWhite
+                )
+                Text(
+                    text = buildString {
+                        append("Stai scollegando Simkl ")
+                        if (!accountDisplayName.isNullOrBlank()) {
+                            append("($accountDisplayName) ")
+                        }
+                        append("dal profilo \"$profileName\". I token di accesso verranno rimossi e revocati, ma i tuoi progressi locali in Continua a guardare resteranno intatti.")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NetflixLightGray
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, NetflixElevatedSurface),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .safeFocusRequester(cancelFocusRequester)
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusTag = "simkl_cancel_unlink_button"
+                            )
+                            .testTag("simkl_cancel_unlink_button")
+                    ) {
+                        Text("ANNULLA", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Button(
+                        onClick = onConfirmUnlink,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = NetflixRed,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .safeFocusRequester(confirmFocusRequester)
+                            .tvFocusableControl(
+                                shape = RoundedCornerShape(10.dp),
+                                focusTag = "simkl_confirm_unlink_button"
+                            )
+                            .testTag("simkl_confirm_unlink_button")
+                    ) {
+                        Text("SCOLLEGA", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
     }
 }
 

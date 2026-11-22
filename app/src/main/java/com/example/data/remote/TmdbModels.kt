@@ -675,3 +675,9 @@ object TmdbWatchProviderMap {
     }
 }
 
+@JsonClass(generateAdapter = true)
+data class TmdbFindResponse(
+    @param:Json(name = "movie_results") val movieResults: List<TmdbMediaItemDto> = emptyList(),
+    @param:Json(name = "tv_results") val tvResults: List<TmdbMediaItemDto> = emptyList()
+)
+

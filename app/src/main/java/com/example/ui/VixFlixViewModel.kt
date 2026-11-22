@@ -27,7 +27,11 @@ import com.example.data.local.VerifiedPreviousEpisode
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.local.simkl.SimklSecureTokenStore
 import com.example.data.remote.ActorDetails
+import com.example.data.remote.simkl.SimklProfileUiState
+import com.example.data.remote.simkl.SimklSyncManager
+import com.example.data.remote.simkl.SimklSyncTrigger
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
@@ -224,7 +228,11 @@ data class GitHubUpdateUiState(
 
 class VixFlixViewModel @JvmOverloads constructor(
     application: Application,
-    val repository: VixFlixRepository = buildDefaultRepository(application)
+    val repository: VixFlixRepository = buildDefaultRepository(application),
+    val simklSyncManager: SimklSyncManager = SimklSyncManager(
+        repository = repository,
+        tokenStore = SimklSecureTokenStore(application)
+    )
 ) : AndroidViewModel(application) {
     companion object {
         private fun buildDefaultRepository(application: Application): VixFlixRepository {
@@ -308,6 +316,11 @@ class VixFlixViewModel @JvmOverloads constructor(
     val watchlist: StateFlow<List<WatchlistEntity>> = _activeProfileId
         .flatMapLatest { profileId -> repository.observeWatchlist(profileId) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val simklUiState: StateFlow<SimklProfileUiState> = _activeProfileId
+        .flatMapLatest { profileId -> simklSyncManager.observeProfileUiState(profileId) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SimklProfileUiState())
 
     val streamLanguage: StateFlow<String> = combine(activeProfile, preferences.streamLanguageFlow) { profile, prefLang ->
         profile?.preferredLanguage?.takeIf { it.isNotBlank() } ?: prefLang
@@ -516,6 +529,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                 _isProfileManageMode.value = false
             }
             _profilesInitialized.value = true
+            simklSyncManager.syncIfNeeded(_activeProfileId.value, SimklSyncTrigger.STARTUP)
         }
     }
 
@@ -597,6 +611,10 @@ class VixFlixViewModel @JvmOverloads constructor(
             _mustSelectProfile.value = false
             _isProfileManageMode.value = false
             _showProfileSelector.value = false
+
+            if (previousProfileId != targetProfile.id) {
+                simklSyncManager.onActiveProfileChanged(previousProfileId, targetProfile.id)
+            }
         }
     }
 
@@ -662,6 +680,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             }
             val result = repository.deleteProfile(profileId)
             result.onSuccess {
+                simklSyncManager.onProfileDeleted(profileId)
                 _profileErrorMessage.value = null
                 if (defaultProfileId.value == profileId) {
                     preferences.setDefaultProfileId(null)
@@ -687,9 +706,75 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun selectTab(tab: NavTab) {
         _selectedTab.value = tab
-        if (tab == NavTab.SETTINGS) {
-            refreshCacheStats()
+        when (tab) {
+            NavTab.SETTINGS -> refreshCacheStats()
+            NavTab.MY_LIST -> simklSyncManager.syncIfNeeded(_activeProfileId.value, SimklSyncTrigger.CONTINUE_WATCHING_OPEN)
+            else -> Unit
         }
+    }
+
+    fun onAppForeground() {
+        simklSyncManager.syncIfNeeded(_activeProfileId.value, SimklSyncTrigger.FOREGROUND)
+    }
+
+    fun openSimklConnectDialog() {
+        simklSyncManager.startDeviceAuthorization(_activeProfileId.value)
+    }
+
+    fun retrySimklDeviceFlow() {
+        simklSyncManager.startDeviceAuthorization(_activeProfileId.value)
+    }
+
+    fun dismissSimklConnectDialog() {
+        simklSyncManager.dismissDeviceAuthorization(_activeProfileId.value)
+    }
+
+    fun syncSimklNow() {
+        simklSyncManager.launchProfileSync(_activeProfileId.value, SimklSyncTrigger.MANUAL)
+    }
+
+    fun unlinkSimklAccount() {
+        val targetProfileId = _activeProfileId.value
+        viewModelScope.launch {
+            simklSyncManager.unlinkAccount(targetProfileId)
+        }
+    }
+
+    fun onPlayerScrobbleStart(positionMs: Long, durationMs: Long) {
+        val session = _playbackSession.value ?: return
+        simklSyncManager.enqueueScrobbleStart(
+            profileId = _activeProfileId.value,
+            item = session.mediaItem,
+            seasonNumber = session.seasonNumber,
+            episodeNumber = session.episodeNumber,
+            positionMs = positionMs,
+            durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L)
+        )
+    }
+
+    fun onPlayerScrobblePause(positionMs: Long, durationMs: Long) {
+        val session = _playbackSession.value ?: return
+        simklSyncManager.enqueueScrobblePause(
+            profileId = _activeProfileId.value,
+            item = session.mediaItem,
+            seasonNumber = session.seasonNumber,
+            episodeNumber = session.episodeNumber,
+            positionMs = positionMs,
+            durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L)
+        )
+    }
+
+    fun onPlayerScrobbleStop(positionMs: Long, durationMs: Long, isCompleted: Boolean) {
+        val session = _playbackSession.value ?: return
+        simklSyncManager.enqueueScrobbleStop(
+            profileId = _activeProfileId.value,
+            item = session.mediaItem,
+            seasonNumber = session.seasonNumber,
+            episodeNumber = session.episodeNumber,
+            positionMs = positionMs,
+            durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L),
+            isExplicitCompletion = isCompleted
+        )
     }
 
     private fun isTvEnvironment(): Boolean {
@@ -1620,6 +1705,15 @@ class VixFlixViewModel @JvmOverloads constructor(
                 currentSeasonEpisodes = currentEpisodes,
                 knownSeasons = knownSeasons
             )
+            simklSyncManager.enqueueScrobbleStop(
+                profileId = profileId,
+                item = currentMedia,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                positionMs = 60_000L,
+                durationMs = 60_000L,
+                isExplicitCompletion = true
+            )
         }
     }
 
@@ -1713,6 +1807,17 @@ class VixFlixViewModel @JvmOverloads constructor(
                 currentSeasonEpisodes = currentEpisodes,
                 knownSeasons = knownSeasons
             )
+            resolvedNumbers.forEach { epNum ->
+                simklSyncManager.enqueueScrobbleStop(
+                    profileId = profileId,
+                    item = currentMedia,
+                    seasonNumber = seasonNumber,
+                    episodeNumber = epNum,
+                    positionMs = 60_000L,
+                    durationMs = 60_000L,
+                    isExplicitCompletion = true
+                )
+            }
         }
     }
 
@@ -1892,6 +1997,9 @@ class VixFlixViewModel @JvmOverloads constructor(
             var targetEpTitle = episodeTitle
 
             val playbackProfileId = _activeProfileId.value
+            if (explicitStartPositionMs == null) {
+                simklSyncManager.syncBeforePlaybackIfConnected(playbackProfileId)
+            }
             if (item.isSeries && (targetSeason == null || targetEpisode == null)) {
                 val saved = repository.getWatchProgress(item.uniqueKey, playbackProfileId)
                 targetSeason = targetSeason ?: saved?.seasonNumber ?: 1
@@ -2255,6 +2363,15 @@ class VixFlixViewModel @JvmOverloads constructor(
                 nextEpisode = next,
                 profileId = profileId
             )
+            simklSyncManager.enqueueScrobbleStop(
+                profileId = profileId,
+                item = session.mediaItem,
+                seasonNumber = currentSeason,
+                episodeNumber = currentEp,
+                positionMs = 60_000L,
+                durationMs = 60_000L,
+                isExplicitCompletion = true
+            )
         }
 
         startPlayback(
@@ -2333,6 +2450,16 @@ class VixFlixViewModel @JvmOverloads constructor(
         val session = _playbackSession.value
         val profileId = _activeProfileId.value
         if (session != null && !session.mediaItem.isSeries) {
+            val dur = session.metadataDurationMs ?: 60_000L
+            simklSyncManager.enqueueScrobbleStop(
+                profileId = profileId,
+                item = session.mediaItem,
+                seasonNumber = null,
+                episodeNumber = null,
+                positionMs = dur,
+                durationMs = dur,
+                isExplicitCompletion = true
+            )
             viewModelScope.launch {
                 repository.markMovieCompleted(
                     item = session.mediaItem,
@@ -2354,7 +2481,17 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun removeContinueWatching(id: String) {
         val currentProfileId = _activeProfileId.value
         viewModelScope.launch {
+            val existing = repository.getWatchProgress(id, currentProfileId)
             repository.removeContinueWatching(id, currentProfileId)
+            if (existing != null) {
+                simklSyncManager.onContinueWatchingRemoved(
+                    profileId = currentProfileId,
+                    tmdbId = existing.tmdbId,
+                    mediaType = existing.mediaType,
+                    seasonNumber = existing.seasonNumber,
+                    episodeNumber = existing.episodeNumber
+                )
+            }
         }
     }
 

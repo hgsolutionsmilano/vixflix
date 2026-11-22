@@ -7,6 +7,10 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
+import com.example.data.local.simkl.SimklPendingScrobbleEntity
+import com.example.data.local.simkl.SimklPlaybackBaselineEntity
+import com.example.data.local.simkl.SimklProfileSyncMetaEntity
+
 @Database(
     entities = [
         UserProfileEntity::class,
@@ -19,9 +23,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ResolvedStreamCacheEntity::class,
         IntroSegmentEntity::class,
         CreditsSegmentEntity::class,
-        CompletedMediaEntity::class
+        CompletedMediaEntity::class,
+        SimklProfileSyncMetaEntity::class,
+        SimklPlaybackBaselineEntity::class,
+        SimklPendingScrobbleEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class VixFlixDatabase : RoomDatabase() {
@@ -390,6 +397,89 @@ abstract class VixFlixDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `simkl_profile_sync_meta` (
+                        `profileId` TEXT NOT NULL,
+                        `connectionState` TEXT NOT NULL,
+                        `accountDisplayName` TEXT,
+                        `accountId` TEXT,
+                        `lastActivitiesAll` TEXT,
+                        `lastMoviesPlaybackTs` TEXT,
+                        `lastShowsPlaybackTs` TEXT,
+                        `lastMoviesWatchedTs` TEXT,
+                        `lastShowsWatchedTs` TEXT,
+                        `lastSyncAtMs` INTEGER,
+                        `lastErrorMessage` TEXT,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`profileId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_simkl_profile_sync_meta_updatedAtMs` ON `simkl_profile_sync_meta` (`updatedAtMs`)"
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `simkl_playback_baseline` (
+                        `profileId` TEXT NOT NULL,
+                        `contentKey` TEXT NOT NULL,
+                        `tmdbId` INTEGER NOT NULL,
+                        `mediaType` TEXT NOT NULL,
+                        `seasonNumber` INTEGER,
+                        `episodeNumber` INTEGER,
+                        `simklPlaybackId` INTEGER,
+                        `lastSyncedProgressPercent` REAL NOT NULL,
+                        `lastRemotePausedAtMs` INTEGER NOT NULL,
+                        `lastLocalUpdatedAtMs` INTEGER NOT NULL,
+                        `localDirty` INTEGER NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`profileId`, `contentKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_simkl_playback_baseline_profileId_tmdbId_mediaType` ON `simkl_playback_baseline` (`profileId`, `tmdbId`, `mediaType`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_simkl_playback_baseline_profileId_localDirty` ON `simkl_playback_baseline` (`profileId`, `localDirty`)"
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `simkl_pending_scrobble` (
+                        `profileId` TEXT NOT NULL,
+                        `contentKey` TEXT NOT NULL,
+                        `tmdbId` INTEGER NOT NULL,
+                        `mediaType` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `releaseYear` TEXT NOT NULL,
+                        `seasonNumber` INTEGER,
+                        `episodeNumber` INTEGER,
+                        `action` TEXT NOT NULL,
+                        `progressPercent` REAL NOT NULL,
+                        `minProgress` INTEGER NOT NULL,
+                        `simklPlaybackId` INTEGER,
+                        `createdAtMs` INTEGER NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        `attemptCount` INTEGER NOT NULL,
+                        `nextRetryAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`profileId`, `contentKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_simkl_pending_scrobble_profileId_nextRetryAtMs` ON `simkl_pending_scrobble` (`profileId`, `nextRetryAtMs`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_simkl_pending_scrobble_profileId_updatedAtMs` ON `simkl_pending_scrobble` (`profileId`, `updatedAtMs`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): VixFlixDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -398,7 +488,7 @@ abstract class VixFlixDatabase : RoomDatabase() {
                     "vixflix_stream.db"
                 )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

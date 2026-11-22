@@ -140,6 +140,7 @@ class VixFlixRepository(
     private fun scopedSeasonKey(tvId: Int, seasonNumber: Int): String = "${cacheScopePrefix}tv_${tvId}_s${seasonNumber}"
 
     private val rawOkHttpClient: OkHttpClient = baseHttpClient
+    internal val sharedHttpClient: OkHttpClient get() = rawOkHttpClient
 
     private val tmdbHttpCache: Cache? = httpCacheDir?.let { dir ->
         runCatching { Cache(File(dir, "tmdb_http_cache"), 10L * 1024L * 1024L) }.getOrNull()
@@ -1274,6 +1275,12 @@ class VixFlixRepository(
             }
         }
         val isCompleted = allowAutoComplete && resolvedDuration > 60_000L && positionMs >= (resolvedDuration * 0.96).toLong()
+        val now = System.currentTimeMillis()
+        val contentKey = if (item.mediaType == "tv" && seasonNumber != null && episodeNumber != null) {
+            "tv_${item.id}_s${seasonNumber}_e${episodeNumber}"
+        } else {
+            mainId
+        }
 
         // Quando un contenuto viene completato (>= 96% e auto-completamento consentito), rimuovilo da "Continua a guardare"
         // (Continua a guardare mostra esclusivamente contenuti interrotti da riprendere, mai uno storico).
@@ -1285,6 +1292,15 @@ class VixFlixRepository(
                     profileId = profileId
                 )
             }
+            markSimklBaselineLocalDirty(
+                profileId = profileId,
+                contentKey = contentKey,
+                tmdbId = item.id,
+                mediaType = item.mediaType,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                timestampMs = now
+            )
             return
         }
 
@@ -1303,7 +1319,7 @@ class VixFlixRepository(
             episodeTitle = episodeTitle,
             positionMs = positionMs,
             durationMs = resolvedDuration,
-            updatedAt = System.currentTimeMillis(),
+            updatedAt = now,
             profileId = profileId
         )
         dao.upsertWatchProgress(entity)
@@ -1317,11 +1333,53 @@ class VixFlixRepository(
                     episodeNumber = episodeNumber,
                     positionMs = positionMs,
                     durationMs = resolvedDuration,
-                    updatedAt = System.currentTimeMillis(),
+                    updatedAt = now,
                     profileId = profileId
                 )
             )
         }
+        markSimklBaselineLocalDirty(
+            profileId = profileId,
+            contentKey = contentKey,
+            tmdbId = item.id,
+            mediaType = item.mediaType,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            timestampMs = now
+        )
+    }
+
+    private suspend fun markSimklBaselineLocalDirty(
+        profileId: String,
+        contentKey: String,
+        tmdbId: Int,
+        mediaType: String,
+        seasonNumber: Int?,
+        episodeNumber: Int?,
+        timestampMs: Long
+    ) {
+        val existing = runCatching { dao.getSimklBaseline(profileId, contentKey) }.getOrNull()
+        val hasMeta = existing != null || runCatching { dao.getSimklProfileMeta(profileId) }.getOrNull() != null
+        if (!hasMeta) return
+        val updated = existing?.copy(
+            localDirty = true,
+            lastLocalUpdatedAtMs = timestampMs,
+            updatedAtMs = timestampMs
+        ) ?: com.example.data.local.simkl.SimklPlaybackBaselineEntity(
+            profileId = profileId,
+            contentKey = contentKey,
+            tmdbId = tmdbId,
+            mediaType = mediaType,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            simklPlaybackId = null,
+            lastSyncedProgressPercent = 0.0,
+            lastRemotePausedAtMs = 0L,
+            lastLocalUpdatedAtMs = timestampMs,
+            localDirty = true,
+            updatedAtMs = timestampMs
+        )
+        runCatching { dao.upsertSimklBaseline(updated) }
     }
 
     /**
@@ -2437,4 +2495,46 @@ class VixFlixRepository(
     suspend fun checkGitHubRelease(repo: String): Result<GitHubReleaseInfo> {
         return gitHubUpdateService.checkForUpdates(repo)
     }
+
+    /**
+     * Risolve un MediaItem TMDB partendo da ID esterni Simkl (`imdb_id` o `tvdb_id`) quando
+     * la risposta Simkl è priva di `ids.tmdb`.
+     */
+    suspend fun findTmdbMediaByExternalId(
+        imdbId: String?,
+        tvdbId: Int?,
+        expectedType: String
+    ): MediaItem? = withContext(Dispatchers.IO) {
+        val normalizedExpected = if (expectedType == "tv") "tv" else "movie"
+        if (!imdbId.isNullOrBlank()) {
+            val found = runCatching {
+                tmdbApi.findByExternalId(
+                    externalId = imdbId.trim(),
+                    externalSource = "imdb_id"
+                )
+            }.getOrNull()
+            val candidate = if (normalizedExpected == "tv") {
+                found?.tvResults?.firstOrNull()?.toDomain("tv")
+            } else {
+                found?.movieResults?.firstOrNull()?.toDomain("movie")
+            }
+            if (candidate != null) return@withContext candidate
+        }
+        if (tvdbId != null && tvdbId > 0 && normalizedExpected == "tv") {
+            val found = runCatching {
+                tmdbApi.findByExternalId(
+                    externalId = tvdbId.toString(),
+                    externalSource = "tvdb_id"
+                )
+            }.getOrNull()
+            val candidate = found?.tvResults?.firstOrNull()?.toDomain("tv")
+            if (candidate != null) return@withContext candidate
+        }
+        null
+    }
+
+    /**
+     * Espone il DAO locale in package-internal per il motore di sincronizzazione Simkl.
+     */
+    internal val localDao: VixFlixDao get() = dao
 }

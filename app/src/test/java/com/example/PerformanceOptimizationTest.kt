@@ -222,7 +222,8 @@ class PerformanceOptimizationTest {
                 VixFlixDatabase.MIGRATION_1_2,
                 VixFlixDatabase.MIGRATION_2_3,
                 VixFlixDatabase.MIGRATION_3_4,
-                VixFlixDatabase.MIGRATION_4_5
+                VixFlixDatabase.MIGRATION_4_5,
+                VixFlixDatabase.MIGRATION_5_6
             )
             .allowMainThreadQueries()
             .build()

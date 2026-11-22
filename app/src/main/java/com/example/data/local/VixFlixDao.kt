@@ -5,6 +5,9 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.example.data.local.simkl.SimklPendingScrobbleEntity
+import com.example.data.local.simkl.SimklPlaybackBaselineEntity
+import com.example.data.local.simkl.SimklProfileSyncMetaEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -40,12 +43,24 @@ interface VixFlixDao {
     @Query("DELETE FROM completed_media WHERE profileId = :profileId")
     suspend fun deleteCompletedMediaForProfile(profileId: String)
 
+    @Query("DELETE FROM simkl_profile_sync_meta WHERE profileId = :profileId")
+    suspend fun deleteSimklProfileMeta(profileId: String)
+
+    @Query("DELETE FROM simkl_playback_baseline WHERE profileId = :profileId")
+    suspend fun deleteSimklBaselinesForProfile(profileId: String)
+
+    @Query("DELETE FROM simkl_pending_scrobble WHERE profileId = :profileId")
+    suspend fun deleteSimklPendingForProfile(profileId: String)
+
     @Transaction
     suspend fun deleteProfileAndPersonalData(profileId: String) {
         deleteWatchProgressForProfile(profileId)
         deleteEpisodeProgressForProfile(profileId)
         deleteWatchlistForProfile(profileId)
         deleteCompletedMediaForProfile(profileId)
+        deleteSimklPendingForProfile(profileId)
+        deleteSimklBaselinesForProfile(profileId)
+        deleteSimklProfileMeta(profileId)
         deleteProfileById(profileId)
     }
 
@@ -276,6 +291,43 @@ interface VixFlixDao {
         contentKey: String,
         profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     )
+
+    // --- Simkl Per-Profile Sync Metadata, Baselines & Offline Queue (NO tokens) ---
+    @Query("SELECT * FROM simkl_profile_sync_meta WHERE profileId = :profileId LIMIT 1")
+    fun observeSimklProfileMeta(profileId: String): Flow<SimklProfileSyncMetaEntity?>
+
+    @Query("SELECT * FROM simkl_profile_sync_meta WHERE profileId = :profileId LIMIT 1")
+    suspend fun getSimklProfileMeta(profileId: String): SimklProfileSyncMetaEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSimklProfileMeta(entity: SimklProfileSyncMetaEntity)
+
+    @Query("SELECT * FROM simkl_playback_baseline WHERE profileId = :profileId")
+    suspend fun getSimklBaselinesForProfile(profileId: String): List<SimklPlaybackBaselineEntity>
+
+    @Query("SELECT * FROM simkl_playback_baseline WHERE profileId = :profileId AND contentKey = :contentKey LIMIT 1")
+    suspend fun getSimklBaseline(profileId: String, contentKey: String): SimklPlaybackBaselineEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSimklBaseline(entity: SimklPlaybackBaselineEntity)
+
+    @Query("DELETE FROM simkl_playback_baseline WHERE profileId = :profileId AND contentKey = :contentKey")
+    suspend fun deleteSimklBaseline(profileId: String, contentKey: String)
+
+    @Query("SELECT COUNT(*) FROM simkl_pending_scrobble WHERE profileId = :profileId")
+    fun observeSimklPendingCount(profileId: String): Flow<Int>
+
+    @Query("SELECT * FROM simkl_pending_scrobble WHERE profileId = :profileId ORDER BY updatedAtMs ASC")
+    suspend fun getSimklPendingScrobbles(profileId: String): List<SimklPendingScrobbleEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSimklPendingScrobble(entity: SimklPendingScrobbleEntity)
+
+    @Query("DELETE FROM simkl_pending_scrobble WHERE profileId = :profileId AND contentKey = :contentKey")
+    suspend fun deleteSimklPendingScrobble(profileId: String, contentKey: String)
+
+    @Query("SELECT * FROM watch_progress WHERE profileId = :profileId ORDER BY updatedAt DESC")
+    suspend fun getWatchProgressListForProfile(profileId: String): List<WatchProgressEntity>
 }
 
 data class SeasonWatchedCount(
