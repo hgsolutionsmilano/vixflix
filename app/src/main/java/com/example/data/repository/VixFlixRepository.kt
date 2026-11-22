@@ -46,7 +46,6 @@ import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.TmdbVideoDto
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
-import com.example.data.remote.VixSrcAvailabilityStatus
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.remote.toDomain
@@ -57,15 +56,10 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -201,12 +195,6 @@ class VixFlixRepository(
     private val platformCatalogMemoryCache = LruCache<Int, TimedMemoryEntry<PlatformCatalogContent>>(12)
     private val movieGenreMemoryCache = LruCache<Int, TimedMemoryEntry<List<MediaItem>>>(20)
     private val streamMemoryCache = ConcurrentHashMap<String, ResolvedStream>()
-    private val vixSrcAvailabilityMemoryCache = ConcurrentHashMap<String, TimedMemoryEntry<VixSrcAvailabilityStatus>>()
-    private val inFlightAvailabilityMutex = Mutex()
-    private val inFlightAvailabilityRequests = HashMap<String, Deferred<VixSrcAvailabilityStatus>>()
-    private val availabilityProbeSemaphore = Semaphore(permits = 3)
-    @Volatile
-    var vixSrcAvailabilityCacheTtlMs: Long = 60L * 60L * 1000L
     @Volatile
     private var cachedGenresInMemory: TimedMemoryEntry<List<TmdbGenreDto>>? = null
     @Volatile
@@ -1708,8 +1696,6 @@ class VixFlixRepository(
         if (!forceRefresh) {
             val mem = streamMemoryCache[key]
             if (mem != null && mem.isDirectHls && mem.expiresAtMs > now) {
-                vixSrcAvailabilityMemoryCache[item.uniqueKey] =
-                    TimedMemoryEntry(VixSrcAvailabilityStatus.AVAILABLE, now)
                 withContext(Dispatchers.IO) {
                     runCatching { dao.touchStreamCache(key, now) }
                 }
@@ -1743,8 +1729,6 @@ class VixFlixRepository(
                     fromCache = true
                 )
                 streamMemoryCache[key] = restored
-                vixSrcAvailabilityMemoryCache[item.uniqueKey] =
-                    TimedMemoryEntry(VixSrcAvailabilityStatus.AVAILABLE, now)
                 withContext(Dispatchers.IO) {
                     runCatching { dao.touchStreamCache(key, now) }
                 }
@@ -1772,8 +1756,6 @@ class VixFlixRepository(
             }
             val cleanForCache = resolved.copy(expiresAtMs = safeExpiresAt, fromCache = false)
             streamMemoryCache[key] = cleanForCache
-            vixSrcAvailabilityMemoryCache[item.uniqueKey] =
-                TimedMemoryEntry(VixSrcAvailabilityStatus.AVAILABLE, resolvedNow)
             withContext(Dispatchers.IO) {
                 runCatching {
                     dao.upsertStreamCache(
@@ -1802,139 +1784,6 @@ class VixFlixRepository(
             }
         }
         return liveResult
-    }
-
-    /**
-     * Restituisce lo stato di disponibilità VixSrc memorizzato in cache (se non scaduto),
-     * oppure [VixSrcAvailabilityStatus.UNKNOWN] se il controllo non è ancora stato eseguito.
-     */
-    fun getCachedVixSrcAvailability(
-        item: MediaItem,
-        lang: String = "it"
-    ): VixSrcAvailabilityStatus {
-        val now = System.currentTimeMillis()
-        val ttl = vixSrcAvailabilityCacheTtlMs.coerceAtLeast(1_000L)
-        val cached = vixSrcAvailabilityMemoryCache[item.uniqueKey]
-        if (cached != null && (now - cached.updatedAtMs) <= ttl) {
-            return cached.value
-        }
-        val targetSeason = if (item.isSeries) 1 else null
-        val targetEpisode = if (item.isSeries) 1 else null
-        val streamKey = streamCacheKey(item.id, item.mediaType, targetSeason, targetEpisode, lang)
-        val memStream = streamMemoryCache[streamKey]
-        if (memStream != null && memStream.isDirectHls && memStream.expiresAtMs > now && memStream.streamUrl.isNotBlank()) {
-            vixSrcAvailabilityMemoryCache[item.uniqueKey] =
-                TimedMemoryEntry(VixSrcAvailabilityStatus.AVAILABLE, now)
-            return VixSrcAvailabilityStatus.AVAILABLE
-        }
-        return VixSrcAvailabilityStatus.UNKNOWN
-    }
-
-    /**
-     * Verifica in modo asincrono, progressivo e deduplicato la disponibilità reale del contenuto su VixSrc:
-     * 1. Riusa eventuale cache valida in memoria o in `stream_link_cache` Room senza effettuare nuove richieste.
-     * 2. Deduplica richieste concorrenti per la stessa locandina (`inFlightAvailabilityRequests`).
-     * 3. Limita la concorrenza di rete tramite semaforo (`availabilityProbeSemaphore`) per mantenere lo scroll fluido.
-     * 4. In caso di errore di rete/timeout (`UNKNOWN`), non memorizza un falso negativo così il pallino resta nascosto.
-     */
-    suspend fun checkVixSrcAvailability(
-        item: MediaItem,
-        lang: String = "it",
-        forceRefresh: Boolean = false
-    ): VixSrcAvailabilityStatus = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val ttl = vixSrcAvailabilityCacheTtlMs.coerceAtLeast(1_000L)
-        val uniqueKey = item.uniqueKey
-
-        if (!forceRefresh) {
-            val cached = vixSrcAvailabilityMemoryCache[uniqueKey]
-            if (cached != null && (now - cached.updatedAtMs) <= ttl) {
-                return@withContext cached.value
-            }
-
-            val targetSeason = if (item.isSeries) 1 else null
-            val targetEpisode = if (item.isSeries) 1 else null
-            val sKey = streamCacheKey(item.id, item.mediaType, targetSeason, targetEpisode, lang)
-            val memStream = streamMemoryCache[sKey]
-            if (memStream != null && memStream.isDirectHls && memStream.expiresAtMs > now && memStream.streamUrl.isNotBlank()) {
-                vixSrcAvailabilityMemoryCache[uniqueKey] =
-                    TimedMemoryEntry(VixSrcAvailabilityStatus.AVAILABLE, now)
-                return@withContext VixSrcAvailabilityStatus.AVAILABLE
-            }
-            val diskStream = runCatching { dao.getStreamCache(sKey) }.getOrNull()
-            if (diskStream != null && diskStream.expiresAtMs > now && diskStream.streamUrl.isNotBlank()) {
-                vixSrcAvailabilityMemoryCache[uniqueKey] =
-                    TimedMemoryEntry(VixSrcAvailabilityStatus.AVAILABLE, now)
-                return@withContext VixSrcAvailabilityStatus.AVAILABLE
-            }
-        } else {
-            vixSrcAvailabilityMemoryCache.remove(uniqueKey)
-        }
-
-        coroutineScope {
-            val deferred = inFlightAvailabilityMutex.withLock {
-                val existing = inFlightAvailabilityRequests[uniqueKey]
-                if (existing != null && existing.isActive) {
-                    existing
-                } else {
-                    async(Dispatchers.IO) {
-                        availabilityProbeSemaphore.withPermit {
-                            val targetSeason = if (item.isSeries) 1 else null
-                            val targetEpisode = if (item.isSeries) 1 else null
-                            val outcome = vixSrcResolver.verifyRealStreamAvailability(
-                                tmdbId = item.id,
-                                mediaType = item.mediaType,
-                                season = targetSeason,
-                                episode = targetEpisode,
-                                lang = lang
-                            )
-                            val finishedAt = System.currentTimeMillis()
-                            if (outcome.status == VixSrcAvailabilityStatus.AVAILABLE ||
-                                outcome.status == VixSrcAvailabilityStatus.UNAVAILABLE
-                            ) {
-                                vixSrcAvailabilityMemoryCache[uniqueKey] =
-                                    TimedMemoryEntry(outcome.status, finishedAt)
-                            }
-                            if (outcome.status == VixSrcAvailabilityStatus.AVAILABLE && outcome.resolvedStream != null) {
-                                cacheInterceptedHlsStream(
-                                    item = item,
-                                    season = targetSeason,
-                                    episode = targetEpisode,
-                                    lang = lang,
-                                    stream = outcome.resolvedStream
-                                )
-                            }
-                            if (item.isSeries && outcome.detectedIntroWindowMs != null) {
-                                val (introStart, introEnd) = outcome.detectedIntroWindowMs
-                                val existingIntro = getIntroSegment(item.id, 1, 1)
-                                if (existingIntro == null) {
-                                    saveIntroSegment(
-                                        seriesTmdbId = item.id,
-                                        seasonNumber = 1,
-                                        episodeNumber = 1,
-                                        introStartMs = introStart,
-                                        introEndMs = introEnd,
-                                        source = IntroSegmentSource.VERIFIED_METADATA
-                                    )
-                                }
-                            }
-                            outcome.status
-                        }
-                    }.also { created ->
-                        inFlightAvailabilityRequests[uniqueKey] = created
-                    }
-                }
-            }
-            try {
-                deferred.await()
-            } finally {
-                inFlightAvailabilityMutex.withLock {
-                    if (inFlightAvailabilityRequests[uniqueKey] === deferred) {
-                        inFlightAvailabilityRequests.remove(uniqueKey)
-                    }
-                }
-            }
-        }
     }
 
     suspend fun cacheInterceptedHlsStream(
@@ -2113,7 +1962,6 @@ class VixFlixRepository(
         platformCatalogMemoryCache.evictAll()
         movieGenreMemoryCache.evictAll()
         streamMemoryCache.clear()
-        vixSrcAvailabilityMemoryCache.clear()
         cachedGenresInMemory = null
         cachedProvidersInMemory = null
         withContext(Dispatchers.IO) {

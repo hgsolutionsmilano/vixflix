@@ -40,7 +40,6 @@ import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
-import com.example.data.remote.VixSrcAvailabilityStatus
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
@@ -2061,14 +2060,6 @@ class VixFlixViewModel @JvmOverloads constructor(
                 source = source
             )
         }
-    }
-
-    fun getCachedPosterVixSrcAvailability(item: MediaItem): VixSrcAvailabilityStatus {
-        return repository.getCachedVixSrcAvailability(item, streamLanguage.value)
-    }
-
-    suspend fun checkPosterVixSrcAvailability(item: MediaItem): VixSrcAvailabilityStatus {
-        return repository.checkVixSrcAvailability(item, streamLanguage.value)
     }
 
     /**

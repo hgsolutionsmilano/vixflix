@@ -112,11 +112,7 @@ import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
-import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import com.example.data.remote.TmdbWatchProviderDto
-import com.example.data.remote.VixSrcAvailabilityStatus
 import com.example.ui.NavTab
 import com.example.ui.theme.BebasNeueFontFamily
 import com.example.ui.theme.NetflixBlack
@@ -129,75 +125,6 @@ import com.example.ui.theme.NetflixMatchGreen
 import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
-import kotlinx.coroutines.delay
-
-/**
- * Resolver asincrono e cache-first per l'indicatore di disponibilità VixSrc sulle locandine.
- */
-class VixSrcAvailabilityResolver(
-    val getCached: (MediaItem) -> VixSrcAvailabilityStatus,
-    val checkAsync: suspend (MediaItem) -> VixSrcAvailabilityStatus
-)
-
-val LocalVixSrcAvailabilityResolver = staticCompositionLocalOf<VixSrcAvailabilityResolver?> { null }
-
-@Composable
-fun rememberPosterVixSrcAvailability(
-    item: MediaItem,
-    overrideStatus: VixSrcAvailabilityStatus? = null
-): VixSrcAvailabilityStatus {
-    if (overrideStatus != null) return overrideStatus
-    val resolver = LocalVixSrcAvailabilityResolver.current ?: return VixSrcAvailabilityStatus.UNKNOWN
-    var status by remember(item.uniqueKey, resolver) {
-        mutableStateOf(resolver.getCached(item))
-    }
-    LaunchedEffect(item.uniqueKey, resolver) {
-        val currentCached = resolver.getCached(item)
-        if (currentCached != VixSrcAvailabilityStatus.UNKNOWN) {
-            status = currentCached
-        } else {
-            // Breve debounce per annullare automaticamente i controlli delle locandine che escono dallo schermo durante lo scroll rapido
-            delay(75L)
-            status = resolver.checkAsync(item)
-        }
-    }
-    return status
-}
-
-@Composable
-fun PosterVixSrcAvailabilityDot(
-    uniqueKey: String,
-    status: VixSrcAvailabilityStatus,
-    modifier: Modifier = Modifier
-) {
-    if (status == VixSrcAvailabilityStatus.UNKNOWN) return
-    val dotColor = when (status) {
-        VixSrcAvailabilityStatus.AVAILABLE -> NetflixMatchGreen
-        VixSrcAvailabilityStatus.UNAVAILABLE -> NetflixRed
-        VixSrcAvailabilityStatus.UNKNOWN -> return
-    }
-    val statusDescription = when (status) {
-        VixSrcAvailabilityStatus.AVAILABLE -> "Disponibile su VixSrc"
-        VixSrcAvailabilityStatus.UNAVAILABLE -> "Non disponibile su VixSrc"
-        VixSrcAvailabilityStatus.UNKNOWN -> ""
-    }
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier
-            .size(11.dp)
-            .clip(CircleShape)
-            .background(NetflixBlack.copy(alpha = 0.78f))
-            .semantics { contentDescription = statusDescription }
-            .testTag("poster_vixsrc_indicator_$uniqueKey")
-    ) {
-        Box(
-            modifier = Modifier
-                .size(7.5.dp)
-                .clip(CircleShape)
-                .background(dotColor)
-        )
-    }
-}
 
 @Composable
 fun NetflixTopBar(
@@ -1311,7 +1238,7 @@ private fun ContinueWatchingCard(
                         .background(NetflixBlack.copy(alpha = if (isFocused) 0.2f else 0.38f))
                 )
 
-                // Badge in alto a sinistra: SOLO per le Serie TV ("STAGIONE X · EPISODIO Y")
+                // Badge in alto a sinistra: SOLO per le Serie TV ("SX · EY")
                 val hasValidSeriesEpisode = entry.mediaType.equals("tv", ignoreCase = true) &&
                     (entry.seasonNumber ?: 0) > 0 &&
                     (entry.episodeNumber ?: 0) > 0
@@ -1325,7 +1252,7 @@ private fun ContinueWatchingCard(
                             .testTag("cw_season_episode_badge_${entry.id}")
                     ) {
                         Text(
-                            text = "STAGIONE ${entry.seasonNumber} · EPISODIO ${entry.episodeNumber}",
+                            text = "S${entry.seasonNumber} · E${entry.episodeNumber}",
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.Bold,
@@ -1675,16 +1602,6 @@ private fun Top10PosterCard(
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
-
-                // Pallino discreto disponibilità streaming VixSrc in basso a destra
-                val availabilityStatus = rememberPosterVixSrcAvailability(item)
-                PosterVixSrcAvailabilityDot(
-                    uniqueKey = item.uniqueKey,
-                    status = availabilityStatus,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(7.dp)
-                )
             }
         }
     }
@@ -1827,14 +1744,9 @@ fun MediaPosterCard(
     listState: LazyListState? = null,
     onQuickPlay: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
-    onFocused: () -> Unit = {},
-    vixSrcAvailabilityOverride: VixSrcAvailabilityStatus? = null
+    onFocused: () -> Unit = {}
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    val availabilityStatus = rememberPosterVixSrcAvailability(
-        item = item,
-        overrideStatus = vixSrcAvailabilityOverride
-    )
 
     Card(
         shape = RoundedCornerShape(10.dp),
@@ -1913,15 +1825,6 @@ fun MediaPosterCard(
                     }
                 }
             }
-
-            // Pallino discreto disponibilità streaming VixSrc in basso a destra (nessun titolo o cornice bianca al focus)
-            PosterVixSrcAvailabilityDot(
-                uniqueKey = item.uniqueKey,
-                status = availabilityStatus,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(7.dp)
-            )
         }
     }
 }

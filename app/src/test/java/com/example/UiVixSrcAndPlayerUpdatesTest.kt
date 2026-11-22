@@ -36,16 +36,14 @@ import com.example.data.remote.MediaDetails
 import com.example.data.remote.MediaItem
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.TmdbCastMemberDto
-import com.example.data.remote.VixSrcAvailabilityStatus
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.repository.VixFlixRepository
 import com.example.ui.DetailUiState
 import com.example.ui.NavTab
 import com.example.ui.PlaybackSession
 import com.example.ui.components.ContinueWatchingSection
-import com.example.ui.components.LocalVixSrcAvailabilityResolver
 import com.example.ui.components.MediaPosterCard
-import com.example.ui.components.VixSrcAvailabilityResolver
+import com.example.ui.components.Top10Section
 import com.example.ui.screens.MediaDetailScreen
 import com.example.ui.screens.VixPlayerScreen
 import com.example.ui.theme.MyApplicationTheme
@@ -160,9 +158,13 @@ class UiVixSrcAndPlayerUpdatesTest {
             }
         }
 
-        // 1. Serie TV: badge alto-sinistra "STAGIONE 2 · EPISODIO 5" e alto-destra "35 MIN RIMANENTI"
+        // 1. Serie TV: badge alto-sinistra abbreviato "S2 · E5" e alto-destra "35 MIN RIMANENTI"
         composeRule.onNodeWithTag("cw_season_episode_badge_tv_101", useUnmergedTree = true).assertIsDisplayed()
-        composeRule.onNodeWithText("STAGIONE 2 · EPISODIO 5").assertIsDisplayed()
+        composeRule.onNodeWithText("S2 · E5").assertIsDisplayed()
+        assertEquals(
+            0,
+            composeRule.onAllNodesWithText("STAGIONE 2 · EPISODIO 5").fetchSemanticsNodes().size
+        )
         composeRule.onNodeWithTag("cw_remaining_minutes_badge_tv_101", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithText("35 MIN RIMANENTI").assertIsDisplayed()
 
@@ -192,7 +194,7 @@ class UiVixSrcAndPlayerUpdatesTest {
     }
 
     @Test
-    fun `req3 and req4 - MediaPosterCard hides title on focus and displays VixSrc availability dot accurately`() = runBlocking {
+    fun `req3 and req4 - MediaPosterCard and Top10Section have no VixSrc availability indicator and no title overlay on focus while VixSrc playback resolution works`() = runBlocking {
         val db = Room.inMemoryDatabaseBuilder(app, VixFlixDatabase::class.java)
             .allowMainThreadQueries()
             .build()
@@ -204,7 +206,7 @@ class UiVixSrcAndPlayerUpdatesTest {
                 vixBaseUrl = baseUrl
             )
 
-            val itemAvailable = MediaItem(
+            val item1 = MediaItem(
                 id = 501,
                 mediaType = "movie",
                 title = "Film Disponibile",
@@ -214,71 +216,48 @@ class UiVixSrcAndPlayerUpdatesTest {
                 voteAverage = 8.0,
                 releaseYear = "2024"
             )
-            val itemUnavailable = MediaItem(
+            val item2 = MediaItem(
                 id = 502,
                 mediaType = "movie",
-                title = "Film Non Disponibile",
+                title = "Film Secondario",
                 overview = "",
                 posterPath = "/p2.jpg",
                 backdropPath = null,
                 voteAverage = 7.5,
                 releaseYear = "2024"
             )
-            val itemNetworkError = MediaItem(
-                id = 503,
-                mediaType = "movie",
-                title = "Film Errore Rete",
-                overview = "",
-                posterPath = "/p3.jpg",
-                backdropPath = null,
-                voteAverage = 7.0,
-                releaseYear = "2024"
-            )
 
-            assertEquals(VixSrcAvailabilityStatus.AVAILABLE, repo.checkVixSrcAvailability(itemAvailable, "it"))
-            assertEquals(VixSrcAvailabilityStatus.UNAVAILABLE, repo.checkVixSrcAvailability(itemUnavailable, "it"))
-            assertEquals(VixSrcAvailabilityStatus.UNKNOWN, repo.checkVixSrcAvailability(itemNetworkError, "it"))
-
-            // Verifica cache hit senza nuova chiamata HTTP per itemAvailable
-            val hitsBeforeCacheCheck = server.movie501Hits.get()
-            assertEquals(VixSrcAvailabilityStatus.AVAILABLE, repo.checkVixSrcAvailability(itemAvailable, "it"))
-            assertEquals(hitsBeforeCacheCheck, server.movie501Hits.get())
-
-            val resolver = VixSrcAvailabilityResolver(
-                getCached = { item -> repo.getCachedVixSrcAvailability(item, "it") },
-                checkAsync = { item -> repo.checkVixSrcAvailability(item, "it") }
-            )
+            val hitsBeforeRender = server.movie501Hits.get()
 
             composeRule.setContent {
                 MyApplicationTheme {
-                    CompositionLocalProvider(LocalVixSrcAvailabilityResolver provides resolver) {
+                    androidx.compose.foundation.layout.Column {
                         androidx.compose.foundation.layout.Row {
-                            MediaPosterCard(item = itemAvailable, onClick = {})
-                            MediaPosterCard(item = itemUnavailable, onClick = {})
-                            MediaPosterCard(item = itemNetworkError, onClick = {})
+                            MediaPosterCard(item = item1, onClick = {})
+                            MediaPosterCard(item = item2, onClick = {})
                         }
+                        Top10Section(
+                            title = "Top 10 Oggi",
+                            items = listOf(item1),
+                            onItemClick = {}
+                        )
                     }
                 }
             }
 
             composeRule.waitForIdle()
 
-            // Pallino verde presente per film disponibile
-            val greenDot = composeRule.onNodeWithTag("poster_vixsrc_indicator_movie_501", useUnmergedTree = true)
-            greenDot.assertIsDisplayed()
-            val greenDesc = greenDot.fetchSemanticsNode().config[SemanticsProperties.ContentDescription].joinToString()
-            assertTrue(greenDesc.contains("Disponibile su VixSrc"))
+            // Nessuna richiesta automatica eseguita per il pallino sulle locandine
+            assertEquals(hitsBeforeRender, server.movie501Hits.get())
 
-            // Pallino rosso presente per film verificato non disponibile
-            val redDot = composeRule.onNodeWithTag("poster_vixsrc_indicator_movie_502", useUnmergedTree = true)
-            redDot.assertIsDisplayed()
-            val redDesc = redDot.fetchSemanticsNode().config[SemanticsProperties.ContentDescription].joinToString()
-            assertTrue(redDesc.contains("Non disponibile su VixSrc"))
-
-            // Pallino nascosto in caso di errore di rete / stato UNKNOWN
+            // Nessun indicatore di disponibilità VixSrc presente sulle locandine
             assertEquals(
                 0,
-                composeRule.onAllNodesWithTag("poster_vixsrc_indicator_movie_503", useUnmergedTree = true).fetchSemanticsNodes().size
+                composeRule.onAllNodesWithTag("poster_vixsrc_indicator_movie_501", useUnmergedTree = true).fetchSemanticsNodes().size
+            )
+            assertEquals(
+                0,
+                composeRule.onAllNodesWithTag("poster_vixsrc_indicator_movie_502", useUnmergedTree = true).fetchSemanticsNodes().size
             )
 
             // Verifica focus sulla locandina: nessun titolo e nessuna scritta aggiuntiva mostrata durante il focus
@@ -287,6 +266,17 @@ class UiVixSrcAndPlayerUpdatesTest {
             composeRule.waitForIdle()
             availableCard.assertIsFocused()
             assertEquals(0, composeRule.onAllNodesWithText("Film Disponibile").fetchSemanticsNodes().size)
+
+            // L'integrazione VixSrc per la riproduzione diretta continua a funzionare regolarmente
+            val streamResult = repo.resolveVixSrcStream(
+                item = item1,
+                season = null,
+                episode = null,
+                startPositionMs = 0L,
+                lang = "it"
+            )
+            assertTrue(streamResult.isSuccess)
+            assertTrue(streamResult.getOrThrow().streamUrl.contains("/playlist/501"))
         } finally {
             db.close()
         }

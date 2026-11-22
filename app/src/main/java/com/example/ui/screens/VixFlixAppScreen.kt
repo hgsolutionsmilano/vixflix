@@ -139,13 +139,11 @@ import com.example.ui.PlatformFilterMediaType
 import com.example.ui.PlaybackSession
 import com.example.ui.StreamingPlatformUiState
 import com.example.ui.VixFlixViewModel
-import androidx.compose.runtime.CompositionLocalProvider
 import com.example.ui.components.ContinueWatchingSection
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.GlobalDpadFocusObserverHost
-import com.example.ui.components.LocalVixSrcAvailabilityResolver
 import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.MediaPosterCard
 import com.example.ui.components.MovieGenreChipBar
@@ -156,7 +154,6 @@ import com.example.ui.components.ProfileAvatarArtwork
 import com.example.ui.components.StreamingPlatformsStrip
 import com.example.ui.components.Top10Section
 import com.example.ui.components.VixFlixSplashScreen
-import com.example.ui.components.VixSrcAvailabilityResolver
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.recoverFocusFromCandidates
 import com.example.ui.components.rememberIsTvDevice
@@ -403,14 +400,6 @@ fun VixFlixAppScreen(
         continueWatching.associateBy { it.id }
     }
 
-    val vixSrcAvailabilityResolver = remember(viewModel, streamLang) {
-        VixSrcAvailabilityResolver(
-            getCached = viewModel::getCachedPosterVixSrcAvailability,
-            checkAsync = viewModel::checkPosterVixSrcAvailability
-        )
-    }
-
-    CompositionLocalProvider(LocalVixSrcAvailabilityResolver provides vixSrcAvailabilityResolver) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -1387,7 +1376,6 @@ fun VixFlixAppScreen(
             )
         }
         }
-    }
     }
 }
 
