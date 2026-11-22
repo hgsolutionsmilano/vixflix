@@ -2375,6 +2375,118 @@ private fun SimklSettingsSectionCard(
                             NetflixLightGray
                         }
                     )
+
+                    val liveProgress = simklUiState.syncProgress
+                    if (simklUiState.connectionState == SimklConnectionState.SYNCING && liveProgress != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            color = Color(0xFF4FC3F7).copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, Color(0xFF4FC3F7).copy(alpha = 0.35f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("simkl_live_progress_panel")
+                        ) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(10.dp)
+                            ) {
+                                Text(
+                                    text = liveProgress.currentPhaseLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF4FC3F7),
+                                    modifier = Modifier.testTag("simkl_live_progress_phase")
+                                )
+                                Text(
+                                    text = "Serie TV: ${liveProgress.showsProcessed} / ${liveProgress.showsTotal}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = NetflixWhite,
+                                    modifier = Modifier.testTag("simkl_progress_shows")
+                                )
+                                Text(
+                                    text = "Film: ${liveProgress.moviesProcessed} / ${liveProgress.moviesTotal}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = NetflixWhite,
+                                    modifier = Modifier.testTag("simkl_progress_movies")
+                                )
+                                Text(
+                                    text = "Anime: ${liveProgress.animeProcessed} / ${liveProgress.animeTotal}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = NetflixWhite,
+                                    modifier = Modifier.testTag("simkl_progress_anime")
+                                )
+                            }
+                        }
+                    }
+
+                    val syncSummary = simklUiState.lastSyncSummary
+                    if (simklUiState.connectionState != SimklConnectionState.SYNCING && syncSummary != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val hasFailures = syncSummary.apiRequestsFailed > 0 || syncSummary.itemErrorsCount > 0
+                        val summaryBorderColor = if (hasFailures) {
+                            Color(0xFFFFB74D).copy(alpha = 0.45f)
+                        } else {
+                            NetflixMatchGreen.copy(alpha = 0.35f)
+                        }
+                        Surface(
+                            color = NetflixElevatedSurface.copy(alpha = 0.55f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, summaryBorderColor),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("simkl_sync_summary_panel")
+                        ) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                                modifier = Modifier.padding(10.dp)
+                            ) {
+                                Text(
+                                    text = if (syncSummary.isIncremental) {
+                                        "Riepilogo ultimo aggiornamento Simkl"
+                                    } else {
+                                        "Riepilogo importazione libreria Simkl"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NetflixWhite
+                                )
+                                Text(
+                                    text = "Serie TV: ${syncSummary.showsImported} / ${syncSummary.showsFound} • Film: ${syncSummary.moviesImported} / ${syncSummary.moviesFound} • Anime: ${syncSummary.animeImported} / ${syncSummary.animeFound}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = NetflixWhite,
+                                    modifier = Modifier.testTag("simkl_summary_counts")
+                                )
+                                val deltaDetails = buildString {
+                                    append("Nuovi: ${syncSummary.insertedCount} • Aggiornati: ${syncSummary.updatedCount} • Già presenti: ${syncSummary.alreadyPresentCount}")
+                                    if (syncSummary.removedCount > 0) {
+                                        append(" • Rimossi: ${syncSummary.removedCount}")
+                                    }
+                                }
+                                Text(
+                                    text = deltaDetails,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NetflixLightGray,
+                                    modifier = Modifier.testTag("simkl_summary_delta")
+                                )
+                                Text(
+                                    text = "TMDB non riconosciuti: ${syncSummary.tmdbUnrecognizedCount} • Errori elementi: ${syncSummary.itemErrorsCount} • API ok/ko: ${syncSummary.apiRequestsCompleted}/${syncSummary.apiRequestsFailed}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (hasFailures) Color(0xFFFFB74D) else NetflixLightGray,
+                                    modifier = Modifier.testTag("simkl_summary_diagnostics")
+                                )
+                                syncSummary.errors.take(3).forEachIndexed { idx, err ->
+                                    val codeTag = err.httpCode?.let { "HTTP $it" } ?: err.errorType
+                                    Text(
+                                        text = "${err.source} [$codeTag]: ${err.message}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NetflixRed,
+                                        modifier = Modifier.testTag("simkl_summary_error_$idx")
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

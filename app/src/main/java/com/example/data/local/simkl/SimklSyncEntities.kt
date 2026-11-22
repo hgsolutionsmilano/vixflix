@@ -26,8 +26,54 @@ data class SimklProfileSyncMetaEntity(
     val lastShowsPlaybackTs: String? = null,
     val lastMoviesWatchedTs: String? = null,
     val lastShowsWatchedTs: String? = null,
+    val lastShowsAllTs: String? = null,
+    val lastMoviesAllTs: String? = null,
+    val lastAnimeAllTs: String? = null,
+    val lastRemovedShowsTs: String? = null,
+    val lastRemovedMoviesTs: String? = null,
+    val lastRemovedAnimeTs: String? = null,
+    val initialFullImportDone: Boolean = false,
     val lastSyncAtMs: Long? = null,
     val lastErrorMessage: String? = null,
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+/**
+ * Elemento della libreria Simkl (serie TV, film o anime) persistito localmente per profilo.
+ * Indicizzato con chiave stabile basata sull'ID Simkl per garantire upsert privo di duplicati
+ * anche per titoli privi di corrispondenza TMDB.
+ */
+@Immutable
+@Entity(
+    tableName = "simkl_library_item",
+    primaryKeys = ["profileId", "stableKey"],
+    indices = [
+        Index(value = ["profileId", "simklId"]),
+        Index(value = ["profileId", "mediaCategory", "status"]),
+        Index(value = ["profileId", "tmdbId"])
+    ]
+)
+data class SimklLibraryItemEntity(
+    val profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
+    val stableKey: String, // "simkl_{category}_{simklId}" oppure fallback esterno stabile
+    val simklId: Long = 0L,
+    val mediaCategory: String, // "shows" | "movies" | "anime"
+    val tmdbMediaType: String, // "tv" | "movie"
+    val tmdbId: Int? = null,
+    val imdbId: String? = null,
+    val tvdbId: Int? = null,
+    val slug: String? = null,
+    val title: String,
+    val year: Int? = null,
+    val status: String, // "watching" | "plantowatch" | "hold" | "completed" | "dropped"
+    val watchedEpisodesCount: Int = 0,
+    val totalEpisodesCount: Int = 0,
+    val lastWatchedAt: String? = null,
+    val lastWatchedAtMs: Long = 0L,
+    val nextToWatch: String? = null,
+    val lastWatchedEpisodeCode: String? = null,
+    val seasonsJson: String? = null,
+    val tmdbResolved: Boolean = false,
     val updatedAtMs: Long = System.currentTimeMillis()
 )
 

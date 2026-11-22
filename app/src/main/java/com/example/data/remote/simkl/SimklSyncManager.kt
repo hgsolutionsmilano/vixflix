@@ -7,6 +7,7 @@ import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.PlayerSegmentKeys
 import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.WatchProgressEntity
+import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.local.simkl.SimklPendingScrobbleEntity
 import com.example.data.local.simkl.SimklPlaybackBaselineEntity
 import com.example.data.local.simkl.SimklProfileSyncMetaEntity
@@ -98,6 +99,9 @@ class SimklSyncManager(
     private val _qrDialogState = MutableStateFlow<SimklQrDialogState?>(null)
     val globalQrDialogState: StateFlow<SimklQrDialogState?> = _qrDialogState.asStateFlow()
 
+    private val _profileSyncProgress = MutableStateFlow<Map<String, SimklSyncProgress>>(emptyMap())
+    private val _profileSyncSummary = MutableStateFlow<Map<String, SimklSyncSummary>>(emptyMap())
+
     private val _resolvedActiveProfileRequests = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val resolvedActiveProfileRequests: SharedFlow<String> = _resolvedActiveProfileRequests.asSharedFlow()
 
@@ -121,12 +125,26 @@ class SimklSyncManager(
     private fun writeMutexFor(profileId: String): Mutex =
         profileWriteMutexes.getOrPut(profileId) { Mutex() }
 
+    private fun updateSyncProgress(profileId: String, progress: SimklSyncProgress?) {
+        _profileSyncProgress.update { map ->
+            if (progress == null) map - profileId else map + (profileId to progress)
+        }
+    }
+
+    private fun updateSyncSummary(profileId: String, summary: SimklSyncSummary?) {
+        _profileSyncSummary.update { map ->
+            if (summary == null) map - profileId else map + (profileId to summary)
+        }
+    }
+
     fun observeProfileUiState(profileId: String): Flow<SimklProfileUiState> {
         return combine(
             dao.observeSimklProfileMeta(profileId),
             dao.observeSimklPendingCount(profileId),
-            _qrDialogState
-        ) { meta, pendingCount, qrState ->
+            _qrDialogState,
+            _profileSyncProgress,
+            _profileSyncSummary
+        ) { meta, pendingCount, qrState, progressMap, summaryMap ->
             val cfg = configProvider()
             val matchingQr = qrState?.takeIf { it.profileId == profileId }
             val rawState = meta?.connectionState?.let { raw ->
@@ -155,7 +173,9 @@ class SimklSyncManager(
                 pendingQueueCount = pendingCount,
                 errorMessage = meta?.lastErrorMessage,
                 isClientIdConfigured = cfg.isClientIdConfigured,
-                qrDialogState = matchingQr
+                qrDialogState = matchingQr,
+                syncProgress = progressMap[profileId],
+                lastSyncSummary = summaryMap[profileId]
             )
         }
     }
@@ -639,6 +659,9 @@ class SimklSyncManager(
         tokenStore.clearTokens(prompt.targetProfileId)
         dao.deleteSimklPendingForProfile(prompt.targetProfileId)
         dao.deleteSimklBaselinesForProfile(prompt.targetProfileId)
+        dao.deleteSimklLibraryForProfile(prompt.targetProfileId)
+        updateSyncProgress(prompt.targetProfileId, null)
+        updateSyncSummary(prompt.targetProfileId, null)
 
         bindTokensAndSync(
             targetProfileId = prompt.targetProfileId,
@@ -736,7 +759,10 @@ class SimklSyncManager(
         tokenStore.clearTokens(profileId)
         dao.deleteSimklPendingForProfile(profileId)
         dao.deleteSimklBaselinesForProfile(profileId)
+        dao.deleteSimklLibraryForProfile(profileId)
         dao.deleteSimklProfileMeta(profileId)
+        updateSyncProgress(profileId, null)
+        updateSyncSummary(profileId, null)
     }
 
     suspend fun onProfileDeleted(profileId: String) = withContext(Dispatchers.IO) {
@@ -746,6 +772,8 @@ class SimklSyncManager(
             _qrDialogState.value = null
         }
         tokenStore.clearTokens(profileId)
+        updateSyncProgress(profileId, null)
+        updateSyncSummary(profileId, null)
     }
 
     fun syncIfNeeded(profileId: String, trigger: SimklSyncTrigger) {
@@ -802,94 +830,360 @@ class SimklSyncManager(
 
             lastSyncAttemptAtMs[profileId] = clockMs()
             updateMetaState(profileId, SimklConnectionState.SYNCING, clearError = true)
+            updateSyncProgress(
+                profileId,
+                SimklSyncProgress(currentPhaseLabel = "Verifica attività Simkl…")
+            )
 
-            val accessToken = getValidAccessToken(profileId, forceRefresh = false)
-                ?: return@withLock false
-
-            // 1. Direzione A prima di B: svuota la coda offline locale verso Simkl
-            val pendingFlushedOk = flushPendingQueueInternal(profileId)
-
-            // 2. Direzione B: verifica attività incrementali
-            val activitiesResp = executeWithAuthRetry(profileId, accessToken) { tok ->
-                apiService.getSyncActivities("Bearer $tok")
-            } ?: return@withLock false
-
-            if (!activitiesResp.isSuccessful) {
-                val msg = "Errore attività Simkl (HTTP ${activitiesResp.code()})"
-                updateMetaState(
-                    profileId,
-                    if (pendingFlushedOk) SimklConnectionState.ERROR else SimklConnectionState.OFFLINE_QUEUE_PENDING,
-                    error = msg
-                )
-                return@withLock false
-            }
-
-            val activities = activitiesResp.body()
-            val currentMeta = dao.getSimklProfileMeta(profileId)
-            val forceFullPull = trigger == SimklSyncTrigger.POST_AUTH ||
-                trigger == SimklSyncTrigger.MANUAL ||
-                currentMeta?.lastSyncAtMs == null
-
-            val activitiesUnchanged = !forceFullPull &&
-                activities != null &&
-                currentMeta != null &&
-                activities.moviesPlaybackTimestamp == currentMeta.lastMoviesPlaybackTs &&
-                activities.showsPlaybackTimestamp == currentMeta.lastShowsPlaybackTs &&
-                activities.all == currentMeta.lastActivitiesAll
-
-            if (!activitiesUnchanged) {
-                val activeToken = getValidAccessToken(profileId, forceRefresh = false)
+            try {
+                val accessToken = getValidAccessToken(profileId, forceRefresh = false)
                     ?: return@withLock false
 
-                val moviesResp = executeWithAuthRetry(profileId, activeToken) { tok ->
-                    apiService.getPlaybackMovies("Bearer $tok")
-                }
-                val episodesResp = executeWithAuthRetry(profileId, activeToken) { tok ->
-                    apiService.getPlaybackEpisodes("Bearer $tok")
-                }
+                var apiRequestsCompleted = 0
+                var apiRequestsFailed = 0
+                val syncErrors = ArrayList<SimklSyncErrorEntry>()
 
-                if (moviesResp == null || episodesResp == null ||
-                    !moviesResp.isSuccessful || !episodesResp.isSuccessful
-                ) {
-                    val code = moviesResp?.code() ?: episodesResp?.code() ?: 0
+                // 1. Direzione A prima di B: svuota la coda offline locale verso Simkl
+                val pendingFlushedOk = flushPendingQueueInternal(profileId)
+
+                // 2. Direzione B: recupera /sync/activities per decidere Fase 1 (completa) vs Fase 2 (incrementale)
+                val activitiesResp = try {
+                    executeWithAuthRetry(profileId, accessToken) { tok ->
+                        apiService.getSyncActivities("Bearer $tok")
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    apiRequestsFailed++
+                    syncErrors.add(
+                        SimklSyncErrorEntry(
+                            source = "/sync/activities",
+                            errorType = e.javaClass.simpleName,
+                            message = "Errore di rete su /sync/activities."
+                        )
+                    )
+                    null
+                } ?: run {
+                    if (apiRequestsFailed == 0) apiRequestsFailed++
+                    if (syncErrors.isEmpty()) {
+                        syncErrors.add(
+                            SimklSyncErrorEntry(
+                                source = "/sync/activities",
+                                httpCode = 401,
+                                errorType = "AUTH",
+                                message = "Autorizzazione Simkl non valida o scaduta."
+                            )
+                        )
+                    }
+                    updateSyncSummary(
+                        profileId,
+                        SimklSyncSummary(
+                            apiRequestsCompleted = apiRequestsCompleted,
+                            apiRequestsFailed = apiRequestsFailed,
+                            errors = syncErrors
+                        )
+                    )
                     updateMetaState(
                         profileId,
-                        SimklConnectionState.ERROR,
-                        error = if (code > 0) "Sincronizzazione Simkl interrotta (HTTP $code)." else "Errore sincronizzazione Simkl."
+                        if (pendingFlushedOk) SimklConnectionState.ERROR else SimklConnectionState.OFFLINE_QUEUE_PENDING,
+                        error = syncErrors.first().message
                     )
                     return@withLock false
                 }
 
-                reconcileRemotePlayback(
+                if (!activitiesResp.isSuccessful || activitiesResp.body() == null) {
+                    apiRequestsFailed++
+                    val code = activitiesResp.code()
+                    val msg = "Errore attività Simkl (HTTP $code)"
+                    syncErrors.add(
+                        SimklSyncErrorEntry(
+                            source = "/sync/activities",
+                            httpCode = code,
+                            errorType = "HTTP_$code",
+                            message = msg
+                        )
+                    )
+                    updateSyncSummary(
+                        profileId,
+                        SimklSyncSummary(
+                            apiRequestsCompleted = apiRequestsCompleted,
+                            apiRequestsFailed = apiRequestsFailed,
+                            errors = syncErrors
+                        )
+                    )
+                    updateMetaState(
+                        profileId,
+                        if (pendingFlushedOk) SimklConnectionState.ERROR else SimklConnectionState.OFFLINE_QUEUE_PENDING,
+                        error = msg
+                    )
+                    return@withLock false
+                }
+                apiRequestsCompleted++
+
+                val activities = activitiesResp.body()!!
+                val currentMeta = dao.getSimklProfileMeta(profileId)
+                val isInitialFullImport = currentMeta == null ||
+                    !currentMeta.initialFullImportDone ||
+                    currentMeta.lastActivitiesAll.isNullOrBlank() ||
+                    trigger == SimklSyncTrigger.POST_AUTH
+
+                var allLibraryRequestsSucceeded = true
+                val pulledShows = ArrayList<SimklLibraryParsedItem>()
+                val pulledMovies = ArrayList<SimklLibraryParsedItem>()
+                val pulledAnime = ArrayList<SimklLibraryParsedItem>()
+                var removedCount = 0
+
+                val activeToken = getValidAccessToken(profileId, forceRefresh = false)
+                    ?: return@withLock false
+
+                if (isInitialFullImport) {
+                    // FASE 1: importazione iniziale completa sequenziale (shows -> movies -> anime) su tutti gli stati
+                    updateSyncProgress(
+                        profileId,
+                        SimklSyncProgress(currentPhaseLabel = "Scaricamento libreria Simkl completa…")
+                    )
+
+                    val categories = listOf(
+                        Triple(SimklLibraryJsonParser.CATEGORY_SHOWS, "yes", "yes"),
+                        Triple(SimklLibraryJsonParser.CATEGORY_MOVIES, null, null),
+                        Triple(SimklLibraryJsonParser.CATEGORY_ANIME, "yes", "yes")
+                    )
+                    for ((category, epWatched, includeAllEps) in categories) {
+                        val fetchOutcome = fetchFullCategoryWithFallback(
+                            profileId = profileId,
+                            initialToken = activeToken,
+                            category = category,
+                            episodeWatchedAt = epWatched,
+                            includeAllEpisodes = includeAllEps
+                        )
+                        apiRequestsCompleted += fetchOutcome.requestsCompleted
+                        apiRequestsFailed += fetchOutcome.requestsFailed
+                        syncErrors.addAll(fetchOutcome.errors)
+                        if (fetchOutcome.authLost) return@withLock false
+                        if (!fetchOutcome.succeeded) {
+                            allLibraryRequestsSucceeded = false
+                        }
+                        when (category) {
+                            SimklLibraryJsonParser.CATEGORY_SHOWS -> pulledShows.addAll(fetchOutcome.shows)
+                            SimklLibraryJsonParser.CATEGORY_MOVIES -> pulledMovies.addAll(fetchOutcome.movies)
+                            SimklLibraryJsonParser.CATEGORY_ANIME -> pulledAnime.addAll(fetchOutcome.anime)
+                        }
+                    }
+                } else {
+                    // FASE 2: sincronizzazione incrementale tramite date_from esatto + verifica rimozioni
+                    val prevAllTs = currentMeta!!.lastActivitiesAll!!
+                    val activitiesLibraryChanged =
+                        activities.all != prevAllTs ||
+                            (activities.showsAllTimestamp != null && activities.showsAllTimestamp != currentMeta.lastShowsAllTs) ||
+                            (activities.moviesAllTimestamp != null && activities.moviesAllTimestamp != currentMeta.lastMoviesAllTs) ||
+                            (activities.animeAllTimestamp != null && activities.animeAllTimestamp != currentMeta.lastAnimeAllTs) ||
+                            (activities.showsWatchedTimestamp != null && activities.showsWatchedTimestamp != currentMeta.lastShowsWatchedTs) ||
+                            (activities.moviesWatchedTimestamp != null && activities.moviesWatchedTimestamp != currentMeta.lastMoviesWatchedTs)
+
+                    if (activitiesLibraryChanged) {
+                        updateSyncProgress(
+                            profileId,
+                            SimklSyncProgress(currentPhaseLabel = "Aggiornamento incrementale Simkl…")
+                        )
+                        val deltaOutcome = fetchIncrementalDelta(
+                            profileId = profileId,
+                            initialToken = activeToken,
+                            dateFrom = prevAllTs
+                        )
+                        apiRequestsCompleted += deltaOutcome.requestsCompleted
+                        apiRequestsFailed += deltaOutcome.requestsFailed
+                        syncErrors.addAll(deltaOutcome.errors)
+                        if (deltaOutcome.authLost) return@withLock false
+                        if (!deltaOutcome.succeeded) {
+                            allLibraryRequestsSucceeded = false
+                        } else {
+                            pulledShows.addAll(deltaOutcome.shows)
+                            pulledMovies.addAll(deltaOutcome.movies)
+                            pulledAnime.addAll(deltaOutcome.anime)
+                        }
+                    }
+
+                    // Verifica esplicita delle rimozioni solo se removed_from_list è cambiato
+                    val removalChecks = listOf(
+                        Triple(
+                            SimklLibraryJsonParser.CATEGORY_SHOWS,
+                            activities.showsRemovedTimestamp,
+                            currentMeta.lastRemovedShowsTs
+                        ),
+                        Triple(
+                            SimklLibraryJsonParser.CATEGORY_MOVIES,
+                            activities.moviesRemovedTimestamp,
+                            currentMeta.lastRemovedMoviesTs
+                        ),
+                        Triple(
+                            SimklLibraryJsonParser.CATEGORY_ANIME,
+                            activities.animeRemovedTimestamp,
+                            currentMeta.lastRemovedAnimeTs
+                        )
+                    )
+                    for ((category, remoteRemovedTs, localRemovedTs) in removalChecks) {
+                        if (!remoteRemovedTs.isNullOrBlank() && remoteRemovedTs != localRemovedTs) {
+                            val localCategoryItems = dao.getSimklLibraryByCategory(profileId, category)
+                            if (localCategoryItems.isNotEmpty()) {
+                                val remOutcome = reconcileCategoryRemovals(
+                                    profileId = profileId,
+                                    initialToken = activeToken,
+                                    category = category,
+                                    localItems = localCategoryItems
+                                )
+                                apiRequestsCompleted += remOutcome.requestsCompleted
+                                apiRequestsFailed += remOutcome.requestsFailed
+                                syncErrors.addAll(remOutcome.errors)
+                                if (remOutcome.authLost) return@withLock false
+                                if (!remOutcome.succeeded) {
+                                    allLibraryRequestsSucceeded = false
+                                } else {
+                                    removedCount += remOutcome.removedCount
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Elabora e salva/aggiorna la libreria importata senza mai perdere i vecchi dati
+                val persistStats = persistParsedLibraryItems(
                     profileId = profileId,
-                    remoteMovies = moviesResp.body().orEmpty(),
-                    remoteEpisodes = episodesResp.body().orEmpty()
+                    shows = pulledShows,
+                    movies = pulledMovies,
+                    anime = pulledAnime,
+                    existingErrorsCount = syncErrors.size
                 )
-            }
 
-            // 3. Push eventuali progressi locali modificati prima/durante l'offline non ancora inviati
-            pushDirtyLocalProgressInternal(profileId)
-            val finalPending = dao.getSimklPendingScrobbles(profileId).size
+                // 4. Riconcilia /sync/playback/* (riprese esatte da player su altri dispositivi)
+                val playbackChanged = isInitialFullImport ||
+                    trigger == SimklSyncTrigger.MANUAL ||
+                    activities.moviesPlaybackTimestamp != currentMeta?.lastMoviesPlaybackTs ||
+                    activities.showsPlaybackTimestamp != currentMeta?.lastShowsPlaybackTs ||
+                    activities.all != currentMeta?.lastActivitiesAll
 
-            val latestMeta = dao.getSimklProfileMeta(profileId) ?: SimklProfileSyncMetaEntity(profileId = profileId)
-            dao.upsertSimklProfileMeta(
-                latestMeta.copy(
-                    connectionState = if (finalPending > 0) {
-                        SimklConnectionState.OFFLINE_QUEUE_PENDING.name
+                var playbackRequestsOk = true
+                if (playbackChanged) {
+                    val playbackToken = getValidAccessToken(profileId, forceRefresh = false)
+                        ?: return@withLock false
+                    val moviesResp = runCatching {
+                        executeWithAuthRetry(profileId, playbackToken) { tok ->
+                            apiService.getPlaybackMovies("Bearer $tok")
+                        }
+                    }.getOrNull()
+                    val episodesResp = runCatching {
+                        executeWithAuthRetry(profileId, playbackToken) { tok ->
+                            apiService.getPlaybackEpisodes("Bearer $tok")
+                        }
+                    }.getOrNull()
+
+                    if (moviesResp != null && moviesResp.isSuccessful) {
+                        apiRequestsCompleted++
                     } else {
-                        SimklConnectionState.CONNECTED_SYNCED.name
-                    },
-                    lastActivitiesAll = activities?.all ?: latestMeta.lastActivitiesAll,
-                    lastMoviesPlaybackTs = activities?.moviesPlaybackTimestamp ?: latestMeta.lastMoviesPlaybackTs,
-                    lastShowsPlaybackTs = activities?.showsPlaybackTimestamp ?: latestMeta.lastShowsPlaybackTs,
-                    lastMoviesWatchedTs = activities?.moviesWatchedTimestamp ?: latestMeta.lastMoviesWatchedTs,
-                    lastShowsWatchedTs = activities?.showsWatchedTimestamp ?: latestMeta.lastShowsWatchedTs,
-                    lastSyncAtMs = clockMs(),
-                    lastErrorMessage = null,
-                    updatedAtMs = clockMs()
+                        apiRequestsFailed++
+                        playbackRequestsOk = false
+                        val code = moviesResp?.code()
+                        syncErrors.add(
+                            SimklSyncErrorEntry(
+                                source = "/sync/playback/movies",
+                                httpCode = code,
+                                errorType = if (code != null) "HTTP_$code" else "NETWORK",
+                                message = if (code != null) "Errore playback film (HTTP $code)" else "Errore rete playback film"
+                            )
+                        )
+                    }
+                    if (episodesResp != null && episodesResp.isSuccessful) {
+                        apiRequestsCompleted++
+                    } else {
+                        apiRequestsFailed++
+                        playbackRequestsOk = false
+                        val code = episodesResp?.code()
+                        syncErrors.add(
+                            SimklSyncErrorEntry(
+                                source = "/sync/playback/episodes",
+                                httpCode = code,
+                                errorType = if (code != null) "HTTP_$code" else "NETWORK",
+                                message = if (code != null) "Errore playback episodi (HTTP $code)" else "Errore rete playback episodi"
+                            )
+                        )
+                    }
+
+                    if (playbackRequestsOk) {
+                        reconcileRemotePlayback(
+                            profileId = profileId,
+                            remoteMovies = moviesResp?.body().orEmpty(),
+                            remoteEpisodes = episodesResp?.body().orEmpty()
+                        )
+                    }
+                }
+
+                // 5. Push eventuali progressi locali modificati prima/durante l'offline non ancora inviati
+                pushDirtyLocalProgressInternal(profileId)
+                val finalPending = dao.getSimklPendingScrobbles(profileId).size
+
+                val allRequestsSucceeded = allLibraryRequestsSucceeded && playbackRequestsOk
+                val summary = SimklSyncSummary(
+                    showsFound = pulledShows.size,
+                    moviesFound = pulledMovies.size,
+                    animeFound = pulledAnime.size,
+                    showsImported = persistStats.showsImported,
+                    moviesImported = persistStats.moviesImported,
+                    animeImported = persistStats.animeImported,
+                    insertedCount = persistStats.insertedCount,
+                    updatedCount = persistStats.updatedCount,
+                    alreadyPresentCount = persistStats.alreadyPresentCount,
+                    tmdbUnrecognizedCount = persistStats.tmdbUnrecognizedCount,
+                    itemErrorsCount = persistStats.itemErrorsCount,
+                    apiRequestsCompleted = apiRequestsCompleted,
+                    apiRequestsFailed = apiRequestsFailed,
+                    isIncremental = !isInitialFullImport,
+                    removedCount = removedCount,
+                    errors = syncErrors.take(12)
                 )
-            )
-            true
+                updateSyncSummary(profileId, summary)
+
+                val latestMeta = dao.getSimklProfileMeta(profileId) ?: SimklProfileSyncMetaEntity(profileId = profileId)
+                if (!allRequestsSucceeded) {
+                    val primaryErr = syncErrors.firstOrNull()?.message
+                        ?: "Alcune richieste Simkl hanno fallito: snapshot precedente conservato."
+                    dao.upsertSimklProfileMeta(
+                        latestMeta.copy(
+                            connectionState = SimklConnectionState.ERROR.name,
+                            lastErrorMessage = primaryErr,
+                            updatedAtMs = clockMs()
+                        )
+                    )
+                    return@withLock false
+                }
+
+                // Commit transazionale dei nuovi timestamp snapshot SOLO quando tutte le richieste richieste sono riuscite
+                dao.upsertSimklProfileMeta(
+                    latestMeta.copy(
+                        connectionState = if (finalPending > 0) {
+                            SimklConnectionState.OFFLINE_QUEUE_PENDING.name
+                        } else {
+                            SimklConnectionState.CONNECTED_SYNCED.name
+                        },
+                        lastActivitiesAll = activities.all ?: latestMeta.lastActivitiesAll,
+                        lastMoviesPlaybackTs = activities.moviesPlaybackTimestamp ?: latestMeta.lastMoviesPlaybackTs,
+                        lastShowsPlaybackTs = activities.showsPlaybackTimestamp ?: latestMeta.lastShowsPlaybackTs,
+                        lastMoviesWatchedTs = activities.moviesWatchedTimestamp ?: latestMeta.lastMoviesWatchedTs,
+                        lastShowsWatchedTs = activities.showsWatchedTimestamp ?: latestMeta.lastShowsWatchedTs,
+                        lastShowsAllTs = activities.showsAllTimestamp ?: latestMeta.lastShowsAllTs,
+                        lastMoviesAllTs = activities.moviesAllTimestamp ?: latestMeta.lastMoviesAllTs,
+                        lastAnimeAllTs = activities.animeAllTimestamp ?: latestMeta.lastAnimeAllTs,
+                        lastRemovedShowsTs = activities.showsRemovedTimestamp ?: latestMeta.lastRemovedShowsTs,
+                        lastRemovedMoviesTs = activities.moviesRemovedTimestamp ?: latestMeta.lastRemovedMoviesTs,
+                        lastRemovedAnimeTs = activities.animeRemovedTimestamp ?: latestMeta.lastRemovedAnimeTs,
+                        initialFullImportDone = true,
+                        lastSyncAtMs = clockMs(),
+                        lastErrorMessage = null,
+                        updatedAtMs = clockMs()
+                    )
+                )
+                true
+            } finally {
+                updateSyncProgress(profileId, null)
+            }
         }
     }
 
@@ -1826,6 +2120,717 @@ class SimklSyncManager(
         } else {
             "${mediaType}_${tmdbId}"
         }
+    }
+
+    private data class LibraryFetchOutcome(
+        val succeeded: Boolean,
+        val authLost: Boolean = false,
+        val requestsCompleted: Int = 0,
+        val requestsFailed: Int = 0,
+        val shows: List<SimklLibraryParsedItem> = emptyList(),
+        val movies: List<SimklLibraryParsedItem> = emptyList(),
+        val anime: List<SimklLibraryParsedItem> = emptyList(),
+        val errors: List<SimklSyncErrorEntry> = emptyList()
+    )
+
+    private data class RemovalCheckOutcome(
+        val succeeded: Boolean,
+        val authLost: Boolean = false,
+        val requestsCompleted: Int = 0,
+        val requestsFailed: Int = 0,
+        val removedCount: Int = 0,
+        val errors: List<SimklSyncErrorEntry> = emptyList()
+    )
+
+    private data class PersistLibraryStats(
+        val showsImported: Int = 0,
+        val moviesImported: Int = 0,
+        val animeImported: Int = 0,
+        val insertedCount: Int = 0,
+        val updatedCount: Int = 0,
+        val alreadyPresentCount: Int = 0,
+        val tmdbUnrecognizedCount: Int = 0,
+        val itemErrorsCount: Int = 0
+    )
+
+    private suspend fun fetchFullCategoryWithFallback(
+        profileId: String,
+        initialToken: String,
+        category: String,
+        episodeWatchedAt: String?,
+        includeAllEpisodes: String?
+    ): LibraryFetchOutcome {
+        var reqCompleted = 0
+        var reqFailed = 0
+        val collectedErrors = ArrayList<SimklSyncErrorEntry>()
+
+        val primaryResp = try {
+            executeWithAuthRetry(profileId, initialToken) { tok ->
+                apiService.getAllItemsByType(
+                    bearerToken = "Bearer $tok",
+                    type = category,
+                    extended = "full",
+                    episodeWatchedAt = episodeWatchedAt,
+                    includeAllEpisodes = includeAllEpisodes
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            reqFailed++
+            collectedErrors.add(
+                SimklSyncErrorEntry(
+                    source = "/sync/all-items/$category",
+                    errorType = e.javaClass.simpleName,
+                    message = "Timeout/rete su /sync/all-items/$category, tentativo suddiviso per stato."
+                )
+            )
+            null
+        } catch (e: Exception) {
+            reqFailed++
+            collectedErrors.add(
+                SimklSyncErrorEntry(
+                    source = "/sync/all-items/$category",
+                    errorType = e.javaClass.simpleName,
+                    message = "Errore richiesta /sync/all-items/$category."
+                )
+            )
+            null
+        }
+
+        if (primaryResp != null) {
+            if (primaryResp.isSuccessful) {
+                reqCompleted++
+                val rawBody = runCatching { primaryResp.body()?.use { it.string() } }.getOrNull()
+                val parsed = SimklLibraryJsonParser.parseAllItemsPayload(
+                    rawJson = rawBody,
+                    defaultCategory = category
+                )
+                collectedErrors.addAll(parsed.errors)
+                return LibraryFetchOutcome(
+                    succeeded = true,
+                    requestsCompleted = reqCompleted,
+                    requestsFailed = reqFailed,
+                    shows = deduplicateParsedItems(parsed.shows),
+                    movies = deduplicateParsedItems(parsed.movies),
+                    anime = deduplicateParsedItems(parsed.anime),
+                    errors = collectedErrors
+                )
+            } else {
+                val code = primaryResp.code()
+                runCatching { primaryResp.errorBody()?.close() }
+                reqFailed++
+                val shouldChunkByStatus = code == 413 || code == 429 || code >= 500
+                collectedErrors.add(
+                    SimklSyncErrorEntry(
+                        source = "/sync/all-items/$category",
+                        httpCode = code,
+                        errorType = "HTTP_$code",
+                        message = if (shouldChunkByStatus) {
+                            "Limite API Simkl su /sync/all-items/$category (HTTP $code): fallback per stato."
+                        } else {
+                            "Errore API Simkl su /sync/all-items/$category (HTTP $code)."
+                        }
+                    )
+                )
+                if (!shouldChunkByStatus) {
+                    return LibraryFetchOutcome(
+                        succeeded = false,
+                        requestsCompleted = reqCompleted,
+                        requestsFailed = reqFailed,
+                        errors = collectedErrors
+                    )
+                }
+            }
+        } else if (tokenStore.readTokens(profileId) == null) {
+            return LibraryFetchOutcome(
+                succeeded = false,
+                authLost = true,
+                requestsCompleted = reqCompleted,
+                requestsFailed = reqFailed,
+                errors = collectedErrors
+            )
+        }
+
+        // Fallback sequenziale per singolo stato su categorie ampie / limiti API
+        val statuses = if (category == SimklLibraryJsonParser.CATEGORY_MOVIES) {
+            SimklLibraryJsonParser.ALL_MOVIE_STATUSES
+        } else {
+            SimklLibraryJsonParser.ALL_SHOW_ANIME_STATUSES
+        }
+
+        val chunkShows = ArrayList<SimklLibraryParsedItem>()
+        val chunkMovies = ArrayList<SimklLibraryParsedItem>()
+        val chunkAnime = ArrayList<SimklLibraryParsedItem>()
+        var allChunksSucceeded = true
+
+        for (status in statuses) {
+            val tok = getValidAccessToken(profileId, forceRefresh = false)
+                ?: return LibraryFetchOutcome(
+                    succeeded = false,
+                    authLost = true,
+                    requestsCompleted = reqCompleted,
+                    requestsFailed = reqFailed,
+                    errors = collectedErrors
+                )
+            val statusResp = try {
+                executeWithAuthRetry(profileId, tok) { authTok ->
+                    apiService.getAllItemsByTypeAndStatus(
+                        bearerToken = "Bearer $authTok",
+                        type = category,
+                        status = status,
+                        extended = "full",
+                        episodeWatchedAt = episodeWatchedAt,
+                        includeAllEpisodes = includeAllEpisodes
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                reqFailed++
+                allChunksSucceeded = false
+                collectedErrors.add(
+                    SimklSyncErrorEntry(
+                        source = "/sync/all-items/$category/$status",
+                        errorType = e.javaClass.simpleName,
+                        message = "Errore rete su /sync/all-items/$category/$status."
+                    )
+                )
+                null
+            }
+
+            if (statusResp == null) {
+                if (tokenStore.readTokens(profileId) == null) {
+                    return LibraryFetchOutcome(
+                        succeeded = false,
+                        authLost = true,
+                        requestsCompleted = reqCompleted,
+                        requestsFailed = reqFailed,
+                        errors = collectedErrors
+                    )
+                }
+                allChunksSucceeded = false
+                continue
+            }
+
+            if (statusResp.isSuccessful) {
+                reqCompleted++
+                val rawBody = runCatching { statusResp.body()?.use { it.string() } }.getOrNull()
+                val parsed = SimklLibraryJsonParser.parseAllItemsPayload(
+                    rawJson = rawBody,
+                    defaultCategory = category,
+                    forcedStatus = status
+                )
+                collectedErrors.addAll(parsed.errors)
+                chunkShows.addAll(parsed.shows)
+                chunkMovies.addAll(parsed.movies)
+                chunkAnime.addAll(parsed.anime)
+            } else {
+                val code = statusResp.code()
+                runCatching { statusResp.errorBody()?.close() }
+                reqFailed++
+                allChunksSucceeded = false
+                collectedErrors.add(
+                    SimklSyncErrorEntry(
+                        source = "/sync/all-items/$category/$status",
+                        httpCode = code,
+                        errorType = "HTTP_$code",
+                        message = "Errore Simkl /sync/all-items/$category/$status (HTTP $code)."
+                    )
+                )
+            }
+        }
+
+        return LibraryFetchOutcome(
+            succeeded = allChunksSucceeded,
+            requestsCompleted = reqCompleted,
+            requestsFailed = reqFailed,
+            shows = deduplicateParsedItems(chunkShows),
+            movies = deduplicateParsedItems(chunkMovies),
+            anime = deduplicateParsedItems(chunkAnime),
+            errors = collectedErrors
+        )
+    }
+
+    private suspend fun fetchIncrementalDelta(
+        profileId: String,
+        initialToken: String,
+        dateFrom: String
+    ): LibraryFetchOutcome {
+        var reqCompleted = 0
+        var reqFailed = 0
+        val collectedErrors = ArrayList<SimklSyncErrorEntry>()
+
+        val resp = try {
+            executeWithAuthRetry(profileId, initialToken) { tok ->
+                apiService.getAllItems(
+                    bearerToken = "Bearer $tok",
+                    dateFrom = dateFrom,
+                    extended = "full",
+                    episodeWatchedAt = "yes",
+                    includeAllEpisodes = "yes"
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            reqFailed++
+            collectedErrors.add(
+                SimklSyncErrorEntry(
+                    source = "/sync/all-items?date_from=…",
+                    errorType = e.javaClass.simpleName,
+                    message = "Errore di rete su sync incrementale /sync/all-items."
+                )
+            )
+            return LibraryFetchOutcome(
+                succeeded = false,
+                requestsCompleted = reqCompleted,
+                requestsFailed = reqFailed,
+                errors = collectedErrors
+            )
+        } ?: return LibraryFetchOutcome(
+            succeeded = false,
+            authLost = tokenStore.readTokens(profileId) == null,
+            requestsCompleted = reqCompleted,
+            requestsFailed = reqFailed + 1,
+            errors = collectedErrors
+        )
+
+        if (!resp.isSuccessful) {
+            val code = resp.code()
+            runCatching { resp.errorBody()?.close() }
+            reqFailed++
+            collectedErrors.add(
+                SimklSyncErrorEntry(
+                    source = "/sync/all-items?date_from=…",
+                    httpCode = code,
+                    errorType = "HTTP_$code",
+                    message = "Errore sync incrementale Simkl (HTTP $code)."
+                )
+            )
+            return LibraryFetchOutcome(
+                succeeded = false,
+                requestsCompleted = reqCompleted,
+                requestsFailed = reqFailed,
+                errors = collectedErrors
+            )
+        }
+
+        reqCompleted++
+        val rawBody = runCatching { resp.body()?.use { it.string() } }.getOrNull()
+        val parsed = SimklLibraryJsonParser.parseAllItemsPayload(rawJson = rawBody)
+        collectedErrors.addAll(parsed.errors)
+
+        return LibraryFetchOutcome(
+            succeeded = true,
+            requestsCompleted = reqCompleted,
+            requestsFailed = reqFailed,
+            shows = deduplicateParsedItems(parsed.shows),
+            movies = deduplicateParsedItems(parsed.movies),
+            anime = deduplicateParsedItems(parsed.anime),
+            errors = collectedErrors
+        )
+    }
+
+    private suspend fun reconcileCategoryRemovals(
+        profileId: String,
+        initialToken: String,
+        category: String,
+        localItems: List<SimklLibraryItemEntity>
+    ): RemovalCheckOutcome {
+        val collectedErrors = ArrayList<SimklSyncErrorEntry>()
+        val resp = try {
+            executeWithAuthRetry(profileId, initialToken) { tok ->
+                apiService.getAllItemsByType(
+                    bearerToken = "Bearer $tok",
+                    type = category,
+                    extended = "simkl_ids_only"
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            collectedErrors.add(
+                SimklSyncErrorEntry(
+                    source = "/sync/all-items/$category?extended=simkl_ids_only",
+                    errorType = e.javaClass.simpleName,
+                    message = "Errore rete verifica rimozioni $category."
+                )
+            )
+            return RemovalCheckOutcome(
+                succeeded = false,
+                requestsFailed = 1,
+                errors = collectedErrors
+            )
+        } ?: return RemovalCheckOutcome(
+            succeeded = false,
+            authLost = tokenStore.readTokens(profileId) == null,
+            requestsFailed = 1
+        )
+
+        if (!resp.isSuccessful) {
+            val code = resp.code()
+            runCatching { resp.errorBody()?.close() }
+            collectedErrors.add(
+                SimklSyncErrorEntry(
+                    source = "/sync/all-items/$category?extended=simkl_ids_only",
+                    httpCode = code,
+                    errorType = "HTTP_$code",
+                    message = "Errore verifica rimozioni $category (HTTP $code)."
+                )
+            )
+            return RemovalCheckOutcome(
+                succeeded = false,
+                requestsFailed = 1,
+                errors = collectedErrors
+            )
+        }
+
+        val rawBody = runCatching { resp.body()?.use { it.string() } }.getOrNull()
+        val remoteKeys = SimklLibraryJsonParser.extractKeysForRemoval(rawBody, category)
+        if (remoteKeys == null) {
+            collectedErrors.add(
+                SimklSyncErrorEntry(
+                    source = "/sync/all-items/$category?extended=simkl_ids_only",
+                    errorType = "PARSE_REMOVAL_IDS",
+                    message = "Risposta simkl_ids_only non interpretabile per $category."
+                )
+            )
+            return RemovalCheckOutcome(
+                succeeded = false,
+                requestsCompleted = 1,
+                requestsFailed = 0,
+                errors = collectedErrors
+            )
+        }
+
+        val keysToRemove = localItems
+            .map { it.stableKey }
+            .filter { it !in remoteKeys }
+        if (keysToRemove.isNotEmpty()) {
+            keysToRemove.chunked(200).forEach { chunk ->
+                dao.deleteSimklLibraryItemsByKeys(profileId, chunk)
+            }
+        }
+        return RemovalCheckOutcome(
+            succeeded = true,
+            requestsCompleted = 1,
+            removedCount = keysToRemove.size
+        )
+    }
+
+    private suspend fun persistParsedLibraryItems(
+        profileId: String,
+        shows: List<SimklLibraryParsedItem>,
+        movies: List<SimklLibraryParsedItem>,
+        anime: List<SimklLibraryParsedItem>,
+        existingErrorsCount: Int
+    ): PersistLibraryStats {
+        val totalShows = shows.size
+        val totalMovies = movies.size
+        val totalAnime = anime.size
+
+        if (totalShows == 0 && totalMovies == 0 && totalAnime == 0) {
+            return PersistLibraryStats(itemErrorsCount = existingErrorsCount)
+        }
+
+        val existingMap = dao.getSimklLibraryForProfile(profileId).associateBy { it.stableKey }
+
+        var showsProcessed = 0
+        var moviesProcessed = 0
+        var animeProcessed = 0
+        var showsImported = 0
+        var moviesImported = 0
+        var animeImported = 0
+        var insertedCount = 0
+        var updatedCount = 0
+        var alreadyPresentCount = 0
+        var tmdbUnrecognizedCount = 0
+        var itemErrorsCount = existingErrorsCount
+
+        fun publishProgress(phaseLabel: String) {
+            updateSyncProgress(
+                profileId,
+                SimklSyncProgress(
+                    showsProcessed = showsProcessed,
+                    showsTotal = totalShows,
+                    moviesProcessed = moviesProcessed,
+                    moviesTotal = totalMovies,
+                    animeProcessed = animeProcessed,
+                    animeTotal = totalAnime,
+                    currentPhaseLabel = phaseLabel
+                )
+            )
+        }
+
+        publishProgress("Importazione libreria Simkl…")
+
+        val entitiesToUpsert = ArrayList<SimklLibraryItemEntity>(totalShows + totalMovies + totalAnime)
+        val combined = shows + movies + anime
+        for (item in combined) {
+            try {
+                val existing = existingMap[item.stableKey]
+                val resolvedTmdbId = resolveTmdbIdForLibraryItem(item, existing)
+                if (resolvedTmdbId == null) {
+                    tmdbUnrecognizedCount++
+                }
+
+                val seasonsJson = SimklLibraryJsonParser.serializeSeasonsJson(item.seasons)
+                val lastWatchedMs = parseIsoUtcMillis(item.lastWatchedAt)
+                val entity = SimklLibraryItemEntity(
+                    profileId = profileId,
+                    stableKey = item.stableKey,
+                    simklId = item.simklId,
+                    mediaCategory = item.mediaCategory,
+                    tmdbMediaType = item.tmdbMediaType,
+                    tmdbId = resolvedTmdbId,
+                    imdbId = item.imdbId ?: existing?.imdbId,
+                    tvdbId = item.tvdbId ?: existing?.tvdbId,
+                    slug = item.slug ?: existing?.slug,
+                    title = item.title,
+                    year = item.year,
+                    status = item.status,
+                    watchedEpisodesCount = item.watchedEpisodesCount,
+                    totalEpisodesCount = item.totalEpisodesCount,
+                    lastWatchedAt = item.lastWatchedAt,
+                    lastWatchedAtMs = lastWatchedMs,
+                    nextToWatch = item.nextToWatch,
+                    lastWatchedEpisodeCode = item.lastWatchedEpisodeCode,
+                    seasonsJson = seasonsJson,
+                    tmdbResolved = resolvedTmdbId != null,
+                    updatedAtMs = clockMs()
+                )
+                entitiesToUpsert.add(entity)
+
+                when {
+                    existing == null -> insertedCount++
+                    hasLibraryItemChanged(existing, entity) -> updatedCount++
+                    else -> alreadyPresentCount++
+                }
+
+                if (resolvedTmdbId != null) {
+                    propagateLibraryItemToLocalProgress(profileId, item, resolvedTmdbId, lastWatchedMs)
+                }
+
+                when (item.mediaCategory) {
+                    SimklLibraryJsonParser.CATEGORY_SHOWS -> showsImported++
+                    SimklLibraryJsonParser.CATEGORY_MOVIES -> moviesImported++
+                    SimklLibraryJsonParser.CATEGORY_ANIME -> animeImported++
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                itemErrorsCount++
+            } finally {
+                when (item.mediaCategory) {
+                    SimklLibraryJsonParser.CATEGORY_SHOWS -> showsProcessed++
+                    SimklLibraryJsonParser.CATEGORY_MOVIES -> moviesProcessed++
+                    SimklLibraryJsonParser.CATEGORY_ANIME -> animeProcessed++
+                }
+                publishProgress("Importazione libreria Simkl…")
+            }
+        }
+
+        if (entitiesToUpsert.isNotEmpty()) {
+            entitiesToUpsert.chunked(100).forEach { chunk ->
+                dao.upsertSimklLibraryItems(chunk)
+            }
+        }
+
+        return PersistLibraryStats(
+            showsImported = showsImported,
+            moviesImported = moviesImported,
+            animeImported = animeImported,
+            insertedCount = insertedCount,
+            updatedCount = updatedCount,
+            alreadyPresentCount = alreadyPresentCount,
+            tmdbUnrecognizedCount = tmdbUnrecognizedCount,
+            itemErrorsCount = itemErrorsCount
+        )
+    }
+
+    private suspend fun resolveTmdbIdForLibraryItem(
+        item: SimklLibraryParsedItem,
+        existing: SimklLibraryItemEntity?
+    ): Int? {
+        item.tmdbId?.takeIf { it > 0 }?.let { return it }
+        existing?.tmdbId?.takeIf { it > 0 }?.let { return it }
+        if (item.imdbId.isNullOrBlank() && (item.tvdbId == null || item.tvdbId <= 0)) {
+            return null
+        }
+        return runCatching {
+            repository.findTmdbMediaByExternalId(
+                imdbId = item.imdbId,
+                tvdbId = item.tvdbId,
+                expectedType = item.tmdbMediaType
+            )?.id?.takeIf { it > 0 }
+        }.getOrNull()
+    }
+
+    private suspend fun propagateLibraryItemToLocalProgress(
+        profileId: String,
+        item: SimklLibraryParsedItem,
+        tmdbId: Int,
+        lastWatchedMs: Long
+    ) {
+        val completedTimestamp = if (lastWatchedMs > 0L) lastWatchedMs else clockMs()
+        if (item.tmdbMediaType == "movie") {
+            if (item.status == SimklLibraryJsonParser.STATUS_COMPLETED) {
+                val movieKey = PlayerSegmentKeys.completedMediaKey(tmdbId, "movie")
+                if (dao.getCompletedMedia(movieKey, profileId) == null) {
+                    dao.upsertCompletedMedia(
+                        CompletedMediaEntity(
+                            profileId = profileId,
+                            contentKey = movieKey,
+                            tmdbId = tmdbId,
+                            mediaType = "movie",
+                            completedAtMs = completedTimestamp
+                        )
+                    )
+                }
+            }
+            return
+        }
+
+        // Serie TV e Anime: propaga episodi visti in completed_media in modo non distruttivo
+        val watchedPairs = item.seasons.flatMap { season ->
+            season.episodes.filter { it.watched }.map { ep -> season.seasonNumber to ep.episodeNumber }
+        }
+        val existingCompleted = dao.getCompletedEpisodesForSeries(tmdbId, profileId)
+            .map { it.seasonNumber to it.episodeNumber }
+            .toSet()
+
+        val newCompletedEntities = watchedPairs
+            .filter { it !in existingCompleted }
+            .map { (seasonNum, epNum) ->
+                CompletedMediaEntity(
+                    profileId = profileId,
+                    contentKey = PlayerSegmentKeys.completedMediaKey(tmdbId, "tv", seasonNum, epNum),
+                    tmdbId = tmdbId,
+                    mediaType = "tv",
+                    seasonNumber = seasonNum,
+                    episodeNumber = epNum,
+                    completedAtMs = completedTimestamp
+                )
+            }
+        if (newCompletedEntities.isNotEmpty()) {
+            dao.upsertCompletedMediaList(newCompletedEntities)
+        }
+
+        // Se in corso ("watching"), popola Continua a guardare solo se non esiste già un progresso locale
+        if (item.status == SimklLibraryJsonParser.STATUS_WATCHING) {
+            val mainKey = "tv_$tmdbId"
+            val existingMain = dao.getWatchProgress(mainKey, profileId)
+            if (existingMain == null) {
+                val nextTarget = parseEpisodeCode(item.nextToWatch)
+                    ?: findNextUnwatchedEpisodeFromSeasons(item.seasons)
+                if (nextTarget != null) {
+                    val (nextSeason, nextEp) = nextTarget
+                    val nextCompletedKey = PlayerSegmentKeys.completedMediaKey(tmdbId, "tv", nextSeason, nextEp)
+                    if (dao.getCompletedMedia(nextCompletedKey, profileId) == null) {
+                        val baseMedia = MediaItem(
+                            id = tmdbId,
+                            mediaType = "tv",
+                            title = item.title,
+                            overview = "",
+                            posterPath = null,
+                            backdropPath = null,
+                            voteAverage = 0.0,
+                            releaseYear = item.year?.toString().orEmpty()
+                        )
+                        val enrichedItem = runCatching {
+                            repository.getCachedMediaDetails(baseMedia)?.value?.item
+                                ?: repository.fetchMediaDetails(baseMedia).getOrNull()?.item
+                        }.getOrNull() ?: baseMedia
+                        val epDto = runCatching {
+                            val eps = repository.getCachedSeasonEpisodes(tmdbId, nextSeason)?.value
+                                ?: repository.fetchSeasonEpisodes(tmdbId, nextSeason).getOrNull()
+                            eps?.firstOrNull { it.episodeNumber == nextEp }
+                        }.getOrNull()
+                        val epDurationMs = ((epDto?.runtime?.takeIf { it in 1..600 }?.toLong() ?: 0L) * 60_000L)
+                        dao.upsertWatchProgress(
+                            WatchProgressEntity(
+                                id = mainKey,
+                                tmdbId = tmdbId,
+                                mediaType = "tv",
+                                title = enrichedItem.title.ifBlank { item.title },
+                                overview = enrichedItem.overview,
+                                posterPath = enrichedItem.posterPath,
+                                backdropPath = enrichedItem.backdropPath,
+                                voteAverage = enrichedItem.voteAverage,
+                                releaseYear = enrichedItem.releaseYear.ifBlank { item.year?.toString().orEmpty() },
+                                seasonNumber = nextSeason,
+                                episodeNumber = nextEp,
+                                episodeTitle = epDto?.name?.takeIf { it.isNotBlank() },
+                                positionMs = 0L,
+                                durationMs = epDurationMs,
+                                updatedAt = completedTimestamp,
+                                profileId = profileId
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun hasLibraryItemChanged(
+        oldEntity: SimklLibraryItemEntity,
+        newEntity: SimklLibraryItemEntity
+    ): Boolean {
+        return oldEntity.simklId != newEntity.simklId ||
+            oldEntity.tmdbId != newEntity.tmdbId ||
+            oldEntity.imdbId != newEntity.imdbId ||
+            oldEntity.tvdbId != newEntity.tvdbId ||
+            oldEntity.title != newEntity.title ||
+            oldEntity.year != newEntity.year ||
+            oldEntity.status != newEntity.status ||
+            oldEntity.watchedEpisodesCount != newEntity.watchedEpisodesCount ||
+            oldEntity.totalEpisodesCount != newEntity.totalEpisodesCount ||
+            oldEntity.lastWatchedAt != newEntity.lastWatchedAt ||
+            oldEntity.nextToWatch != newEntity.nextToWatch ||
+            oldEntity.lastWatchedEpisodeCode != newEntity.lastWatchedEpisodeCode ||
+            oldEntity.seasonsJson != newEntity.seasonsJson ||
+            oldEntity.tmdbResolved != newEntity.tmdbResolved
+    }
+
+    private fun deduplicateParsedItems(
+        items: List<SimklLibraryParsedItem>
+    ): List<SimklLibraryParsedItem> {
+        if (items.size <= 1) return items
+        val byKey = LinkedHashMap<String, SimklLibraryParsedItem>(items.size)
+        for (item in items) {
+            val prev = byKey[item.stableKey]
+            byKey[item.stableKey] = if (prev == null || item.seasons.size >= prev.seasons.size) {
+                item
+            } else {
+                prev
+            }
+        }
+        return byKey.values.toList()
+    }
+
+    internal fun parseEpisodeCode(rawCode: String?): Pair<Int, Int>? {
+        val clean = rawCode?.trim().orEmpty()
+        if (clean.isEmpty()) return null
+        val match = Regex("(?i)S(\\d+)\\s*E(\\d+)|(\\d+)\\s*x\\s*(\\d+)").find(clean) ?: return null
+        val sStr = match.groupValues[1].ifEmpty { match.groupValues[3] }
+        val eStr = match.groupValues[2].ifEmpty { match.groupValues[4] }
+        val season = sStr.toIntOrNull()?.takeIf { it >= 0 } ?: return null
+        val episode = eStr.toIntOrNull()?.takeIf { it > 0 } ?: return null
+        return season to episode
+    }
+
+    private fun findNextUnwatchedEpisodeFromSeasons(seasons: List<SimklParsedSeason>): Pair<Int, Int>? {
+        for (season in seasons.sortedBy { it.seasonNumber }) {
+            val firstUnwatched = season.episodes
+                .sortedBy { it.episodeNumber }
+                .firstOrNull { !it.watched }
+            if (firstUnwatched != null) {
+                return season.seasonNumber to firstUnwatched.episodeNumber
+            }
+        }
+        return null
     }
 
     internal fun parseIsoUtcMillis(rawIso: String?): Long {

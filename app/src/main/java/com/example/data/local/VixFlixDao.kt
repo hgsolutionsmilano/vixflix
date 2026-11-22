@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.local.simkl.SimklPendingScrobbleEntity
 import com.example.data.local.simkl.SimklPlaybackBaselineEntity
 import com.example.data.local.simkl.SimklProfileSyncMetaEntity
@@ -52,6 +53,9 @@ interface VixFlixDao {
     @Query("DELETE FROM simkl_pending_scrobble WHERE profileId = :profileId")
     suspend fun deleteSimklPendingForProfile(profileId: String)
 
+    @Query("DELETE FROM simkl_library_item WHERE profileId = :profileId")
+    suspend fun deleteSimklLibraryForProfile(profileId: String)
+
     @Transaction
     suspend fun deleteProfileAndPersonalData(profileId: String) {
         deleteWatchProgressForProfile(profileId)
@@ -60,6 +64,7 @@ interface VixFlixDao {
         deleteCompletedMediaForProfile(profileId)
         deleteSimklPendingForProfile(profileId)
         deleteSimklBaselinesForProfile(profileId)
+        deleteSimklLibraryForProfile(profileId)
         deleteSimklProfileMeta(profileId)
         deleteProfileById(profileId)
     }
@@ -334,6 +339,25 @@ interface VixFlixDao {
 
     @Query("SELECT * FROM watch_progress WHERE profileId = :profileId ORDER BY updatedAt DESC")
     suspend fun getWatchProgressListForProfile(profileId: String): List<WatchProgressEntity>
+
+    // --- Simkl Imported Library Items (Shows, Movies, Anime per profile) ---
+    @Query("SELECT * FROM simkl_library_item WHERE profileId = :profileId ORDER BY lastWatchedAtMs DESC, updatedAtMs DESC")
+    suspend fun getSimklLibraryForProfile(profileId: String): List<SimklLibraryItemEntity>
+
+    @Query("SELECT * FROM simkl_library_item WHERE profileId = :profileId ORDER BY lastWatchedAtMs DESC, updatedAtMs DESC")
+    fun observeSimklLibraryForProfile(profileId: String): Flow<List<SimklLibraryItemEntity>>
+
+    @Query("SELECT * FROM simkl_library_item WHERE profileId = :profileId AND mediaCategory = :mediaCategory")
+    suspend fun getSimklLibraryByCategory(profileId: String, mediaCategory: String): List<SimklLibraryItemEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSimklLibraryItem(entity: SimklLibraryItemEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSimklLibraryItems(entities: List<SimklLibraryItemEntity>)
+
+    @Query("DELETE FROM simkl_library_item WHERE profileId = :profileId AND stableKey IN (:stableKeys)")
+    suspend fun deleteSimklLibraryItemsByKeys(profileId: String, stableKeys: List<String>)
 }
 
 data class SeasonWatchedCount(

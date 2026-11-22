@@ -58,6 +58,36 @@ interface SimklApiService {
         @Header("Authorization") bearerToken: String
     ): Response<SimklActivitiesResponse>
 
+    @GET("sync/all-items")
+    suspend fun getAllItems(
+        @Header("Authorization") bearerToken: String,
+        @Query("date_from") dateFrom: String? = null,
+        @Query("extended") extended: String = "full",
+        @Query("episode_watched_at") episodeWatchedAt: String? = "yes",
+        @Query("include_all_episodes") includeAllEpisodes: String? = "yes"
+    ): Response<ResponseBody>
+
+    @GET("sync/all-items/{type}")
+    suspend fun getAllItemsByType(
+        @Header("Authorization") bearerToken: String,
+        @Path("type") type: String,
+        @Query("date_from") dateFrom: String? = null,
+        @Query("extended") extended: String = "full",
+        @Query("episode_watched_at") episodeWatchedAt: String? = null,
+        @Query("include_all_episodes") includeAllEpisodes: String? = null
+    ): Response<ResponseBody>
+
+    @GET("sync/all-items/{type}/{status}")
+    suspend fun getAllItemsByTypeAndStatus(
+        @Header("Authorization") bearerToken: String,
+        @Path("type") type: String,
+        @Path("status") status: String,
+        @Query("date_from") dateFrom: String? = null,
+        @Query("extended") extended: String = "full",
+        @Query("episode_watched_at") episodeWatchedAt: String? = null,
+        @Query("include_all_episodes") includeAllEpisodes: String? = null
+    ): Response<ResponseBody>
+
     @GET("sync/playback/movies")
     suspend fun getPlaybackMovies(
         @Header("Authorization") bearerToken: String
@@ -100,7 +130,7 @@ interface SimklApiService {
         ): OkHttpClient {
             return baseHttpClient.newBuilder()
                 .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(25, TimeUnit.SECONDS)
+                .readTimeout(45, TimeUnit.SECONDS)
                 .addInterceptor { chain ->
                     val cfg = configProvider()
                     val original = chain.request()

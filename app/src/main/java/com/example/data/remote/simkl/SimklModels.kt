@@ -60,7 +60,8 @@ data class SimklActivitiesResponse(
     @param:Json(name = "all") val all: String? = null,
     @param:Json(name = "movies") val movies: SimklActivityBucketDto? = null,
     @param:Json(name = "shows") val shows: SimklActivityBucketDto? = null,
-    @param:Json(name = "tv_shows") val tvShows: SimklActivityBucketDto? = null
+    @param:Json(name = "tv_shows") val tvShows: SimklActivityBucketDto? = null,
+    @param:Json(name = "anime") val anime: SimklActivityBucketDto? = null
 ) {
     val moviesPlaybackTimestamp: String?
         get() = movies?.playback ?: movies?.all
@@ -70,6 +71,18 @@ data class SimklActivitiesResponse(
         get() = movies?.watchedAt ?: movies?.completed ?: movies?.all
     val showsWatchedTimestamp: String?
         get() = shows?.watchedAt ?: shows?.completed ?: tvShows?.watchedAt ?: shows?.all
+    val showsAllTimestamp: String?
+        get() = shows?.all ?: tvShows?.all
+    val moviesAllTimestamp: String?
+        get() = movies?.all
+    val animeAllTimestamp: String?
+        get() = anime?.all
+    val showsRemovedTimestamp: String?
+        get() = shows?.removedFromList ?: tvShows?.removedFromList
+    val moviesRemovedTimestamp: String?
+        get() = movies?.removedFromList
+    val animeRemovedTimestamp: String?
+        get() = anime?.removedFromList
 }
 
 @JsonClass(generateAdapter = true)
@@ -78,6 +91,13 @@ data class SimklActivityBucketDto(
     @param:Json(name = "playback") val playback: String? = null,
     @param:Json(name = "watched_at") val watchedAt: String? = null,
     @param:Json(name = "completed") val completed: String? = null,
+    @param:Json(name = "watching") val watching: String? = null,
+    @param:Json(name = "plantowatch") val planToWatch: String? = null,
+    @param:Json(name = "hold") val hold: String? = null,
+    @param:Json(name = "dropped") val dropped: String? = null,
+    @param:Json(name = "watchlist") val watchlist: String? = null,
+    @param:Json(name = "rated_at") val ratedAt: String? = null,
+    @param:Json(name = "rated") val rated: String? = null,
     @param:Json(name = "removed_from_list") val removedFromList: String? = null
 )
 
@@ -217,6 +237,80 @@ data class SimklQrDialogState(
 }
 
 @Immutable
+data class SimklParsedEpisode(
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val watched: Boolean,
+    val watchedAt: String? = null
+)
+
+@Immutable
+data class SimklParsedSeason(
+    val seasonNumber: Int,
+    val episodes: List<SimklParsedEpisode>
+)
+
+@Immutable
+data class SimklLibraryParsedItem(
+    val stableKey: String,
+    val simklId: Long,
+    val mediaCategory: String, // "shows" | "movies" | "anime"
+    val tmdbMediaType: String, // "tv" | "movie"
+    val tmdbId: Int?,
+    val imdbId: String?,
+    val tvdbId: Int?,
+    val slug: String?,
+    val title: String,
+    val year: Int?,
+    val status: String, // "watching" | "plantowatch" | "hold" | "completed" | "dropped"
+    val watchedEpisodesCount: Int,
+    val totalEpisodesCount: Int,
+    val lastWatchedAt: String?,
+    val nextToWatch: String?,
+    val lastWatchedEpisodeCode: String?,
+    val seasons: List<SimklParsedSeason>
+)
+
+@Immutable
+data class SimklSyncProgress(
+    val showsProcessed: Int = 0,
+    val showsTotal: Int = 0,
+    val moviesProcessed: Int = 0,
+    val moviesTotal: Int = 0,
+    val animeProcessed: Int = 0,
+    val animeTotal: Int = 0,
+    val currentPhaseLabel: String = "Sincronizzazione Simkl…"
+)
+
+@Immutable
+data class SimklSyncErrorEntry(
+    val source: String,
+    val httpCode: Int? = null,
+    val errorType: String,
+    val message: String
+)
+
+@Immutable
+data class SimklSyncSummary(
+    val showsFound: Int = 0,
+    val moviesFound: Int = 0,
+    val animeFound: Int = 0,
+    val showsImported: Int = 0,
+    val moviesImported: Int = 0,
+    val animeImported: Int = 0,
+    val insertedCount: Int = 0,
+    val updatedCount: Int = 0,
+    val alreadyPresentCount: Int = 0,
+    val tmdbUnrecognizedCount: Int = 0,
+    val itemErrorsCount: Int = 0,
+    val apiRequestsCompleted: Int = 0,
+    val apiRequestsFailed: Int = 0,
+    val isIncremental: Boolean = false,
+    val removedCount: Int = 0,
+    val errors: List<SimklSyncErrorEntry> = emptyList()
+)
+
+@Immutable
 data class SimklProfileUiState(
     val profileId: String = "",
     val connectionState: SimklConnectionState = SimklConnectionState.NOT_CONNECTED,
@@ -226,7 +320,9 @@ data class SimklProfileUiState(
     val pendingQueueCount: Int = 0,
     val errorMessage: String? = null,
     val isClientIdConfigured: Boolean = false,
-    val qrDialogState: SimklQrDialogState? = null
+    val qrDialogState: SimklQrDialogState? = null,
+    val syncProgress: SimklSyncProgress? = null,
+    val lastSyncSummary: SimklSyncSummary? = null
 ) {
     val isConnected: Boolean
         get() = connectionState == SimklConnectionState.CONNECTED_SYNCED ||
