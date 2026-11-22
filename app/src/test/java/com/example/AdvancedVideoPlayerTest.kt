@@ -56,12 +56,16 @@ import com.example.ui.screens.SettingsCategory
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.VixPlayerScreen
 import com.example.ui.screens.formatMsToHhMmSs
-import com.example.ui.theme.VixFlixTheme
+import com.example.ui.theme.MyApplicationTheme
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.ServerSocket
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -74,7 +78,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = VixFlixApplication::class)
+@Config(sdk = [34], application = VixFlixApplication::class, qualifiers = "w1280dp-h1000dp")
 class AdvancedVideoPlayerTest {
 
     @get:Rule
@@ -207,7 +211,7 @@ class AdvancedVideoPlayerTest {
         )
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = movieSession,
                     streamLang = "it",
@@ -297,7 +301,7 @@ class AdvancedVideoPlayerTest {
         var committedPositionMs = -1L
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = movieSession,
                     streamLang = "it",
@@ -355,7 +359,7 @@ class AdvancedVideoPlayerTest {
         )
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = resolvingSession,
                     streamLang = "it",
@@ -407,7 +411,7 @@ class AdvancedVideoPlayerTest {
         var closedCalled = false
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = movieSession,
                     streamLang = "it",
@@ -541,7 +545,7 @@ class AdvancedVideoPlayerTest {
         var lastCommittedMs = -1L
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = seriesSession,
                     streamLang = "it",
@@ -604,7 +608,7 @@ class AdvancedVideoPlayerTest {
         )
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = movieSession,
                     streamLang = "it",
@@ -671,7 +675,7 @@ class AdvancedVideoPlayerTest {
 
         var skippedToMs: Long? = null
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = seriesSession,
                     streamLang = "it",
@@ -725,7 +729,7 @@ class AdvancedVideoPlayerTest {
         )
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = seriesSessionNoIntro,
                     streamLang = "it",
@@ -783,7 +787,7 @@ class AdvancedVideoPlayerTest {
 
         var nextTriggered = false
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = crossSeasonSession,
                     streamLang = "it",
@@ -854,7 +858,7 @@ class AdvancedVideoPlayerTest {
 
         var nextTriggered = false
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = session,
                     streamLang = "it",
@@ -911,7 +915,7 @@ class AdvancedVideoPlayerTest {
         var completedCalled = false
         var closedCalled = false
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = movieAtCredits,
                     streamLang = "it",
@@ -1204,7 +1208,7 @@ class AdvancedVideoPlayerTest {
         var selectedCountdown = 10
         var toggledSkipIntro = true
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 SettingsScreen(
                     gitHubState = GitHubUpdateUiState(),
                     streamLang = "it",
@@ -1236,12 +1240,12 @@ class AdvancedVideoPlayerTest {
             }
         }
 
-        composeRule.onNodeWithTag("settings_list")
+        composeRule.onNodeWithTag("settings_screen")
             .performScrollToNode(hasTestTag("settings_skip_intro_switch"))
         composeRule.onNodeWithTag("settings_skip_intro_switch").performClick()
         assertFalse(toggledSkipIntro)
 
-        composeRule.onNodeWithTag("settings_list")
+        composeRule.onNodeWithTag("settings_screen")
             .performScrollToNode(hasTestTag("settings_countdown_15"))
         composeRule.onNodeWithTag("settings_countdown_15").performClick()
         assertEquals(15, selectedCountdown)
@@ -1267,7 +1271,7 @@ class AdvancedVideoPlayerTest {
         )
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = movieSession,
                     streamLang = "it",
@@ -1336,7 +1340,7 @@ class AdvancedVideoPlayerTest {
         var lastSubtitleSelected: PlayerSubtitleTrackOption? = null
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = seriesSession,
                     streamLang = "it",
@@ -1440,7 +1444,7 @@ class AdvancedVideoPlayerTest {
         var nextClicked = 0
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = sessionState,
                     streamLang = "it",
@@ -1567,7 +1571,7 @@ class AdvancedVideoPlayerTest {
         var overrideDurationMs by mutableStateOf(2_700_000L) // 00:45:00 su Ep 1
 
         composeRule.setContent {
-            VixFlixTheme {
+            MyApplicationTheme {
                 VixPlayerScreen(
                     session = currentSession,
                     streamLang = "it",
@@ -1750,3 +1754,64 @@ class AdvancedVideoPlayerTest {
         }
     }
 }
+
+private class MockResponse {
+    var code: Int = 200
+    var body: String = ""
+    fun setResponseCode(c: Int): MockResponse = apply { code = c }
+    fun setBody(b: String): MockResponse = apply { body = b }
+}
+
+private class MockWebServer {
+    private val serverSocket = ServerSocket(0)
+    private val executor = Executors.newCachedThreadPool()
+    private val queue = ConcurrentLinkedQueue<MockResponse>()
+    @Volatile
+    private var running = false
+
+    fun start() {
+        running = true
+        executor.execute {
+            while (running && !serverSocket.isClosed) {
+                val socket = runCatching { serverSocket.accept() }.getOrNull() ?: break
+                executor.execute {
+                    socket.use { client ->
+                        val reader = BufferedReader(InputStreamReader(client.getInputStream()))
+                        reader.readLine() ?: return@use
+                        while (true) {
+                            val h = reader.readLine() ?: break
+                            if (h.isEmpty()) break
+                        }
+                        val resp = queue.poll() ?: MockResponse().setResponseCode(404).setBody("{}")
+                        val statusText = if (resp.code == 200) "200 OK" else "${resp.code} Error"
+                        val bytes = resp.body.toByteArray(Charsets.UTF_8)
+                        val writer = OutputStreamWriter(client.getOutputStream(), Charsets.UTF_8)
+                        writer.write("HTTP/1.1 $statusText\r\n")
+                        writer.write("Content-Type: application/json; charset=utf-8\r\n")
+                        writer.write("Content-Length: ${bytes.size}\r\n")
+                        writer.write("Connection: close\r\n\r\n")
+                        writer.flush()
+                        client.getOutputStream().write(bytes)
+                        client.getOutputStream().flush()
+                    }
+                }
+            }
+        }
+    }
+
+    fun enqueue(response: MockResponse) {
+        queue.add(response)
+    }
+
+    fun url(path: String): String {
+        val clean = if (path.startsWith("/")) path else "/$path"
+        return "http://127.0.0.1:${serverSocket.localPort}$clean"
+    }
+
+    fun shutdown() {
+        running = false
+        runCatching { serverSocket.close() }
+        executor.shutdownNow()
+    }
+}
+

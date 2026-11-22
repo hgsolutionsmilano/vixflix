@@ -45,13 +45,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -407,6 +412,12 @@ fun Modifier.animatedPosterShowcase(
         label = "posterFocusScale"
     )
 
+    val glowAlpha by animateFloatAsState(
+        targetValue = if (isFocused) 1f else 0f,
+        animationSpec = tween(durationMillis = 150, easing = LinearOutSlowInEasing),
+        label = "posterFocusGlowAlpha"
+    )
+
     this
         .zIndex(if (isFocused) 10f else 0f)
         .graphicsLayer {
@@ -414,17 +425,47 @@ fun Modifier.animatedPosterShowcase(
             scaleY = scale
             compositingStrategy = CompositingStrategy.ModulateAlpha
         }
-        .then(
-            if (isFocused) {
-                Modifier.border(
-                    width = 2.5.dp,
-                    color = NetflixWhite,
-                    shape = shape
+        .drawBehind {
+            if (glowAlpha > 0.01f) {
+                val baseCornerPx = 10.dp.toPx()
+                // Alone luminoso morbido multistrato attorno al contorno della locandina (senza cornice bianca rigida)
+                val outerSpread1 = 11.dp.toPx()
+                drawRoundRect(
+                    color = NetflixRed.copy(alpha = 0.09f * glowAlpha),
+                    topLeft = Offset(-outerSpread1, -outerSpread1),
+                    size = Size(size.width + outerSpread1 * 2f, size.height + outerSpread1 * 2f),
+                    cornerRadius = CornerRadius(baseCornerPx + outerSpread1, baseCornerPx + outerSpread1)
                 )
-            } else {
-                Modifier
+                val outerSpread2 = 7.5.dp.toPx()
+                drawRoundRect(
+                    color = NetflixRed.copy(alpha = 0.16f * glowAlpha),
+                    topLeft = Offset(-outerSpread2, -outerSpread2),
+                    size = Size(size.width + outerSpread2 * 2f, size.height + outerSpread2 * 2f),
+                    cornerRadius = CornerRadius(baseCornerPx + outerSpread2, baseCornerPx + outerSpread2)
+                )
+                val outerSpread3 = 4.5.dp.toPx()
+                drawRoundRect(
+                    color = Color(0xFFFF2A36).copy(alpha = 0.25f * glowAlpha),
+                    topLeft = Offset(-outerSpread3, -outerSpread3),
+                    size = Size(size.width + outerSpread3 * 2f, size.height + outerSpread3 * 2f),
+                    cornerRadius = CornerRadius(baseCornerPx + outerSpread3, baseCornerPx + outerSpread3)
+                )
+                val outerSpread4 = 2.dp.toPx()
+                drawRoundRect(
+                    color = Color(0xFFFF5C66).copy(alpha = 0.34f * glowAlpha),
+                    topLeft = Offset(-outerSpread4, -outerSpread4),
+                    size = Size(size.width + outerSpread4 * 2f, size.height + outerSpread4 * 2f),
+                    cornerRadius = CornerRadius(baseCornerPx + outerSpread4, baseCornerPx + outerSpread4)
+                )
+                drawRoundRect(
+                    color = Color(0xFFFF8F96).copy(alpha = 0.42f * glowAlpha),
+                    topLeft = Offset(-0.75.dp.toPx(), -0.75.dp.toPx()),
+                    size = Size(size.width + 1.5.dp.toPx(), size.height + 1.5.dp.toPx()),
+                    cornerRadius = CornerRadius(baseCornerPx + 1.dp.toPx(), baseCornerPx + 1.dp.toPx()),
+                    style = Stroke(width = 1.5.dp.toPx())
+                )
             }
-        )
+        }
         .onFocusChanged { state ->
             if (!state.isFocused) {
                 centerKeyHeld = false

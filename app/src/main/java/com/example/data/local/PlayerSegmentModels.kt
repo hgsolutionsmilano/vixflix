@@ -143,21 +143,54 @@ fun formatSeriesSeasonEpisodeLine(
 }
 
 /**
- * Verifica in modo rigoroso se la posizione corrente rientra in un intervallo intro affidabile.
+ * Verifica in modo rigoroso se la posizione corrente rientra in un intervallo intro affidabile
+ * associato esattamente alla serie, stagione ed episodio attualmente in riproduzione.
  * Restituisce sempre `false` quando non esistono dati intro reali per lo specifico episodio.
  */
 fun isIntroActiveAtPosition(
     segment: IntroSegmentEntity?,
     positionMs: Long,
-    durationMs: Long
+    durationMs: Long,
+    seriesTmdbId: Int? = null,
+    seasonNumber: Int? = null,
+    episodeNumber: Int? = null
 ): Boolean {
     if (segment == null) return false
     val source = IntroSegmentSource.fromStorageKey(segment.source)
     if (source == IntroSegmentSource.UNAVAILABLE) return false
+    if (seriesTmdbId != null && segment.seriesTmdbId != seriesTmdbId) return false
+    if (seasonNumber != null && segment.seasonNumber != seasonNumber) return false
+    if (episodeNumber != null && segment.episodeNumber != episodeNumber) return false
     if (segment.introStartMs < 0L) return false
     if (segment.introEndMs <= segment.introStartMs + 3_000L) return false
     if (durationMs > 0L && segment.introEndMs > durationMs) return false
     return positionMs in segment.introStartMs until segment.introEndMs
+}
+
+/**
+ * Formatta la risoluzione video reale dello stream ExoPlayer in formato compatto leggibile
+ * (es. `4K`, `1440p`, `1080p`, `720p`, `480p`, `360p`), oppure `null` se la traccia video non ha ancora esposto dimensioni valide.
+ */
+fun formatVideoResolutionLabel(width: Int, height: Int): String? {
+    if (width <= 0 && height <= 0) return null
+    val effectiveHeight = when {
+        height > 0 && width > 0 -> minOf(width, height)
+        height > 0 -> height
+        else -> (width * 9) / 16
+    }
+    val effectiveWidth = maxOf(width, height)
+    return when {
+        effectiveHeight >= 2160 || effectiveWidth >= 3840 -> "4K"
+        effectiveHeight >= 1440 || effectiveWidth >= 2560 -> "1440p"
+        effectiveHeight >= 1080 || effectiveWidth >= 1920 -> "1080p"
+        effectiveHeight >= 720 || effectiveWidth >= 1280 -> "720p"
+        effectiveHeight >= 540 -> "540p"
+        effectiveHeight >= 480 || effectiveWidth >= 854 -> "480p"
+        effectiveHeight >= 360 || effectiveWidth >= 640 -> "360p"
+        effectiveHeight >= 240 -> "240p"
+        effectiveHeight > 0 -> "${effectiveHeight}p"
+        else -> null
+    }
 }
 
 /**

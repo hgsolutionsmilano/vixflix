@@ -161,6 +161,41 @@ internal fun PlayerCleanTimeDisplay(
 }
 
 /**
+ * Indicatore discreto della risoluzione reale dello stream video (`1080p`, `720p`, `4K`, ecc.)
+ * posizionato nella barra inferiore sulla stessa linea orizzontale dei pulsanti e del tempo.
+ * Se la risoluzione reale non è ancora disponibile, non mostra valori fittizi.
+ */
+@Composable
+internal fun PlayerStreamingResolutionBadge(
+    resolutionLabel: String?,
+    modifier: Modifier = Modifier
+) {
+    val cleanLabel = resolutionLabel?.trim()?.takeIf { it.isNotBlank() } ?: return
+    Surface(
+        color = NetflixCardSurface.copy(alpha = 0.88f),
+        shape = RoundedCornerShape(6.dp),
+        border = BorderStroke(1.dp, NetflixWhite.copy(alpha = 0.28f)),
+        modifier = modifier.testTag("player_resolution_badge")
+    ) {
+        Text(
+            text = cleanLabel,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 13.sp,
+                letterSpacing = 0.6.sp
+            ),
+            color = NetflixWhite,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier
+                .padding(horizontal = 10.dp, vertical = 5.dp)
+                .testTag("player_resolution_text")
+        )
+    }
+}
+
+/**
  * Rappresentazione di una traccia audio selezionabile nel player:
  * può corrispondere a una traccia reale esposta da ExoPlayer (`mediaTrackGroup != null`)
  * oppure a una sorgente lingua VixSrc già supportata dall'app (`streamLangCode != null`).
@@ -730,9 +765,15 @@ internal fun PlayerAudioSelectorPanel(
     onSelectTrack: (PlayerAudioTrackOption) -> Unit,
     onSelectSubtitle: (PlayerSubtitleTrackOption) -> Unit = {},
     onDismiss: () -> Unit,
+    isSeries: Boolean = false,
+    currentIntroSegment: com.example.data.local.IntroSegmentEntity? = null,
+    currentPositionMsProvider: (() -> Long)? = null,
+    onSaveIntroSegment: ((Long, Long) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val totalSelectableCount = tracks.size + subtitleTracks.size
+    val showLocalIntroSection = isSeries && onSaveIntroSegment != null
+    val extraIntroControlsCount = if (showLocalIntroSection) 2 else 0
+    val totalSelectableCount = tracks.size + subtitleTracks.size + extraIntroControlsCount
     val allFocusRequesters = remember(totalSelectableCount) {
         List(totalSelectableCount) { FocusRequester() }
     }
@@ -740,6 +781,9 @@ internal fun PlayerAudioSelectorPanel(
         tracks.indexOfFirst { it.isSelected }.takeIf { it >= 0 } ?: 0
     }
     val scrollState = rememberScrollState()
+    var pendingIntroStartMs by remember(currentIntroSegment) {
+        mutableStateOf(currentIntroSegment?.introStartMs)
+    }
 
     LaunchedEffect(totalSelectableCount) {
         if (allFocusRequesters.isNotEmpty()) {
@@ -756,7 +800,7 @@ internal fun PlayerAudioSelectorPanel(
         modifier = modifier
             .widthIn(max = 440.dp)
             .fillMaxWidth()
-            .heightIn(max = 460.dp)
+            .heightIn(max = 580.dp)
             .testTag("player_audio_selector_panel")
     ) {
         Column(
@@ -880,6 +924,86 @@ internal fun PlayerAudioSelectorPanel(
                             onDismiss = onDismiss
                         )
                     }
+                }
+            }
+
+            if (showLocalIntroSection && onSaveIntroSegment != null) {
+                HorizontalDivider(
+                    color = NetflixElevatedSurface.copy(alpha = 0.9f),
+                    thickness = 1.dp,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("player_local_intro_section")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipNext,
+                            contentDescription = null,
+                            tint = NetflixRed,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "INTERVALLO INTRO EPISODIO",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.8.sp
+                            ),
+                            color = NetflixWhite
+                        )
+                    }
+
+                    val existingSummary = if (currentIntroSegment != null) {
+                        "Salvato: ${formatMsToHhMmSs(currentIntroSegment.introStartMs)} → ${formatMsToHhMmSs(currentIntroSegment.introEndMs)}"
+                    } else if (pendingIntroStartMs != null) {
+                        "Inizio fissato a ${formatMsToHhMmSs(pendingIntroStartMs ?: 0L)} • Seleziona Fine Intro"
+                    } else {
+                        "Nessun intervallo intro salvato per questo episodio"
+                    }
+
+                    val startIdx = tracks.size + subtitleTracks.size
+                    val endIdx = startIdx + 1
+                    val startRequester = allFocusRequesters[startIdx]
+                    val endRequester = allFocusRequesters[endIdx]
+
+                    PlayerTrackOptionRow(
+                        title = "Segna Inizio Intro al punto attuale",
+                        details = existingSummary,
+                        isSelected = pendingIntroStartMs != null,
+                        testTag = "player_mark_intro_start_button",
+                        focusRequester = startRequester,
+                        prevRequester = allFocusRequesters.getOrNull(startIdx - 1),
+                        nextRequester = endRequester,
+                        onClick = {
+                            val nowPos = (currentPositionMsProvider?.invoke() ?: 0L).coerceAtLeast(0L)
+                            pendingIntroStartMs = nowPos
+                        },
+                        onDismiss = onDismiss
+                    )
+
+                    PlayerTrackOptionRow(
+                        title = "Segna Fine Intro e salva per questo episodio",
+                        details = "Salva localmente l'intervallo intro per attivare SALTA INTRO",
+                        isSelected = currentIntroSegment != null,
+                        testTag = "player_mark_intro_end_button",
+                        focusRequester = endRequester,
+                        prevRequester = startRequester,
+                        nextRequester = null,
+                        onClick = {
+                            val nowPos = (currentPositionMsProvider?.invoke() ?: 0L).coerceAtLeast(0L)
+                            val startMs = pendingIntroStartMs ?: currentIntroSegment?.introStartMs ?: 0L
+                            val endMs = if (nowPos > startMs + 3_000L) nowPos else (startMs + 60_000L)
+                            onSaveIntroSegment(startMs, endMs)
+                        },
+                        onDismiss = onDismiss
+                    )
                 }
             }
         }

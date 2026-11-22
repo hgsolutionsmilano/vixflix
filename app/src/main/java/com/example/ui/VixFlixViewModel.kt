@@ -14,8 +14,10 @@ import com.example.data.local.CreditsSegmentEntity
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
 import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.IntroSegmentEntity
+import com.example.data.local.IntroSegmentSource
 import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.PlayerAdvancedSettings
+import com.example.data.local.PlayerSegmentKeys
 import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.local.UserProfileEntity
@@ -38,10 +40,12 @@ import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
+import com.example.data.remote.VixSrcAvailabilityStatus
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -63,7 +67,6 @@ enum class NavTab(val label: String) {
     HOME("Home"),
     SERIES("Serie TV"),
     MOVIES("Film"),
-    NEW_POPULAR("Nuovi & Popolari"),
     MY_LIST("La Mia Lista"),
     SETTINGS("Impostazioni")
 }
@@ -407,11 +410,72 @@ class VixFlixViewModel @JvmOverloads constructor(
         updateDetailStack(currentStack.dropLast(1) + updated)
     }
 
+    private val enrichedWatchProgressKeys = ConcurrentHashMap.newKeySet<String>()
+
     init {
         (application as? VixFlixApplication)?.registerMemoryTrimListener(memoryTrimCallback)
         initUserProfiles()
         loadCatalog(forceRefresh = false)
         initGitHubUpdateChecker()
+        initContinueWatchingDurationEnricher()
+    }
+
+    /**
+     * Arricchisce automaticamente in background la durata reale (`durationMs`) delle voci
+     * "Continua a guardare" che non dispongono ancora della durata del film o dell'episodio corrente,
+     * così da mostrare il badge `<X> MIN RIMANENTI` appena il metadato TMDB è disponibile.
+     */
+    private fun initContinueWatchingDurationEnricher() {
+        viewModelScope.launch(Dispatchers.IO) {
+            continueWatching.collect { entries ->
+                entries.forEach { entry ->
+                    if (entry.durationMs <= 0L) {
+                        val enrichKey = "${entry.profileId}_${entry.id}_${entry.seasonNumber ?: 0}_${entry.episodeNumber ?: 0}"
+                        if (enrichedWatchProgressKeys.add(enrichKey)) {
+                            launch(Dispatchers.IO) {
+                                val resolvedDurationMs: Long? = if (entry.mediaType == "tv") {
+                                    val s = entry.seasonNumber ?: 1
+                                    val e = entry.episodeNumber ?: 1
+                                    val eps = repository.getCachedSeasonEpisodes(entry.tmdbId, s)?.value
+                                        ?: repository.fetchSeasonEpisodes(entry.tmdbId, s).getOrNull()
+                                    eps?.firstOrNull { it.episodeNumber == e }
+                                        ?.runtime
+                                        ?.takeIf { it in 1..600 }
+                                        ?.let { it * 60_000L }
+                                } else {
+                                    val item = MediaItem(
+                                        id = entry.tmdbId,
+                                        mediaType = entry.mediaType,
+                                        title = entry.title,
+                                        overview = entry.overview,
+                                        posterPath = entry.posterPath,
+                                        backdropPath = entry.backdropPath,
+                                        voteAverage = entry.voteAverage,
+                                        releaseYear = entry.releaseYear
+                                    )
+                                    val det = repository.getCachedMediaDetails(item)?.value
+                                        ?: repository.fetchMediaDetails(item).getOrNull()
+                                    det?.runtimeMinutes
+                                        ?.takeIf { it in 1..600 }
+                                        ?.let { it * 60_000L }
+                                }
+                                if (resolvedDurationMs != null && resolvedDurationMs > 0L) {
+                                    repository.updateWatchProgressDuration(
+                                        id = entry.id,
+                                        profileId = entry.profileId,
+                                        seasonNumber = entry.seasonNumber,
+                                        episodeNumber = entry.episodeNumber,
+                                        resolvedDurationMs = resolvedDurationMs
+                                    )
+                                } else {
+                                    enrichedWatchProgressKeys.remove(enrichKey)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun initUserProfiles() {
@@ -488,7 +552,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                     episodeNumber = activeSession.episodeNumber,
                     episodeTitle = activeSession.episodeTitle,
                     positionMs = livePos,
-                    durationMs = 5_400_000L,
+                    durationMs = activeSession.metadataDurationMs ?: 0L,
                     profileId = previousProfileId
                 )
             }
@@ -1645,7 +1709,7 @@ class VixFlixViewModel @JvmOverloads constructor(
                         episodeNumber = targetEpisode,
                         episodeTitle = targetEpTitle,
                         positionMs = startPosMs,
-                        durationMs = updatedMetaDurationMs ?: 5_400_000L,
+                        durationMs = updatedMetaDurationMs ?: 0L,
                         profileId = playbackProfileId
                     )
                 }
@@ -1722,6 +1786,15 @@ class VixFlixViewModel @JvmOverloads constructor(
                             hasCheckedPreviousEpisode = true,
                             metadataDurationMs = resolvedMetaDurationMs
                         )
+                        if (resolvedMetaDurationMs != null && resolvedMetaDurationMs > 0L && startPosMs > 0L) {
+                            repository.updateWatchProgressDuration(
+                                id = item.uniqueKey,
+                                profileId = playbackProfileId,
+                                seasonNumber = targetSeason,
+                                episodeNumber = targetEpisode,
+                                resolvedDurationMs = resolvedMetaDurationMs
+                            )
+                        }
                     }
                 }
             }
@@ -1950,6 +2023,52 @@ class VixFlixViewModel @JvmOverloads constructor(
             explicitStartPositionMs = 0L,
             expectedDurationMs = prev.runtimeMinutes?.takeIf { it in 1..600 }?.let { it * 60_000L }
         )
+    }
+
+    /**
+     * Memorizza localmente nel database Room l'intervallo di Intro (`introStartMs` -> `introEndMs`)
+     * per l'episodio della serie TV attualmente in riproduzione e aggiorna immediatamente `playbackSession.introSegment`.
+     */
+    fun saveCurrentEpisodeIntroSegment(
+        introStartMs: Long,
+        introEndMs: Long,
+        source: IntroSegmentSource = IntroSegmentSource.LOCAL_DB
+    ) {
+        val session = _playbackSession.value ?: return
+        if (!session.mediaItem.isSeries) return
+        val season = session.seasonNumber ?: 1
+        val episode = session.episodeNumber ?: 1
+        if (introStartMs < 0L || introEndMs <= introStartMs + 3_000L) return
+
+        val entity = IntroSegmentEntity(
+            episodeKey = PlayerSegmentKeys.introEpisodeKey(session.mediaItem.id, season, episode),
+            seriesTmdbId = session.mediaItem.id,
+            seasonNumber = season,
+            episodeNumber = episode,
+            introStartMs = introStartMs,
+            introEndMs = introEndMs,
+            source = source.storageKey,
+            updatedAtMs = System.currentTimeMillis()
+        )
+        _playbackSession.value = session.copy(introSegment = entity)
+        viewModelScope.launch {
+            repository.saveIntroSegment(
+                seriesTmdbId = session.mediaItem.id,
+                seasonNumber = season,
+                episodeNumber = episode,
+                introStartMs = introStartMs,
+                introEndMs = introEndMs,
+                source = source
+            )
+        }
+    }
+
+    fun getCachedPosterVixSrcAvailability(item: MediaItem): VixSrcAvailabilityStatus {
+        return repository.getCachedVixSrcAvailability(item, streamLanguage.value)
+    }
+
+    suspend fun checkPosterVixSrcAvailability(item: MediaItem): VixSrcAvailabilityStatus {
+        return repository.checkVixSrcAvailability(item, streamLanguage.value)
     }
 
     /**

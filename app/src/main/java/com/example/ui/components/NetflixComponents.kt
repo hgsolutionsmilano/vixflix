@@ -112,7 +112,11 @@ import com.example.data.local.WatchProgressEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.example.data.remote.TmdbWatchProviderDto
+import com.example.data.remote.VixSrcAvailabilityStatus
 import com.example.ui.NavTab
 import com.example.ui.theme.BebasNeueFontFamily
 import com.example.ui.theme.NetflixBlack
@@ -125,6 +129,75 @@ import com.example.ui.theme.NetflixMatchGreen
 import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
+import kotlinx.coroutines.delay
+
+/**
+ * Resolver asincrono e cache-first per l'indicatore di disponibilità VixSrc sulle locandine.
+ */
+class VixSrcAvailabilityResolver(
+    val getCached: (MediaItem) -> VixSrcAvailabilityStatus,
+    val checkAsync: suspend (MediaItem) -> VixSrcAvailabilityStatus
+)
+
+val LocalVixSrcAvailabilityResolver = staticCompositionLocalOf<VixSrcAvailabilityResolver?> { null }
+
+@Composable
+fun rememberPosterVixSrcAvailability(
+    item: MediaItem,
+    overrideStatus: VixSrcAvailabilityStatus? = null
+): VixSrcAvailabilityStatus {
+    if (overrideStatus != null) return overrideStatus
+    val resolver = LocalVixSrcAvailabilityResolver.current ?: return VixSrcAvailabilityStatus.UNKNOWN
+    var status by remember(item.uniqueKey, resolver) {
+        mutableStateOf(resolver.getCached(item))
+    }
+    LaunchedEffect(item.uniqueKey, resolver) {
+        val currentCached = resolver.getCached(item)
+        if (currentCached != VixSrcAvailabilityStatus.UNKNOWN) {
+            status = currentCached
+        } else {
+            // Breve debounce per annullare automaticamente i controlli delle locandine che escono dallo schermo durante lo scroll rapido
+            delay(75L)
+            status = resolver.checkAsync(item)
+        }
+    }
+    return status
+}
+
+@Composable
+fun PosterVixSrcAvailabilityDot(
+    uniqueKey: String,
+    status: VixSrcAvailabilityStatus,
+    modifier: Modifier = Modifier
+) {
+    if (status == VixSrcAvailabilityStatus.UNKNOWN) return
+    val dotColor = when (status) {
+        VixSrcAvailabilityStatus.AVAILABLE -> NetflixMatchGreen
+        VixSrcAvailabilityStatus.UNAVAILABLE -> NetflixRed
+        VixSrcAvailabilityStatus.UNKNOWN -> return
+    }
+    val statusDescription = when (status) {
+        VixSrcAvailabilityStatus.AVAILABLE -> "Disponibile su VixSrc"
+        VixSrcAvailabilityStatus.UNAVAILABLE -> "Non disponibile su VixSrc"
+        VixSrcAvailabilityStatus.UNKNOWN -> ""
+    }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(11.dp)
+            .clip(CircleShape)
+            .background(NetflixBlack.copy(alpha = 0.78f))
+            .semantics { contentDescription = statusDescription }
+            .testTag("poster_vixsrc_indicator_$uniqueKey")
+    ) {
+        Box(
+            modifier = Modifier
+                .size(7.5.dp)
+                .clip(CircleShape)
+                .background(dotColor)
+        )
+    }
+}
 
 @Composable
 fun NetflixTopBar(
@@ -1238,41 +1311,54 @@ private fun ContinueWatchingCard(
                         .background(NetflixBlack.copy(alpha = if (isFocused) 0.2f else 0.38f))
                 )
 
-                // Badge Episodio / Minuto di partenza API
-                Surface(
-                    color = NetflixBlack.copy(alpha = 0.8f),
-                    shape = RoundedCornerShape(4.dp),
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp)
-                ) {
-                    val label = if (entry.mediaType == "tv" && entry.seasonNumber != null && entry.episodeNumber != null) {
-                        "S${entry.seasonNumber}:E${entry.episodeNumber} • Min ${entry.startMinutes}"
-                    } else {
-                        "Da min ${entry.startMinutes} (${formatSecondsToMmSs(entry.startSeconds)})"
+                // Badge in alto a sinistra: SOLO per le Serie TV ("STAGIONE X · EPISODIO Y")
+                val hasValidSeriesEpisode = entry.mediaType.equals("tv", ignoreCase = true) &&
+                    (entry.seasonNumber ?: 0) > 0 &&
+                    (entry.episodeNumber ?: 0) > 0
+                if (hasValidSeriesEpisode) {
+                    Surface(
+                        color = NetflixBlack.copy(alpha = 0.82f),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
+                            .testTag("cw_season_episode_badge_${entry.id}")
+                    ) {
+                        Text(
+                            text = "STAGIONE ${entry.seasonNumber} · EPISODIO ${entry.episodeNumber}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
                     }
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NetflixWhite,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                    )
                 }
 
-                // Percentuale progresso compatta in alto a destra sulla miniatura (mantiene il progresso senza righe sotto il titolo)
-                if (entry.completionPercent > 0) {
+                // Badge in alto a destra: Minuti rimanenti ("<N> MIN RIMANENTI"), mostrato solo se la durata reale è attendibile
+                val hasReliableRemainingDuration = entry.durationMs > 0L && entry.durationMs > entry.positionMs
+                if (hasReliableRemainingDuration) {
+                    val remainingMinutes = (((entry.durationMs - entry.positionMs).coerceAtLeast(0L)) / 60_000L)
+                        .toInt()
+                        .coerceAtLeast(1)
                     Surface(
-                        color = NetflixBlack.copy(alpha = 0.8f),
+                        color = NetflixBlack.copy(alpha = 0.82f),
                         shape = RoundedCornerShape(4.dp),
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(6.dp)
+                            .testTag("cw_remaining_minutes_badge_${entry.id}")
                     ) {
                         Text(
-                            text = "${entry.completionPercent}%",
+                            text = "$remainingMinutes MIN RIMANENTI",
                             style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
                             color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                         )
                     }
@@ -1590,29 +1676,15 @@ private fun Top10PosterCard(
                     )
                 }
 
-                // Sovrimpressione immediata con il titolo quando evidenziato con il telecomando
-                if (isFocused) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(Color.Transparent, NetflixBlack.copy(alpha = 0.94f))
-                                )
-                            )
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = item.title,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = NetflixWhite,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
+                // Pallino discreto disponibilità streaming VixSrc in basso a destra
+                val availabilityStatus = rememberPosterVixSrcAvailability(item)
+                PosterVixSrcAvailabilityDot(
+                    uniqueKey = item.uniqueKey,
+                    status = availabilityStatus,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(7.dp)
+                )
             }
         }
     }
@@ -1755,9 +1827,14 @@ fun MediaPosterCard(
     listState: LazyListState? = null,
     onQuickPlay: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
-    onFocused: () -> Unit = {}
+    onFocused: () -> Unit = {},
+    vixSrcAvailabilityOverride: VixSrcAvailabilityStatus? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val availabilityStatus = rememberPosterVixSrcAvailability(
+        item = item,
+        overrideStatus = vixSrcAvailabilityOverride
+    )
 
     Card(
         shape = RoundedCornerShape(10.dp),
@@ -1837,31 +1914,14 @@ fun MediaPosterCard(
                 }
             }
 
-            // Overlay titolo pulito quando la locandina è selezionata col telecomando TV (nessuna scritta verde sotto)
-            if (isFocused) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                0f to Color.Transparent,
-                                0.35f to NetflixBlack.copy(alpha = 0.85f),
-                                1f to NetflixBlack.copy(alpha = 0.96f)
-                            )
-                        )
-                        .padding(horizontal = 8.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = item.title,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = NetflixWhite,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
+            // Pallino discreto disponibilità streaming VixSrc in basso a destra (nessun titolo o cornice bianca al focus)
+            PosterVixSrcAvailabilityDot(
+                uniqueKey = item.uniqueKey,
+                status = availabilityStatus,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(7.dp)
+            )
         }
     }
 }

@@ -139,11 +139,13 @@ import com.example.ui.PlatformFilterMediaType
 import com.example.ui.PlaybackSession
 import com.example.ui.StreamingPlatformUiState
 import com.example.ui.VixFlixViewModel
+import androidx.compose.runtime.CompositionLocalProvider
 import com.example.ui.components.ContinueWatchingSection
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.GlobalDpadFocusObserverHost
+import com.example.ui.components.LocalVixSrcAvailabilityResolver
 import com.example.ui.components.MediaCatalogRow
 import com.example.ui.components.MediaPosterCard
 import com.example.ui.components.MovieGenreChipBar
@@ -154,6 +156,7 @@ import com.example.ui.components.ProfileAvatarArtwork
 import com.example.ui.components.StreamingPlatformsStrip
 import com.example.ui.components.Top10Section
 import com.example.ui.components.VixFlixSplashScreen
+import com.example.ui.components.VixSrcAvailabilityResolver
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.recoverFocusFromCandidates
 import com.example.ui.components.rememberIsTvDevice
@@ -334,10 +337,10 @@ fun VixFlixAppScreen(
         else -> when (catalogState) {
             is CatalogUiState.Error -> retryButtonFocusRequester
             is CatalogUiState.Success -> {
-                when {
-                    selectedTab == NavTab.NEW_POPULAR -> firstRowFocusRequester
-                    selectedTab == NavTab.HOME && platformState.selectedProvider != null -> platformStripFocusRequester
-                    else -> heroPlayFocusRequester
+                if (selectedTab == NavTab.HOME && platformState.selectedProvider != null) {
+                    platformStripFocusRequester
+                } else {
+                    heroPlayFocusRequester
                 }
             }
             is CatalogUiState.Loading -> null
@@ -388,7 +391,6 @@ fun VixFlixAppScreen(
             Triple(NavTab.HOME, "Home", Icons.Default.Home),
             Triple(NavTab.SERIES, "Serie TV", Icons.Default.Tv),
             Triple(NavTab.MOVIES, "Film", Icons.Default.Movie),
-            Triple(NavTab.NEW_POPULAR, "Top & Nuovi", Icons.Default.NewReleases),
             Triple(NavTab.MY_LIST, "La Mia Lista", Icons.Default.BookmarkBorder),
             Triple(NavTab.SETTINGS, "Impostazioni", Icons.Default.Settings)
         )
@@ -401,6 +403,14 @@ fun VixFlixAppScreen(
         continueWatching.associateBy { it.id }
     }
 
+    val vixSrcAvailabilityResolver = remember(viewModel, streamLang) {
+        VixSrcAvailabilityResolver(
+            getCached = viewModel::getCachedPosterVixSrcAvailability,
+            checkAsync = viewModel::checkPosterVixSrcAvailability
+        )
+    }
+
+    CompositionLocalProvider(LocalVixSrcAvailabilityResolver provides vixSrcAvailabilityResolver) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -1317,7 +1327,8 @@ fun VixFlixAppScreen(
                     onInvalidateAndRetryStream = viewModel::invalidateAndRetryCurrentStream,
                     onPreResolveNextEpisode = viewModel::preResolveNextEpisode,
                     advancedSettings = playerAdvancedSettings,
-                    onCompleteMovieAndClose = viewModel::completeCurrentMovieAndClose
+                    onCompleteMovieAndClose = viewModel::completeCurrentMovieAndClose,
+                    onSaveIntroSegment = viewModel::saveCurrentEpisodeIntroSegment
                 )
             }
         }
@@ -1376,6 +1387,7 @@ fun VixFlixAppScreen(
             )
         }
         }
+    }
     }
 }
 
@@ -2015,7 +2027,7 @@ private fun CatalogFeedContent(
         continueWatching.associateBy { it.id }
     }
 
-    val showHero = selectedTab != NavTab.NEW_POPULAR && activeMovieGenre == null && activePlatform == null
+    val showHero = activeMovieGenre == null && activePlatform == null
     val hasContinueWatching = filteredContinueWatching.isNotEmpty() && activeMovieGenre == null && activePlatform == null
     val continueWatchingFocusRequester = remember { FocusRequester() }
     val catalogListState = rememberLazyListState()
@@ -2262,15 +2274,6 @@ private fun CatalogFeedContent(
             ).filter { it.items.isNotEmpty() }
         }
 
-        val newPopularCatalogRows = remember(feed) {
-            listOf(
-                CatalogRowSpec("new_top10", "Top 10 in Italia Oggi", feed.top10Today, isTop10 = true),
-                CatalogRowSpec("new_cinema", "Nuove Uscite al Cinema", feed.nowPlayingMovies),
-                CatalogRowSpec("new_tv", "Serie TV Nuove e Popolari", feed.trendingTv),
-                CatalogRowSpec("new_top_rated", "Più Votati dalla Critica", feed.topRatedMovies)
-            ).filter { it.items.isNotEmpty() }
-        }
-
         // Costruisce la catena ordinata di tutte le sezioni focusabili con il loro indice esatto nella LazyColumn
         val navTargets = mutableListOf<CatalogNavTarget>()
         var nextLazyIdx = 0
@@ -2300,8 +2303,6 @@ private fun CatalogFeedContent(
                     resetToTop = true
                 )
             )
-        } else if (selectedTab == NavTab.NEW_POPULAR) {
-            nextLazyIdx++ // new_popular_top_spacer
         }
 
         if (hasContinueWatching) {
@@ -2310,7 +2311,7 @@ private fun CatalogFeedContent(
                     key = "row_continue_watching",
                     lazyIndex = nextLazyIdx++,
                     requester = continueWatchingFocusRequester,
-                    resetToTop = (selectedTab == NavTab.NEW_POPULAR)
+                    resetToTop = false
                 )
             )
         }
@@ -2483,24 +2484,6 @@ private fun CatalogFeedContent(
                 }
             }
 
-            NavTab.NEW_POPULAR -> {
-                newPopularCatalogRows.forEachIndexed { rowIdx, spec ->
-                    val rowRequester = if (rowIdx == 0) {
-                        firstRowFocusRequester
-                    } else {
-                        requesterForKey(spec.key)
-                    }
-                    navTargets.add(
-                        CatalogNavTarget(
-                            key = spec.key,
-                            lazyIndex = nextLazyIdx++,
-                            requester = rowRequester,
-                            resetToTop = (rowIdx == 0 && !hasContinueWatching)
-                        )
-                    )
-                }
-            }
-
             else -> Unit
         }
 
@@ -2574,10 +2557,6 @@ private fun CatalogFeedContent(
                         onItemFocused = onRememberContentFocus,
                         isTvLayout = isTvLayout
                     )
-                }
-            } else if (selectedTab == NavTab.NEW_POPULAR) {
-                item(key = "new_popular_top_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(if (isTvLayout) 16.dp else 118.dp))
                 }
             }
 
@@ -3386,47 +3365,6 @@ private fun CatalogFeedContent(
                                 val currentTarget = targetFor(spec.key)
                                 val prev = prevTargetFor(spec.key)
                                 val next = nextTargetFor(spec.key)
-                                MediaCatalogRow(
-                                    title = spec.title,
-                                    items = spec.items,
-                                    onItemClick = onOpenDetails,
-                                    onItemQuickPlay = onPlayItem,
-                                    onItemLongClick = onTvLongPressPoster,
-                                    onItemFocused = onRememberContentFocus,
-                                    firstItemFocusRequester = currentTarget?.requester,
-                                    upFocusRequester = prev?.requester,
-                                    downFocusRequester = next?.requester,
-                                    onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
-                                    onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                    navRailFocusRequester = navRailFocusRequester
-                                )
-                            }
-                        }
-                    }
-                }
-
-                NavTab.NEW_POPULAR -> {
-                    newPopularCatalogRows.forEach { spec ->
-                        item(key = spec.key, contentType = if (spec.isTop10) "top10_row" else "media_row") {
-                            val currentTarget = targetFor(spec.key)
-                            val prev = prevTargetFor(spec.key)
-                            val next = nextTargetFor(spec.key)
-                            if (spec.isTop10) {
-                                Top10Section(
-                                    title = spec.title,
-                                    items = spec.items,
-                                    onItemClick = onOpenDetails,
-                                    onItemQuickPlay = onPlayItem,
-                                    onItemLongClick = onTvLongPressPoster,
-                                    onItemFocused = onRememberContentFocus,
-                                    firstItemFocusRequester = currentTarget?.requester,
-                                    upFocusRequester = prev?.requester,
-                                    downFocusRequester = next?.requester,
-                                    onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
-                                    onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                    navRailFocusRequester = navRailFocusRequester
-                                )
-                            } else {
                                 MediaCatalogRow(
                                     title = spec.title,
                                     items = spec.items,

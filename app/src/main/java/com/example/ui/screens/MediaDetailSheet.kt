@@ -61,12 +61,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import java.util.Locale
+import androidx.compose.foundation.border
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -1411,8 +1416,9 @@ fun MediaDetailScreen(
                             }
                             LazyRow(
                                 state = castListState,
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                modifier = Modifier.testTag("detail_cast_section")
                             ) {
                                 itemsIndexed(
                                     items = castList,
@@ -1712,7 +1718,7 @@ fun MediaDetailScreen(
                             castItemIndex != null -> castItemIndex to firstCastFocus
                             else -> null
                         }
-                        item(key = "detail_similar_section", contentType = "detail_similar") {
+                        item(key = "detail_similar_section_${currentItem.uniqueKey}", contentType = "detail_similar") {
                             Spacer(modifier = Modifier.height(20.dp))
                             val handleSimilarSelection: (MediaItem) -> Unit = { sim ->
                                 if (onSelectSimilarWithScroll != null) {
@@ -1725,30 +1731,34 @@ fun MediaDetailScreen(
                                     onSelectSimilar(sim)
                                 }
                             }
-                            MediaCatalogRow(
-                                title = "Titoli Simili su TMDB",
-                                items = similarList,
-                                onItemClick = handleSimilarSelection,
-                                onItemQuickPlay = handleSimilarSelection,
-                                onItemFocused = {
-                                    focusTracker.userMovedFocus = true
-                                    focusTracker.heroStageLockActive = false
-                                },
-                                firstItemFocusRequester = firstSimilarFocus,
-                                upFocusRequester = upToBeforeSimilarTarget?.second ?: detailPlayFocusRequester,
-                                onUpKey = {
-                                    if (upToBeforeSimilarTarget != null) {
-                                        navigateToDetailSection(
-                                            upToBeforeSimilarTarget.first,
-                                            upToBeforeSimilarTarget.second,
-                                            false
-                                        )
-                                    } else {
-                                        returnToHeroStage()
-                                    }
-                                },
-                                onDownKey = { true }
-                            )
+                            androidx.compose.runtime.key(currentItem.uniqueKey) {
+                                Box(modifier = Modifier.testTag("detail_similar_section_${currentItem.uniqueKey}")) {
+                                    MediaCatalogRow(
+                                        title = "Titoli Simili su TMDB",
+                                        items = similarList,
+                                        onItemClick = handleSimilarSelection,
+                                        onItemQuickPlay = handleSimilarSelection,
+                                        onItemFocused = {
+                                            focusTracker.userMovedFocus = true
+                                            focusTracker.heroStageLockActive = false
+                                        },
+                                        firstItemFocusRequester = firstSimilarFocus,
+                                        upFocusRequester = upToBeforeSimilarTarget?.second ?: detailPlayFocusRequester,
+                                        onUpKey = {
+                                            if (upToBeforeSimilarTarget != null) {
+                                                navigateToDetailSection(
+                                                    upToBeforeSimilarTarget.first,
+                                                    upToBeforeSimilarTarget.second,
+                                                    false
+                                                )
+                                            } else {
+                                                returnToHeroStage()
+                                            }
+                                        },
+                                        onDownKey = { true }
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -2037,16 +2047,17 @@ private fun CastCard(
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val cardShape = RoundedCornerShape(14.dp)
 
     Column(
         modifier = modifier
-            .width(96.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isFocused) NetflixCardSurface else Color.Transparent)
+            .width(104.dp)
             .tvFocusableControl(
-                shape = RoundedCornerShape(12.dp),
-                focusedScale = 1.08f,
+                shape = cardShape,
+                focusedScale = 1.09f,
                 focusedBorderColor = NetflixWhite,
+                unfocusedBorderColor = Color.Transparent,
+                borderWidth = 2.5.dp,
                 focusTag = "cast_card_${actor.id}",
                 onFocusChange = { focused ->
                     isFocused = focused
@@ -2054,14 +2065,53 @@ private fun CastCard(
                 },
                 onClick = onClick
             )
-            .padding(horizontal = 6.dp, vertical = 8.dp)
+            .drawBehind {
+                if (isFocused) {
+                    val cornerPx = 14.dp.toPx()
+                    val spreadOuter = 6.dp.toPx()
+                    drawRoundRect(
+                        color = NetflixRed.copy(alpha = 0.28f),
+                        topLeft = Offset(-spreadOuter, -spreadOuter),
+                        size = Size(size.width + spreadOuter * 2f, size.height + spreadOuter * 2f),
+                        cornerRadius = CornerRadius(cornerPx + spreadOuter, cornerPx + spreadOuter)
+                    )
+                    val spreadInner = 2.5.dp.toPx()
+                    drawRoundRect(
+                        color = NetflixWhite.copy(alpha = 0.22f),
+                        topLeft = Offset(-spreadInner, -spreadInner),
+                        size = Size(size.width + spreadInner * 2f, size.height + spreadInner * 2f),
+                        cornerRadius = CornerRadius(cornerPx + spreadInner, cornerPx + spreadInner)
+                    )
+                }
+            }
+            .clip(cardShape)
+            .background(
+                if (isFocused) NetflixElevatedSurface.copy(alpha = 0.95f) else Color.Transparent
+            )
+            .padding(horizontal = 8.dp, vertical = 10.dp)
             .testTag("cast_card_${actor.id}"),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(74.dp)
+                .size(76.dp)
+                .then(
+                    if (isFocused) {
+                        Modifier.border(
+                            width = 2.5.dp,
+                            color = NetflixRed,
+                            shape = CircleShape
+                        )
+                    } else {
+                        Modifier.border(
+                            width = 1.dp,
+                            color = NetflixElevatedSurface,
+                            shape = CircleShape
+                        )
+                    }
+                )
+                .padding(if (isFocused) 2.5.dp else 1.dp)
                 .clip(CircleShape)
                 .background(NetflixCardSurface)
         ) {
@@ -2080,17 +2130,17 @@ private fun CastCard(
                 Icon(
                     imageVector = Icons.Default.Person,
                     contentDescription = actor.name,
-                    tint = NetflixMutedGray,
+                    tint = if (isFocused) NetflixWhite else NetflixMutedGray,
                     modifier = Modifier.size(34.dp)
                 )
             }
         }
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(7.dp))
         Text(
             text = actor.name,
             style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Medium,
-            color = NetflixWhite,
+            fontWeight = if (isFocused) FontWeight.ExtraBold else FontWeight.Medium,
+            color = if (isFocused) NetflixWhite else NetflixWhite.copy(alpha = 0.9f),
             textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -2099,7 +2149,8 @@ private fun CastCard(
             Text(
                 text = actor.character,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isFocused) NetflixLightGray else NetflixMutedGray,
+                fontWeight = if (isFocused) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isFocused) NetflixWhite.copy(alpha = 0.88f) else NetflixMutedGray,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis

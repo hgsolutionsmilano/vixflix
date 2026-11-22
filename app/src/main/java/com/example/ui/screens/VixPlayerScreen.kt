@@ -83,6 +83,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -98,6 +99,7 @@ import androidx.media3.ui.PlayerView
 import com.example.VixFlixApplication
 import com.example.data.local.PlayerAdvancedSettings
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.local.formatVideoResolutionLabel
 import com.example.data.local.isIntroActiveAtPosition
 import com.example.data.local.resolveCreditsTrigger
 import com.example.data.remote.ResolvedStream
@@ -184,6 +186,32 @@ private fun inferSubtitleMimeType(url: String): String {
 }
 
 @OptIn(UnstableApi::class)
+internal fun extractActiveVideoDimensions(exoPlayer: ExoPlayer): Pair<Int, Int> {
+    val directSize = exoPlayer.videoSize
+    if (directSize.width > 0 && directSize.height > 0) {
+        return directSize.width to directSize.height
+    }
+    val groups = exoPlayer.currentTracks.groups
+    for (group in groups) {
+        if (group.type == C.TRACK_TYPE_VIDEO && group.isSelected) {
+            for (trackIdx in 0 until group.length) {
+                if (group.isTrackSelected(trackIdx)) {
+                    val format = group.getTrackFormat(trackIdx)
+                    if (format.width > 0 && format.height > 0) {
+                        return format.width to format.height
+                    }
+                }
+            }
+        }
+    }
+    val format = exoPlayer.videoFormat
+    if (format != null && format.width > 0 && format.height > 0) {
+        return format.width to format.height
+    }
+    return 0 to 0
+}
+
+@OptIn(UnstableApi::class)
 @Composable
 fun VixPlayerScreen(
     session: PlaybackSession,
@@ -210,7 +238,9 @@ fun VixPlayerScreen(
     subtitleTracksOverrideForTest: List<PlayerSubtitleTrackOption>? = null,
     onSubtitleTrackSelectedForTest: ((PlayerSubtitleTrackOption) -> Unit)? = null,
     onOpenVixSrcLinkOverrideForTest: ((String) -> Unit)? = null,
-    simulateBufferingOnSeekForTest: Boolean = false
+    simulateBufferingOnSeekForTest: Boolean = false,
+    videoResolutionOverrideForTest: String? = null,
+    onSaveIntroSegment: ((Long, Long) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -250,6 +280,17 @@ fun VixPlayerScreen(
     var showVixLinkPanel by remember { mutableStateOf(false) }
     var pendingFocusRestore by remember { mutableStateOf(PlayerFocusRestoreTarget.NONE) }
     var tracksVersion by remember { mutableIntStateOf(0) }
+    val videoWidthState = remember { mutableIntStateOf(0) }
+    val videoHeightState = remember { mutableIntStateOf(0) }
+    val activeResolutionLabel by remember(videoResolutionOverrideForTest, tracksVersion) {
+        derivedStateOf {
+            videoResolutionOverrideForTest?.takeIf { it.isNotBlank() }
+                ?: formatVideoResolutionLabel(
+                    width = videoWidthState.intValue,
+                    height = videoHeightState.intValue
+                )
+        }
+    }
     var selectedOverrideAudioId by remember(audioTracksOverrideForTest) {
         mutableStateOf(audioTracksOverrideForTest?.firstOrNull { it.isSelected }?.id)
     }
@@ -297,7 +338,10 @@ fun VixPlayerScreen(
     val showLoadingOverlay = currentError == null && (isBuffering || session.isResolvingStream) && !suppressSeekLoadingUi
 
     val showSkipIntro by remember(
+        session.mediaItem.id,
         session.mediaItem.isSeries,
+        session.seasonNumber,
+        session.episodeNumber,
         session.introSegment,
         advancedSettings.skipIntroEnabled,
         currentError,
@@ -321,7 +365,10 @@ fun VixPlayerScreen(
                 isIntroActiveAtPosition(
                     segment = session.introSegment,
                     positionMs = currentPositionMsState.longValue,
-                    durationMs = durationMsState.longValue
+                    durationMs = durationMsState.longValue,
+                    seriesTmdbId = session.mediaItem.id,
+                    seasonNumber = session.seasonNumber,
+                    episodeNumber = session.episodeNumber
                 )
         }
     }
@@ -442,6 +489,8 @@ fun VixPlayerScreen(
         playerErrorMessage = session.errorMessage
         hasAutoRetriedCachedStream = false
         isPlaying = true
+        videoWidthState.intValue = 0
+        videoHeightState.intValue = 0
         autoNextRemainingSecState.intValue = advancedSettings.sanitizedCountdownSec
 
         if (hasInitializedEpisode) {
@@ -549,11 +598,26 @@ fun VixPlayerScreen(
     }
 
     val performSkipIntro: () -> Unit = {
-        val targetMs = session.introSegment?.introEndMs
-        if (targetMs != null && targetMs > 0L) {
+        val segment = session.introSegment
+        val targetMs = segment?.introEndMs
+        if (
+            targetMs != null &&
+            targetMs > 0L &&
+            isIntroActiveAtPosition(
+                segment = segment,
+                positionMs = currentPositionMsState.longValue,
+                durationMs = durationMsState.longValue,
+                seriesTmdbId = session.mediaItem.id,
+                seasonNumber = session.seasonNumber,
+                episodeNumber = session.episodeNumber
+            )
+        ) {
             introSkipped = true
+            isManualSeekInProgress = true
+            if (simulateBufferingOnSeekForTest) isBuffering = true
             exoPlayer.seekTo(targetMs)
             currentPositionMsState.longValue = targetMs
+            playbackEnded = false
             onSkipIntroTriggered?.invoke(targetMs)
             onProgressUpdate(targetMs, durationMsState.longValue)
             if (!controlsVisible) {
@@ -676,6 +740,15 @@ fun VixPlayerScreen(
             }
         }
 
+        fun syncVideoResolutionFromPlayer() {
+            if (exoPlayer.currentMediaItem?.mediaId != latestEpisodeKey) return
+            val (w, h) = extractActiveVideoDimensions(exoPlayer)
+            if (w > 0 && h > 0 && (videoWidthState.intValue != w || videoHeightState.intValue != h)) {
+                videoWidthState.intValue = w
+                videoHeightState.intValue = h
+            }
+        }
+
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 val currentMediaId = exoPlayer.currentMediaItem?.mediaId
@@ -690,6 +763,11 @@ fun VixPlayerScreen(
                         isManualSeekInProgress = false
                     }
                     syncVerifiedDurationFromPlayer()
+                    syncVideoResolutionFromPlayer()
+                    val currentExoPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    if (!latestIsRemoteScrubbing && (currentExoPos > 0L || currentPositionMsState.longValue == 0L)) {
+                        currentPositionMsState.longValue = currentExoPos
+                    }
                     if (!hasSeekedInitial) {
                         hasSeekedInitial = true
                         val targetStart = maxOf(latestSession.startPositionMs, currentPositionMsState.longValue)
@@ -717,6 +795,7 @@ fun VixPlayerScreen(
             override fun onMediaItemTransition(mediaItem: ExoMediaItem?, reason: Int) {
                 if (mediaItem?.mediaId == latestEpisodeKey) {
                     syncVerifiedDurationFromPlayer()
+                    syncVideoResolutionFromPlayer()
                     tracksVersion++
                 }
             }
@@ -724,7 +803,19 @@ fun VixPlayerScreen(
             override fun onTracksChanged(tracks: Tracks) {
                 if (exoPlayer.currentMediaItem?.mediaId == latestEpisodeKey) {
                     syncVerifiedDurationFromPlayer()
+                    syncVideoResolutionFromPlayer()
                     tracksVersion++
+                }
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (exoPlayer.currentMediaItem?.mediaId == latestEpisodeKey) {
+                    if (videoSize.width > 0 && videoSize.height > 0) {
+                        videoWidthState.intValue = videoSize.width
+                        videoHeightState.intValue = videoSize.height
+                    } else {
+                        syncVideoResolutionFromPlayer()
+                    }
                 }
             }
 
@@ -778,14 +869,19 @@ fun VixPlayerScreen(
                         durationMsState.longValue = fallbackMeta
                     }
                 }
+                val (w, h) = extractActiveVideoDimensions(exoPlayer)
+                if (w > 0 && h > 0 && (videoWidthState.intValue != w || videoHeightState.intValue != h)) {
+                    videoWidthState.intValue = w
+                    videoHeightState.intValue = h
+                }
                 if (exoPlayer.isPlaying && !latestIsRemoteScrubbing) {
-                    val pos = exoPlayer.currentPosition
+                    val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
                     val dur = verifiedDur.takeIf { it > 0L } ?: durationMsState.longValue
+                    currentPositionMsState.longValue = pos
+                    if (dur > 0L) {
+                        durationMsState.longValue = dur
+                    }
                     if (pos > 0L) {
-                        currentPositionMsState.longValue = pos
-                        if (dur > 0L) {
-                            durationMsState.longValue = dur
-                        }
                         if (tick % 10 == 0) {
                             latestOnProgressUpdate(pos, dur)
                         }
@@ -812,6 +908,7 @@ fun VixPlayerScreen(
         if (!showAutoNext) return@LaunchedEffect
         autoNextRemainingSecState.intValue = advancedSettings.sanitizedCountdownSec
         controlsVisible = false
+        autoNextPlayFocusRequester.safeRequestFocus()
         delay(60L)
         autoNextPlayFocusRequester.safeRequestFocus()
 
@@ -832,6 +929,7 @@ fun VixPlayerScreen(
     LaunchedEffect(showMovieEndedPopup) {
         if (!showMovieEndedPopup) return@LaunchedEffect
         controlsVisible = false
+        movieEndedFinishFocusRequester.safeRequestFocus()
         delay(60L)
         movieEndedFinishFocusRequester.safeRequestFocus()
     }
@@ -839,6 +937,7 @@ fun VixPlayerScreen(
     // Auto-focus sul pulsante "SALTA INTRO" quando i controlli sono nascosti per conferma immediata con tasto OK
     LaunchedEffect(showSkipIntro, controlsVisible, anyBlockingPopupVisible, anySubPanelVisible, isRemoteScrubbing) {
         if (showSkipIntro && !controlsVisible && !anyBlockingPopupVisible && !anySubPanelVisible && !isRemoteScrubbing) {
+            skipIntroFocusRequester.safeRequestFocus()
             delay(60L)
             skipIntroFocusRequester.safeRequestFocus()
         }
@@ -1140,7 +1239,10 @@ fun VixPlayerScreen(
                         if (canRevealOrSeek) {
                             when (keyEvent.key) {
                                 Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                                    if (!showSkipIntro) {
+                                    if (showSkipIntro) {
+                                        performSkipIntro()
+                                        return@onPreviewKeyEvent true
+                                    } else {
                                         controlsVisible = true
                                         return@onPreviewKeyEvent true
                                     }
@@ -1446,11 +1548,20 @@ fun VixPlayerScreen(
 
                         Spacer(modifier = Modifier.width(16.dp))
 
-                        PlayerCleanTimeDisplay(
-                            positionMsProvider = { currentPositionMsState.longValue },
-                            durationMsProvider = { durationMsState.longValue },
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.weight(1f, fill = false)
-                        )
+                        ) {
+                            PlayerStreamingResolutionBadge(
+                                resolutionLabel = activeResolutionLabel
+                            )
+
+                            PlayerCleanTimeDisplay(
+                                positionMsProvider = { currentPositionMsState.longValue },
+                                durationMsProvider = { durationMsState.longValue }
+                            )
+                        }
                     }
                 }
             }
@@ -1493,7 +1604,11 @@ fun VixPlayerScreen(
                         }
                         closeAudioSelector()
                     },
-                    onDismiss = closeAudioSelector
+                    onDismiss = closeAudioSelector,
+                    isSeries = session.mediaItem.isSeries,
+                    currentIntroSegment = session.introSegment,
+                    currentPositionMsProvider = { currentPositionMsState.longValue },
+                    onSaveIntroSegment = onSaveIntroSegment
                 )
             }
 

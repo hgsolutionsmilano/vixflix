@@ -115,7 +115,7 @@ class ActorAndInterfaceUpdatesTest {
         composeRule.waitForIdle()
         cardNode.assertIsFocused()
 
-        composeRule.onNodeWithText("Interstellar").assertIsDisplayed()
+        assertEquals(0, composeRule.onAllNodesWithText("Interstellar").fetchSemanticsNodes().size)
         assertEquals(0, composeRule.onAllNodesWithText("OK per aprire", substring = true, ignoreCase = true).fetchSemanticsNodes().size)
         assertEquals(0, composeRule.onAllNodesWithText("SELEZIONA", substring = true, ignoreCase = true).fetchSemanticsNodes().size)
 
@@ -139,26 +139,27 @@ class ActorAndInterfaceUpdatesTest {
             episodeNumber = 4,
             episodeTitle = "I viaggiatori",
             positionMs = 1_260_000L, // 21 min
-            durationMs = 3_000_000L  // 50 min -> 42%
+            durationMs = 3_000_000L  // 50 min -> 29 min rimanenti
         )
         var resumedEntry: WatchProgressEntity? = null
 
         composeRule.setContent {
             MyApplicationTheme {
                 ContinueWatchingSection(
-                    items = listOf(sampleProgress),
+                    entries = listOf(sampleProgress),
                     isTvLayout = true,
-                    onResume = { resumedEntry = it },
-                    onOpenDetails = {},
-                    onRemove = {}
+                    onResumeClick = { resumedEntry = it },
+                    onInfoClick = {},
+                    onRemoveClick = {}
                 )
             }
         }
 
-        val cwCard = composeRule.onNodeWithTag("cw_card_tv_8801")
+        val cwCard = composeRule.onNodeWithTag("continue_watching_card_tv_8801")
         cwCard.assertIsDisplayed()
         composeRule.onNodeWithText("Dark").assertIsDisplayed()
-        composeRule.onNodeWithText("42%").assertIsDisplayed()
+        composeRule.onNodeWithText("STAGIONE 2 · EPISODIO 4").assertIsDisplayed()
+        composeRule.onNodeWithText("29 MIN RIMANENTI").assertIsDisplayed()
 
         // Verifica assenza totale di riga informativa sotto il titolo e scritta verde
         assertEquals(0, composeRule.onAllNodesWithText("OK Riprendi", substring = true, ignoreCase = true).fetchSemanticsNodes().size)
@@ -201,7 +202,7 @@ class ActorAndInterfaceUpdatesTest {
             assertEquals("Leonardo DiCaprio", actorDetails.name)
             assertEquals("1974-11-11", actorDetails.birthday)
             assertEquals("Los Angeles, California, USA", actorDetails.placeOfBirth)
-            assertTrue(actorDetails.biography.contains("Academy Award-winning actor"))
+            assertTrue(actorDetails.biography.orEmpty().contains("Academy Award-winning actor"))
             assertTrue(actorDetails.filmography.any { it.uniqueKey == "movie_902" && it.title == "Shutter Island" })
             assertTrue(actorDetails.filmography.any { it.uniqueKey == "tv_903" && it.title == "The Crowded Room" })
             assertEquals(2, actorDetails.filmography.size)
@@ -247,8 +248,7 @@ class ActorAndInterfaceUpdatesTest {
                 numberOfSeasons = 1,
                 seasons = listOf(TmdbSeasonSummaryDto(id = 10, seasonNumber = 1, name = "Stagione 1", episodeCount = 1)),
                 cast = emptyList(),
-                similar = emptyList(),
-                trailerKey = null
+                similar = emptyList()
             ),
             selectedSeason = 1,
             episodes = listOf(ep1),
@@ -284,7 +284,7 @@ class ActorAndInterfaceUpdatesTest {
         val epCard = composeRule.onNodeWithTag("episode_card_1_1")
         epCard.assertIsDisplayed()
 
-        val thumbBounds = composeRule.onNodeWithTag("episode_thumbnail_1_1").getUnclippedBoundsInRoot()
+        val thumbBounds = composeRule.onNodeWithTag("episode_thumbnail_1_1", useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertTrue(
             "La miniatura episodio su TV deve essere sensibilmente ingrandita (>= 240dp, trovato ${thumbBounds.width})",
             thumbBounds.width >= 240.dp

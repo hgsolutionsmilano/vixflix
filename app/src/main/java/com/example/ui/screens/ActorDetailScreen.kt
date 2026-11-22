@@ -770,23 +770,6 @@ fun ActorDetailScreen(
                                                     downReq.takeIfAttached()?.let { down = it }
                                                 }
                                         )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = mediaItem.title,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = NetflixWhite,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        if (mediaItem.releaseYear.isNotBlank()) {
-                                            Text(
-                                                text = mediaItem.releaseYear,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = NetflixLightGray,
-                                                maxLines = 1
-                                            )
-                                        }
                                     }
                                 }
                             }

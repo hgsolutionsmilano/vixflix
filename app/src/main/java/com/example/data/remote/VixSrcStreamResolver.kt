@@ -141,7 +141,7 @@ class VixSrcOkHttpInterceptor : Interceptor {
 }
 
 class VixSrcStreamResolver(
-    baseOkHttpClient: OkHttpClient,
+    baseOkHttpClient: OkHttpClient = OkHttpClient(),
     rawBaseUrl: String = BuildConfig.VIXSRC_BASE_URL
 ) {
     companion object {
@@ -167,6 +167,28 @@ class VixSrcStreamResolver(
         private val STREAM_URL_REGEX = Regex("""["'](?:url|file)["']\s*:\s*["']([^"']+)["']""")
         private val DIRECT_M3U8_REGEX = Regex("""https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*""")
         private val SUBTITLE_REGEX = Regex("""https?://[^\s"'<>]+?\.(?:vtt|srt)[^\s"'<>]*""")
+
+        /**
+         * Estrae metadati reali di intro (`start` e `end` in secondi -> convertiti in ms) eventualmente
+         * dichiarati nella pagina embed/player VixSrc (es. `window.intro = { start: 12, end: 84 }` o `"intro":{"start":12,"end":84}`).
+         * Non inventa mai alcun intervallo se il metadato non è presente o non è valido.
+         */
+        fun parseIntroSegmentFromEmbedHtml(html: String): Pair<Long, Long>? {
+            if (html.isBlank()) return null
+            val introBlockRegex = Regex(
+                """(?:window\.(?:intro|skipIntro)\s*=\s*|["'](?:intro|skipIntro|introSegment)["']\s*:\s*)\{([^}]+)\}""",
+                setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+            )
+            val block = introBlockRegex.find(html)?.groupValues?.getOrNull(1) ?: return null
+            val startRegex = Regex("""["']?(?:start|startTime|introStart)["']?\s*:\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
+            val endRegex = Regex("""["']?(?:end|endTime|introEnd)["']?\s*:\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
+            val rawStart = startRegex.find(block)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: return null
+            val rawEnd = endRegex.find(block)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: return null
+            val startMs = if (rawEnd > 10_000.0) rawStart.toLong() else (rawStart * 1000.0).toLong()
+            val endMs = if (rawEnd > 10_000.0) rawEnd.toLong() else (rawEnd * 1000.0).toLong()
+            if (startMs < 0L || endMs <= startMs + 3_000L) return null
+            return startMs to endMs
+        }
     }
 
     private val baseUrl = rawBaseUrl.trimEnd('/')
@@ -530,4 +552,211 @@ class VixSrcStreamResolver(
             else -> "$baseUrl/$cleaned"
         }
     }
+
+    /**
+     * Verifica non invasiva e rigorosa della disponibilità reale di uno stream utilizzabile su VixSrc,
+     * riutilizzando i medesimi endpoint `/api/{type}/{id}` -> `/embed/...` e il catalogo `/api/list/{type}/`
+     * già impiegati dal player, senza modificare URL, parametri o logica di risoluzione.
+     *
+     * Regole di stato:
+     * - [VixSrcAvailabilityStatus.AVAILABLE]: sorgente streaming reale verificata (o confermata nel catalogo VixSrc).
+     * - [VixSrcAvailabilityStatus.UNAVAILABLE]: assenza confermata su VixSrc (HTTP 404 / src assente / nessuna masterPlaylist).
+     * - [VixSrcAvailabilityStatus.UNKNOWN]: errore di rete, timeout o risposta temporanea (HTTP 5xx / 429 / IOException).
+     */
+    suspend fun verifyRealStreamAvailability(
+        tmdbId: Int,
+        mediaType: String,
+        season: Int? = null,
+        episode: Int? = null,
+        lang: String = "it"
+    ): VixSrcVerificationOutcome = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0) {
+            return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNAVAILABLE)
+        }
+        val normalizedType = if (mediaType == "tv") "tv" else "movie"
+        val targetSeason = if (normalizedType == "tv") (season ?: 1).coerceAtLeast(1) else null
+        val targetEpisode = if (normalizedType == "tv") (episode ?: 1).coerceAtLeast(1) else null
+
+        val apiUrl = if (normalizedType == "tv") {
+            "$baseUrl/api/tv/$tmdbId/$targetSeason/$targetEpisode?lang=$lang&startAt=0"
+        } else {
+            "$baseUrl/api/movie/$tmdbId?lang=$lang&startAt=0"
+        }
+        val refererUrl = buildVixSrcApiUrl(
+            tmdbId = tmdbId,
+            mediaType = normalizedType,
+            season = targetSeason,
+            episode = targetEpisode,
+            startSeconds = 0L,
+            lang = lang
+        )
+
+        try {
+            val apiRequest = Request.Builder()
+                .url(apiUrl)
+                .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
+                .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                .header("Referer", refererUrl)
+                .get()
+                .build()
+
+            val apiPair: Pair<Int, String> = resolverApiClient.newCall(apiRequest).execute().use { resp ->
+                resp.code to resp.body?.string().orEmpty()
+            }
+            val apiCode = apiPair.first
+            val apiBody = apiPair.second
+
+            if (apiCode == 429 || apiCode >= 500) {
+                return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNKNOWN)
+            }
+
+            if (apiCode == 404) {
+                val catalogCheck = inspectCatalogListStrict(tmdbId, normalizedType, lang)
+                return@withContext when (catalogCheck) {
+                    VixSrcAvailabilityStatus.AVAILABLE -> VixSrcVerificationOutcome(VixSrcAvailabilityStatus.AVAILABLE)
+                    else -> VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNAVAILABLE)
+                }
+            }
+
+            if (apiCode !in 200..299) {
+                return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNKNOWN)
+            }
+
+            val srcPath = SRC_MATCH_REGEX.find(apiBody)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.replace("\\/", "/")
+                ?.trim()
+                .orEmpty()
+
+            if (srcPath.isBlank()) {
+                return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNAVAILABLE)
+            }
+
+            val fullEmbedUrl = resolveRelativeUrl(srcPath)
+
+            val embedRequest = Request.Builder()
+                .url(fullEmbedUrl)
+                .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
+                .header(
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+                .header("Referer", refererUrl)
+                .get()
+                .build()
+
+            val embedPair: Pair<Int, String> = resolverApiClient.newCall(embedRequest).execute().use { resp ->
+                resp.code to resp.body?.string().orEmpty()
+            }
+            val embedCode = embedPair.first
+            val embedHtml = embedPair.second
+
+            if (embedCode == 429 || embedCode >= 500) {
+                return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNKNOWN)
+            }
+            if (embedCode == 404) {
+                return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNAVAILABLE)
+            }
+            if (embedCode !in 200..299) {
+                return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNKNOWN)
+            }
+
+            val playlistUrl = parseMasterPlaylistFromHtml(
+                html = embedHtml,
+                pageUrl = fullEmbedUrl,
+                lang = lang,
+                startSeconds = 0L
+            )
+            if (playlistUrl.isNullOrBlank()) {
+                return@withContext VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNAVAILABLE)
+            }
+
+            val subtitles = parseSubtitlesFromHtml(embedHtml)
+            val expiresAtMs = computeSafeExpiresAtMs(playlistUrl)
+            val resolvedStream = ResolvedStream(
+                streamUrl = playlistUrl,
+                embedUrl = refererUrl,
+                referer = refererUrl,
+                startSeconds = 0L,
+                startMinutes = 0,
+                subtitles = subtitles,
+                isDirectHls = true,
+                vixCatalogVerified = true,
+                expiresAtMs = expiresAtMs,
+                fromCache = false
+            )
+            val introWindow = Companion.parseIntroSegmentFromEmbedHtml(embedHtml)
+            VixSrcVerificationOutcome(
+                status = VixSrcAvailabilityStatus.AVAILABLE,
+                resolvedStream = resolvedStream,
+                detectedIntroWindowMs = introWindow
+            )
+        } catch (_: java.io.IOException) {
+            VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNKNOWN)
+        } catch (_: Exception) {
+            VixSrcVerificationOutcome(VixSrcAvailabilityStatus.UNKNOWN)
+        }
+    }
+
+    private suspend fun inspectCatalogListStrict(
+        tmdbId: Int,
+        normalizedType: String,
+        lang: String
+    ): VixSrcAvailabilityStatus {
+        val targetSet = if (normalizedType == "tv") cachedTvIds else cachedMovieIds
+        catalogMutex.withLock {
+            if (targetSet.isNotEmpty()) {
+                return if (targetSet.contains(tmdbId)) {
+                    VixSrcAvailabilityStatus.AVAILABLE
+                } else {
+                    VixSrcAvailabilityStatus.UNAVAILABLE
+                }
+            }
+        }
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/api/list/$normalizedType/?lang=$lang")
+                .header("User-Agent", ResolvedStream.DEFAULT_USER_AGENT)
+                .header("Accept", "application/json")
+                .get()
+                .build()
+
+            resolverApiClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return VixSrcAvailabilityStatus.UNKNOWN
+                }
+                val body = response.body?.string().orEmpty()
+                val ids = TMDB_ID_REGEX.findAll(body).mapNotNull { it.groupValues[1].toIntOrNull() }.toSet()
+                if (ids.isEmpty()) {
+                    return VixSrcAvailabilityStatus.UNKNOWN
+                }
+                catalogMutex.withLock {
+                    targetSet.addAll(ids)
+                }
+                if (ids.contains(tmdbId)) {
+                    VixSrcAvailabilityStatus.AVAILABLE
+                } else {
+                    VixSrcAvailabilityStatus.UNAVAILABLE
+                }
+            }
+        } catch (_: Exception) {
+            VixSrcAvailabilityStatus.UNKNOWN
+        }
+    }
+
+    fun parseIntroSegmentFromEmbedHtml(html: String): Pair<Long, Long>? =
+        Companion.parseIntroSegmentFromEmbedHtml(html)
 }
+
+enum class VixSrcAvailabilityStatus {
+    UNKNOWN,
+    AVAILABLE,
+    UNAVAILABLE
+}
+
+data class VixSrcVerificationOutcome(
+    val status: VixSrcAvailabilityStatus,
+    val resolvedStream: ResolvedStream? = null,
+    val detectedIntroWindowMs: Pair<Long, Long>? = null
+)
