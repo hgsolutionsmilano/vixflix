@@ -4,7 +4,8 @@ import com.example.data.remote.simkl.SimklQrMatrix
 
 /**
  * Generatore puro Kotlin conforme allo standard ISO/IEC 18004 (QR Code Model 2, Byte Mode, ECC M)
- * senza dipendenze esterne. Ottimizzato per URI Simkl (`https://simkl.com/pin/...`, V1..V9).
+ * senza dipendenze esterne. Supporta V1..V20 (fino a 666 byte UTF-8) per qualsiasi URI `verification_uri`
+ * o `verification_uri_complete` di Simkl AUTH V2.
  */
 object SimklQrGenerator {
 
@@ -29,7 +30,18 @@ object SimklQrGenerator {
         VersionSpec(6, 108, 16, 4, 27, 0, 0, intArrayOf(6, 34)),
         VersionSpec(7, 124, 18, 4, 31, 0, 0, intArrayOf(6, 22, 38)),
         VersionSpec(8, 154, 22, 2, 38, 2, 39, intArrayOf(6, 24, 42)),
-        VersionSpec(9, 182, 22, 3, 36, 2, 37, intArrayOf(6, 26, 46))
+        VersionSpec(9, 182, 22, 3, 36, 2, 37, intArrayOf(6, 26, 46)),
+        VersionSpec(10, 216, 26, 4, 43, 1, 44, intArrayOf(6, 28, 50)),
+        VersionSpec(11, 254, 30, 1, 50, 4, 51, intArrayOf(6, 30, 54)),
+        VersionSpec(12, 290, 22, 6, 36, 2, 37, intArrayOf(6, 32, 58)),
+        VersionSpec(13, 334, 22, 8, 37, 1, 38, intArrayOf(6, 34, 62)),
+        VersionSpec(14, 365, 24, 4, 40, 5, 41, intArrayOf(6, 26, 46, 66)),
+        VersionSpec(15, 415, 24, 5, 41, 5, 42, intArrayOf(6, 26, 48, 70)),
+        VersionSpec(16, 453, 28, 7, 45, 3, 46, intArrayOf(6, 26, 50, 74)),
+        VersionSpec(17, 507, 28, 10, 46, 1, 47, intArrayOf(6, 30, 54, 78)),
+        VersionSpec(18, 563, 26, 9, 43, 4, 44, intArrayOf(6, 30, 56, 82)),
+        VersionSpec(19, 627, 26, 3, 44, 11, 45, intArrayOf(6, 30, 58, 86)),
+        VersionSpec(20, 669, 26, 3, 41, 13, 42, intArrayOf(6, 34, 62, 90))
     )
 
     private val GF_EXP = IntArray(512)
@@ -52,14 +64,14 @@ object SimklQrGenerator {
 
     fun generate(text: String): SimklQrMatrix {
         val payload = text.toByteArray(Charsets.UTF_8)
-        // Byte mode header: 4 bit mode (0100) + 8 bit lunghezza (per V1..V9) = 12 bit
         val spec = VERSION_SPECS_M.firstOrNull { spec ->
             val bitCapacity = spec.totalDataBytes * 8
-            val requiredBits = 4 + 8 + payload.size * 8
+            val countBits = if (spec.version >= 10) 16 else 8
+            val requiredBits = 4 + countBits + payload.size * 8
             requiredBits <= bitCapacity
         } ?: throw IllegalArgumentException("Contenuto QR troppo lungo (${payload.size} byte)")
 
-        val dataCodewords = encodeByteModeData(payload, spec.totalDataBytes)
+        val dataCodewords = encodeByteModeData(payload, spec.totalDataBytes, spec.version)
         val finalStream = buildInterleavedCodewords(dataCodewords, spec)
 
         val size = spec.version * 4 + 17
@@ -109,7 +121,7 @@ object SimklQrGenerator {
         return SimklQrMatrix(size = size, modules = flat)
     }
 
-    private fun encodeByteModeData(payload: ByteArray, totalDataBytes: Int): IntArray {
+    private fun encodeByteModeData(payload: ByteArray, totalDataBytes: Int, version: Int): IntArray {
         val bits = ArrayList<Int>(totalDataBytes * 8)
         fun appendBits(value: Int, count: Int) {
             for (i in count - 1 downTo 0) {
@@ -119,8 +131,9 @@ object SimklQrGenerator {
 
         // Mode indicator Byte = 0100
         appendBits(0b0100, 4)
-        // Character count indicator (8 bit per V1..V9)
-        appendBits(payload.size, 8)
+        // Character count indicator: 8 bit per V1..V9, 16 bit per V10..V26 (ISO/IEC 18004)
+        val countBits = if (version >= 10) 16 else 8
+        appendBits(payload.size, countBits)
         for (b in payload) {
             appendBits(b.toInt() and 0xFF, 8)
         }

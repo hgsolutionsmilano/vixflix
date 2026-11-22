@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -31,6 +30,8 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,8 +71,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.data.remote.simkl.SimklAuthFlowMode
 import com.example.data.remote.simkl.SimklQrDialogState
 import com.example.data.remote.simkl.SimklQrMatrix
+import com.example.data.remote.simkl.SimklQrResolutionPrompt
 import com.example.ui.theme.NetflixCardSurface
 import com.example.ui.theme.NetflixDarkSurface
 import com.example.ui.theme.NetflixElevatedSurface
@@ -85,21 +88,38 @@ fun SimklQrConnectDialog(
     state: SimklQrDialogState,
     profileName: String,
     onRegenerate: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onConfirmSwitchProfile: () -> Unit = {},
+    onConfirmReplaceAccount: () -> Unit = {}
 ) {
     val clipboardManager = LocalClipboardManager.current
     var copiedFeedback by remember(state.userCode) { mutableStateOf(false) }
 
+    val resolutionActionFocus = remember { FocusRequester() }
     val copyButtonFocus = remember { FocusRequester() }
     val regenerateButtonFocus = remember { FocusRequester() }
     val closeButtonFocus = remember { FocusRequester() }
 
-    LaunchedEffect(state.userCode, state.isLoading, state.isExpired, state.isDenied) {
+    val hasCodeForCopy = !state.userCode.isNullOrBlank() &&
+        !state.isExpired &&
+        !state.isDenied &&
+        !state.isCompleted &&
+        state.resolutionPrompt == null
+
+    LaunchedEffect(
+        state.userCode,
+        state.isLoading,
+        state.isExpired,
+        state.isDenied,
+        state.isClientIdMissing,
+        state.resolutionPrompt
+    ) {
         repeat(3) { withFrameNanos { } }
         when {
+            state.resolutionPrompt != null -> resolutionActionFocus.safeRequestFocus()
             state.canRegenerate && (state.isExpired || state.isDenied || state.errorMessage != null) ->
                 regenerateButtonFocus.safeRequestFocus()
-            !state.userCode.isNullOrBlank() ->
+            hasCodeForCopy ->
                 copyButtonFocus.safeRequestFocus()
             else ->
                 closeButtonFocus.safeRequestFocus()
@@ -120,7 +140,7 @@ fun SimklQrConnectDialog(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.82f))
+                .background(Color.Black.copy(alpha = 0.84f))
                 .onPreviewKeyEvent { keyEvent ->
                     if (keyEvent.type == KeyEventType.KeyDown &&
                         (keyEvent.key == Key.Back || keyEvent.key == Key.Escape)
@@ -140,22 +160,22 @@ fun SimklQrConnectDialog(
                 tonalElevation = 8.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 860.dp)
+                    .widthIn(max = 880.dp)
                     .testTag("simkl_qr_connect_dialog")
             ) {
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
-                        .padding(20.dp)
+                        .padding(22.dp)
                 ) {
                     val isWideLayout = maxWidth >= 560.dp
 
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        // Intestazione dialog
+                        // Intestazione TV chiara e priva di input manuali
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -173,17 +193,17 @@ fun SimklQrConnectDialog(
                                 ) {
                                     Box(
                                         contentAlignment = Alignment.Center,
-                                        modifier = Modifier.size(44.dp)
+                                        modifier = Modifier.size(46.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.QrCode2,
                                             contentDescription = null,
                                             tint = NetflixRed,
-                                            modifier = Modifier.size(26.dp)
+                                            modifier = Modifier.size(28.dp)
                                         )
                                     }
                                 }
-                                Column {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     Text(
                                         text = "COLLEGA IL TUO ACCOUNT SIMKL",
                                         style = MaterialTheme.typography.titleLarge,
@@ -191,14 +211,29 @@ fun SimklQrConnectDialog(
                                         color = NetflixWhite
                                     )
                                     Text(
-                                        text = "Sincronizza film e serie TV in cloud per il profilo \"$profileName\"",
+                                        text = "Scansiona il QR Code con il tuo smartphone per collegare il tuo account Simkl.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = NetflixLightGray
+                                    )
+                                    Text(
+                                        text = if (state.flowMode == SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE) {
+                                            "Riconoscimento automatico o creazione profilo locale VixFlix"
+                                        } else {
+                                            "Profilo di destinazione: \"$profileName\""
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NetflixLightGray.copy(alpha = 0.85f)
                                     )
                                 }
                             }
 
-                            if (!state.isLoading && !state.isExpired && !state.isDenied && !state.isCompleted && state.remainingSeconds > 0) {
+                            if (!state.isLoading &&
+                                !state.isExpired &&
+                                !state.isDenied &&
+                                !state.isCompleted &&
+                                state.resolutionPrompt == null &&
+                                state.remainingSeconds > 0
+                            ) {
                                 Surface(
                                     color = NetflixDarkSurface,
                                     shape = RoundedCornerShape(10.dp),
@@ -218,20 +253,25 @@ fun SimklQrConnectDialog(
                             }
                         }
 
-                        // Contenuto principale: QR ad alto contrasto + codice / istruzioni
+                        // Contenuto principale: colonna QR + PIN temporaneo sotto il QR, e istruzioni/conflitti
                         if (isWideLayout) {
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(24.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                                verticalAlignment = Alignment.Top,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                SimklQrBox(
+                                SimklQrAndPinColumn(
                                     state = state,
-                                    modifier = Modifier.size(196.dp)
+                                    copiedFeedback = copiedFeedback,
+                                    qrBoxSize = 212.dp,
+                                    modifier = Modifier.width(228.dp)
                                 )
                                 SimklQrDetailsColumn(
                                     state = state,
-                                    copiedFeedback = copiedFeedback,
+                                    resolutionActionFocus = resolutionActionFocus,
+                                    downActionFocus = closeButtonFocus,
+                                    onConfirmSwitchProfile = onConfirmSwitchProfile,
+                                    onConfirmReplaceAccount = onConfirmReplaceAccount,
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -241,13 +281,18 @@ fun SimklQrConnectDialog(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                SimklQrBox(
+                                SimklQrAndPinColumn(
                                     state = state,
-                                    modifier = Modifier.size(204.dp)
+                                    copiedFeedback = copiedFeedback,
+                                    qrBoxSize = 212.dp,
+                                    modifier = Modifier.fillMaxWidth()
                                 )
                                 SimklQrDetailsColumn(
                                     state = state,
-                                    copiedFeedback = copiedFeedback,
+                                    resolutionActionFocus = resolutionActionFocus,
+                                    downActionFocus = closeButtonFocus,
+                                    onConfirmSwitchProfile = onConfirmSwitchProfile,
+                                    onConfirmReplaceAccount = onConfirmReplaceAccount,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
@@ -260,8 +305,7 @@ fun SimklQrConnectDialog(
                                 .fillMaxWidth()
                                 .focusGroup()
                         ) {
-                            val hasCode = !state.userCode.isNullOrBlank() && !state.isExpired && !state.isCompleted
-                            if (hasCode) {
+                            if (hasCodeForCopy) {
                                 OutlinedButton(
                                     onClick = {
                                         val code = state.userCode.orEmpty()
@@ -318,58 +362,62 @@ fun SimklQrConnectDialog(
                                 }
                             }
 
-                            Button(
-                                onClick = {
-                                    copiedFeedback = false
-                                    onRegenerate()
-                                },
-                                enabled = state.canRegenerate,
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = NetflixRed,
-                                    contentColor = Color.White
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
-                                    .safeFocusRequester(regenerateButtonFocus)
-                                    .onPreviewKeyEvent { keyEvent ->
-                                        if (keyEvent.type == KeyEventType.KeyDown) {
-                                            when (keyEvent.key) {
-                                                Key.DirectionLeft -> {
-                                                    if (hasCode) copyButtonFocus.safeRequestFocus() else true
+                            if (state.resolutionPrompt == null && !state.isClientIdMissing) {
+                                Button(
+                                    onClick = {
+                                        copiedFeedback = false
+                                        onRegenerate()
+                                    },
+                                    enabled = state.canRegenerate,
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NetflixRed,
+                                        contentColor = Color.White
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1.15f)
+                                        .heightIn(min = 48.dp)
+                                        .safeFocusRequester(regenerateButtonFocus)
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                                when (keyEvent.key) {
+                                                    Key.DirectionLeft -> {
+                                                        if (hasCodeForCopy) copyButtonFocus.safeRequestFocus() else true
+                                                    }
+                                                    Key.DirectionRight -> closeButtonFocus.safeRequestFocus()
+                                                    Key.DirectionUp, Key.DirectionDown -> true
+                                                    else -> false
                                                 }
-                                                Key.DirectionRight -> closeButtonFocus.safeRequestFocus()
-                                                Key.DirectionUp, Key.DirectionDown -> true
-                                                else -> false
+                                            } else {
+                                                false
                                             }
-                                        } else {
-                                            false
                                         }
-                                    }
-                                    .focusProperties {
-                                        if (hasCode) {
-                                            copyButtonFocus.takeIfAttached()?.let { left = it }
+                                        .focusProperties {
+                                            if (hasCodeForCopy) {
+                                                copyButtonFocus.takeIfAttached()?.let { left = it }
+                                            }
+                                            closeButtonFocus.takeIfAttached()?.let { right = it }
                                         }
-                                        closeButtonFocus.takeIfAttached()?.let { right = it }
-                                    }
-                                    .tvFocusableControl(
-                                        shape = RoundedCornerShape(10.dp),
-                                        focusedScale = 1.02f,
-                                        focusTag = "simkl_regenerate_code_button"
+                                        .tvFocusableControl(
+                                            shape = RoundedCornerShape(10.dp),
+                                            focusedScale = 1.02f,
+                                            focusTag = "simkl_regenerate_code_button"
+                                        )
+                                        .testTag("simkl_regenerate_code_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
                                     )
-                                    .testTag("simkl_regenerate_code_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "RIGENERA CODICE",
-                                    style = MaterialTheme.typography.labelLarge
-                                )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "GENERA NUOVO CODICE",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
 
                             OutlinedButton(
@@ -378,18 +426,29 @@ fun SimklQrConnectDialog(
                                 border = BorderStroke(1.dp, NetflixElevatedSurface),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixLightGray),
                                 modifier = Modifier
-                                    .weight(0.8f)
+                                    .weight(0.85f)
                                     .heightIn(min = 48.dp)
                                     .safeFocusRequester(closeButtonFocus)
                                     .onPreviewKeyEvent { keyEvent ->
                                         if (keyEvent.type == KeyEventType.KeyDown) {
                                             when (keyEvent.key) {
-                                                Key.DirectionLeft -> {
-                                                    if (state.canRegenerate) regenerateButtonFocus.safeRequestFocus()
-                                                    else if (hasCode) copyButtonFocus.safeRequestFocus()
-                                                    else true
+                                                Key.DirectionUp -> {
+                                                    if (state.resolutionPrompt != null) {
+                                                        resolutionActionFocus.safeRequestFocus()
+                                                    } else {
+                                                        true
+                                                    }
                                                 }
-                                                Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> true
+                                                Key.DirectionLeft -> {
+                                                    if (state.resolutionPrompt == null && !state.isClientIdMissing && state.canRegenerate) {
+                                                        regenerateButtonFocus.safeRequestFocus()
+                                                    } else if (hasCodeForCopy) {
+                                                        copyButtonFocus.safeRequestFocus()
+                                                    } else {
+                                                        true
+                                                    }
+                                                }
+                                                Key.DirectionRight, Key.DirectionDown -> true
                                                 else -> false
                                             }
                                         } else {
@@ -397,10 +456,14 @@ fun SimklQrConnectDialog(
                                         }
                                     }
                                     .focusProperties {
-                                        if (state.canRegenerate) {
-                                            regenerateButtonFocus.takeIfAttached()?.let { left = it }
-                                        } else if (hasCode) {
-                                            copyButtonFocus.takeIfAttached()?.let { left = it }
+                                        if (state.resolutionPrompt != null) {
+                                            resolutionActionFocus.takeIfAttached()?.let { up = it }
+                                        } else {
+                                            if (!state.isClientIdMissing && state.canRegenerate) {
+                                                regenerateButtonFocus.takeIfAttached()?.let { left = it }
+                                            } else if (hasCodeForCopy) {
+                                                copyButtonFocus.takeIfAttached()?.let { left = it }
+                                            }
                                         }
                                     }
                                     .tvFocusableControl(
@@ -417,7 +480,7 @@ fun SimklQrConnectDialog(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "CHIUDI",
+                                    text = "ANNULLA",
                                     style = MaterialTheme.typography.labelLarge
                                 )
                             }
@@ -430,23 +493,97 @@ fun SimklQrConnectDialog(
 }
 
 @Composable
+private fun SimklQrAndPinColumn(
+    state: SimklQrDialogState,
+    copiedFeedback: Boolean,
+    qrBoxSize: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = modifier
+    ) {
+        Text(
+            text = "Inquadra il QR Code con il telefono",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = NetflixWhite,
+            textAlign = TextAlign.Center
+        )
+
+        SimklQrBox(
+            state = state,
+            modifier = Modifier.size(qrBoxSize)
+        )
+
+        // PIN temporaneo ben visibile direttamente sotto il QR Code
+        if (!state.userCode.isNullOrBlank() && state.resolutionPrompt == null && !state.isClientIdMissing) {
+            Surface(
+                color = NetflixDarkSurface,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, NetflixElevatedSurface),
+                modifier = Modifier.widthIn(min = qrBoxSize)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Text(
+                        text = "PIN TEMPORANEO",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = NetflixLightGray
+                    )
+                    Text(
+                        text = state.userCode,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 24.sp,
+                        letterSpacing = 3.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = NetflixWhite,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.testTag("simkl_user_code")
+                    )
+                    if (copiedFeedback) {
+                        Text(
+                            text = "Codice copiato",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixMatchGreen
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SimklQrBox(
     state: SimklQrDialogState,
     modifier: Modifier = Modifier
 ) {
+    val showQrMatrix = state.qrMatrix != null &&
+        !state.isLoading &&
+        !state.isExpired &&
+        !state.isDenied &&
+        !state.isCompleted &&
+        state.errorMessage == null &&
+        state.resolutionPrompt == null
+
     Surface(
-        color = if (state.qrMatrix != null && !state.isExpired && !state.isDenied && !state.isCompleted) {
-            Color.White
-        } else {
-            NetflixDarkSurface
-        },
+        color = if (showQrMatrix) Color.White else NetflixDarkSurface,
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(2.dp, NetflixElevatedSurface),
         modifier = modifier
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.fillMaxSize().padding(14.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(14.dp)
         ) {
             when {
                 state.isLoading -> {
@@ -481,7 +618,27 @@ private fun SimklQrBox(
                         )
                     }
                 }
-                state.isExpired || state.isDenied || state.errorMessage != null -> {
+                state.resolutionPrompt != null -> {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Account Simkl autorizzato",
+                            tint = NetflixMatchGreen,
+                            modifier = Modifier.size(52.dp)
+                        )
+                        Text(
+                            text = "Account autorizzato",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+                state.isExpired || state.isDenied || state.errorMessage != null || state.qrMatrix == null -> {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -496,6 +653,7 @@ private fun SimklQrBox(
                             text = when {
                                 state.isExpired -> "Codice scaduto"
                                 state.isDenied -> "Autorizzazione negata"
+                                state.isClientIdMissing -> "Configurazione assente"
                                 else -> "QR non disponibile"
                             },
                             style = MaterialTheme.typography.labelLarge,
@@ -505,9 +663,9 @@ private fun SimklQrBox(
                         )
                     }
                 }
-                state.qrMatrix != null -> {
+                else -> {
                     SimklQrCodeCanvas(
-                        matrix = state.qrMatrix,
+                        matrix = state.qrMatrix!!,
                         modifier = Modifier
                             .fillMaxSize()
                             .testTag("simkl_qr_code")
@@ -558,72 +716,159 @@ private fun SimklQrCodeCanvas(
 @Composable
 private fun SimklQrDetailsColumn(
     state: SimklQrDialogState,
-    copiedFeedback: Boolean,
+    resolutionActionFocus: FocusRequester,
+    downActionFocus: FocusRequester,
+    onConfirmSwitchProfile: () -> Unit,
+    onConfirmReplaceAccount: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = modifier
     ) {
-        // Codice breve manuale + URI di verifica
-        if (!state.userCode.isNullOrBlank()) {
+        val prompt = state.resolutionPrompt
+        if (prompt != null) {
             Surface(
                 color = NetflixDarkSurface,
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, NetflixElevatedSurface),
-                modifier = Modifier.fillMaxWidth()
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Color(0xFFFFB74D).copy(alpha = 0.65f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("simkl_resolution_prompt")
             ) {
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.padding(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(16.dp)
                 ) {
-                    Text(
-                        text = "CODICE DI VERIFICA",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = NetflixLightGray
-                    )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = state.userCode,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 26.sp,
-                            letterSpacing = 3.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = NetflixWhite,
-                            modifier = Modifier.testTag("simkl_user_code")
+                        Icon(
+                            imageVector = Icons.Default.WarningAmber,
+                            contentDescription = null,
+                            tint = Color(0xFFFFB74D),
+                            modifier = Modifier.size(22.dp)
                         )
-                        if (copiedFeedback) {
-                            Surface(
-                                color = NetflixMatchGreen.copy(alpha = 0.2f),
-                                shape = RoundedCornerShape(6.dp)
+                        Text(
+                            text = when (prompt) {
+                                is SimklQrResolutionPrompt.AlreadyLinkedToOtherProfile ->
+                                    "Account Simkl già collegato su questo dispositivo"
+                                is SimklQrResolutionPrompt.ConfirmReplaceExistingSimkl ->
+                                    "Sostituire l'account Simkl collegato?"
+                            },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite
+                        )
+                    }
+
+                    when (prompt) {
+                        is SimklQrResolutionPrompt.AlreadyLinkedToOtherProfile -> {
+                            Text(
+                                text = "Questo account Simkl (${prompt.simklDisplayName}) è già associato al profilo VixFlix \"${prompt.existingProfileName}\".",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = NetflixWhite
+                            )
+                            Text(
+                                text = "Per evitare duplicati tra profili sullo stesso televisore, puoi passare direttamente a \"${prompt.existingProfileName}\" senza perdere preferiti o progressi.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NetflixLightGray
+                            )
+                            Button(
+                                onClick = onConfirmSwitchProfile,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = NetflixRed,
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .safeFocusRequester(resolutionActionFocus)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown &&
+                                            keyEvent.key == Key.DirectionDown
+                                        ) {
+                                            downActionFocus.safeRequestFocus()
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    .focusProperties {
+                                        downActionFocus.takeIfAttached()?.let { down = it }
+                                    }
+                                    .tvFocusableControl(
+                                        shape = RoundedCornerShape(10.dp),
+                                        focusedScale = 1.02f,
+                                        focusTag = "simkl_switch_existing_profile_button"
+                                    )
+                                    .testTag("simkl_switch_existing_profile_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SwapHoriz,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "PASSA A \"${prompt.existingProfileName}\"",
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                            }
+                        }
+
+                        is SimklQrResolutionPrompt.ConfirmReplaceExistingSimkl -> {
+                            Text(
+                                text = "Il profilo \"${prompt.targetProfileName}\" è già collegato a ${prompt.currentAccountName ?: "un altro account Simkl"}. Vuoi collegarlo invece a ${prompt.newAccountName}?",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = NetflixWhite
+                            )
+                            Text(
+                                text = "Preferiti (La Mia Lista), progressi di visione e impostazioni locali di \"${prompt.targetProfileName}\" resteranno intatti.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NetflixLightGray
+                            )
+                            Button(
+                                onClick = onConfirmReplaceAccount,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = NetflixRed,
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .safeFocusRequester(resolutionActionFocus)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown &&
+                                            keyEvent.key == Key.DirectionDown
+                                        ) {
+                                            downActionFocus.safeRequestFocus()
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    .focusProperties {
+                                        downActionFocus.takeIfAttached()?.let { down = it }
+                                    }
+                                    .tvFocusableControl(
+                                        shape = RoundedCornerShape(10.dp),
+                                        focusedScale = 1.02f,
+                                        focusTag = "simkl_confirm_replace_account_button"
+                                    )
+                                    .testTag("simkl_confirm_replace_account_button")
                             ) {
                                 Text(
-                                    text = "Copiato!",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = NetflixMatchGreen,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    text = "SOSTITUISCI ACCOUNT",
+                                    style = MaterialTheme.typography.labelLarge
                                 )
                             }
                         }
                     }
-                    if (!state.verificationUrl.isNullOrBlank()) {
-                        Text(
-                            text = "Oppure apri dal browser: ${state.verificationUrl}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = NetflixLightGray,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("simkl_verification_url")
-                        )
-                    }
                 }
             }
+            return@Column
         }
 
         // Stato live del polling o eventuale errore chiaro
@@ -644,7 +889,7 @@ private fun SimklQrDetailsColumn(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
-                if (!state.isCompleted && state.errorMessage == null && !state.isExpired && !state.isDenied) {
+                if (!state.isCompleted && state.errorMessage == null && !state.isExpired && !state.isDenied && !state.isLoading) {
                     CircularProgressIndicator(
                         color = NetflixRed,
                         strokeWidth = 2.dp,
@@ -661,12 +906,54 @@ private fun SimklQrDetailsColumn(
             }
         }
 
-        // 4 passaggi chiari per smartphone
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            SimklStepRow(number = "1", text = "Inquadra il QR Code con la fotocamera dello smartphone.")
-            SimklStepRow(number = "2", text = "Accedi al tuo account Simkl oppure registrane uno nuovo.")
-            SimklStepRow(number = "3", text = "Conferma l'autorizzazione per VixFlix con il codice mostrato.")
-            SimklStepRow(number = "4", text = "Il collegamento su questa TV si completerà automaticamente.")
+        if (!state.isClientIdMissing) {
+            if (!state.verificationUrl.isNullOrBlank()) {
+                Surface(
+                    color = NetflixDarkSurface,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, NetflixElevatedSurface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (state.hasCompleteVerificationUri) {
+                            "Oppure apri dal browser sullo smartphone: ${state.verificationUrl}"
+                        } else {
+                            "Oppure visita ${state.verificationUrl} e inserisci il PIN ${state.userCode.orEmpty()}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NetflixLightGray,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .testTag("simkl_verification_url")
+                    )
+                }
+            }
+
+            // 4 passaggi chiari per registrazione o login su smartphone
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SimklStepRow(
+                    number = "1",
+                    text = "Inquadra il QR Code con la fotocamera dello smartphone."
+                )
+                SimklStepRow(
+                    number = "2",
+                    text = "Accedi con un account Simkl esistente oppure registrane uno nuovo."
+                )
+                SimklStepRow(
+                    number = "3",
+                    text = if (state.hasCompleteVerificationUri) {
+                        "Conferma l'autorizzazione per VixFlix sulla pagina ufficiale Simkl."
+                    } else {
+                        "Inserisci il PIN temporaneo mostrato sotto il QR Code e autorizza VixFlix."
+                    }
+                )
+                SimklStepRow(
+                    number = "4",
+                    text = "Il collegamento e la sincronizzazione sulla TV si completeranno automaticamente."
+                )
+            }
         }
     }
 }

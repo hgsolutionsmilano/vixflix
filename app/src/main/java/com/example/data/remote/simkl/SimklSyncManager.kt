@@ -2,7 +2,10 @@ package com.example.data.remote.simkl
 
 import com.example.data.local.CompletedMediaEntity
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.INITIAL_AVATAR_ID
+import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.PlayerSegmentKeys
+import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.simkl.SimklPendingScrobbleEntity
 import com.example.data.local.simkl.SimklPlaybackBaselineEntity
@@ -26,7 +29,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -79,7 +87,23 @@ class SimklSyncManager(
             }
         }
 
+    private data class PendingAuthorizedAccount(
+        val requestedProfileId: String,
+        val flowMode: SimklAuthFlowMode,
+        val bundle: SimklTokenBundle,
+        val simklAccountId: String?,
+        val simklDisplayName: String
+    )
+
     private val _qrDialogState = MutableStateFlow<SimklQrDialogState?>(null)
+    val globalQrDialogState: StateFlow<SimklQrDialogState?> = _qrDialogState.asStateFlow()
+
+    private val _resolvedActiveProfileRequests = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val resolvedActiveProfileRequests: SharedFlow<String> = _resolvedActiveProfileRequests.asSharedFlow()
+
+    @Volatile
+    private var pendingAuthorizedAccount: PendingAuthorizedAccount? = null
+
     private val profileTokenMutexes = ConcurrentHashMap<String, Mutex>()
     private val profileSyncMutexes = ConcurrentHashMap<String, Mutex>()
     private val profileWriteMutexes = ConcurrentHashMap<String, Mutex>()
@@ -147,43 +171,60 @@ class SimklSyncManager(
         syncIfNeeded(newProfileId, SimklSyncTrigger.PROFILE_SWITCH)
     }
 
-    fun startDeviceAuthorization(profileId: String) {
+    fun startDeviceAuthorization(
+        profileId: String,
+        flowMode: SimklAuthFlowMode = SimklAuthFlowMode.LINK_ACTIVE_PROFILE
+    ) {
         val cfg = configProvider()
+        pendingAuthorizedAccount = null
+        activeAuthJobs.values.forEach { it.cancel() }
+        activeAuthJobs.clear()
+
         if (!cfg.isClientIdConfigured) {
             _qrDialogState.value = SimklQrDialogState(
                 profileId = profileId,
+                flowMode = flowMode,
                 isLoading = false,
-                statusMessage = "SIMKL_CLIENT_ID non configurato.",
-                errorMessage = "Configura SIMKL_CLIENT_ID nel pannello Secrets di AI Studio per collegare Simkl."
+                isClientIdMissing = true,
+                statusMessage = "Credenziale applicazione SIMKL_CLIENT_ID non configurata.",
+                errorMessage = "Il client ID pubblico di VixFlix (SIMKL_CLIENT_ID) deve essere configurato internamente nei Secrets di build. Non inserire codici o ID personali qui."
             )
             return
         }
 
-        activeAuthJobs.remove(profileId)?.cancel()
-        // Conserva eventuale istanza PKCE crittografica pronta per la sessione AUTH V2
-        SimklPkceHelper.generate()
+        val isProfileScoped = flowMode == SimklAuthFlowMode.LINK_ACTIVE_PROFILE &&
+            profileId != SimklConfig.PROFILE_CREATION_PENDING_ID
 
         _qrDialogState.value = SimklQrDialogState(
             profileId = profileId,
+            flowMode = flowMode,
             isLoading = true,
             statusMessage = "Richiesta codice di autorizzazione Simkl…"
         )
 
         val job = scope.launch {
-            updateMetaState(profileId, SimklConnectionState.AUTHORIZATION_WAITING, clearError = true)
+            if (isProfileScoped) {
+                updateMetaState(profileId, SimklConnectionState.AUTHORIZATION_WAITING, clearError = true)
+            }
             val deviceResp = try {
-                apiService.requestDeviceCode(clientId = cfg.clientId)
+                apiService.requestDeviceCode(
+                    clientId = cfg.clientId,
+                    scope = SimklConfig.DEFAULT_SCOPES
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 val msg = "Impossibile contattare Simkl (${e.localizedMessage ?: "errore di rete"})."
                 _qrDialogState.value = SimklQrDialogState(
                     profileId = profileId,
+                    flowMode = flowMode,
                     isLoading = false,
                     statusMessage = "Errore di connessione",
                     errorMessage = msg
                 )
-                updateMetaState(profileId, SimklConnectionState.ERROR, error = msg)
+                if (isProfileScoped) {
+                    updateMetaState(profileId, SimklConnectionState.ERROR, error = msg)
+                }
                 return@launch
             }
 
@@ -193,56 +234,83 @@ class SimklSyncManager(
                     ?: "Simkl ha rifiutato l'avvio del collegamento (HTTP ${deviceResp.code()})."
                 _qrDialogState.value = SimklQrDialogState(
                     profileId = profileId,
+                    flowMode = flowMode,
                     isLoading = false,
                     statusMessage = "Autorizzazione non disponibile",
                     errorMessage = msg
                 )
-                updateMetaState(profileId, SimklConnectionState.ERROR, error = msg)
+                if (isProfileScoped) {
+                    updateMetaState(profileId, SimklConnectionState.ERROR, error = msg)
+                }
                 return@launch
             }
 
             val dto = deviceResp.body()!!
             val userCode = dto.userCode.trim()
-            val qrTargetUrl = cfg.normalizeVerificationUrl(
-                rawUri = dto.verificationUriComplete ?: dto.resolvedVerificationUri,
-                userCode = userCode
-            )
-            val displayVerificationUrl = cfg.normalizeVerificationUrl(
-                rawUri = dto.resolvedVerificationUri ?: dto.verificationUriComplete,
-                userCode = userCode
-            )
+            val normalizedComplete = cfg.normalizeVerificationUrl(dto.verificationUriComplete)
+            val normalizedVerification = cfg.normalizeVerificationUrl(dto.resolvedVerificationUri)
+            val qrTargetUrl = normalizedComplete ?: normalizedVerification
+            val displayVerificationUrl = normalizedVerification ?: normalizedComplete
 
             if (dto.deviceCode.isBlank() || userCode.isBlank() || qrTargetUrl == null) {
                 val msg = "Risposta Simkl non valida o URL di verifica non sicuro."
                 _qrDialogState.value = SimklQrDialogState(
                     profileId = profileId,
+                    flowMode = flowMode,
                     isLoading = false,
                     statusMessage = "Risposta non valida",
                     errorMessage = msg
                 )
-                updateMetaState(profileId, SimklConnectionState.ERROR, error = msg)
+                if (isProfileScoped) {
+                    updateMetaState(profileId, SimklConnectionState.ERROR, error = msg)
+                }
                 return@launch
             }
 
             val qrMatrix = runCatching { SimklQrGenerator.generate(qrTargetUrl) }.getOrNull()
+                ?: displayVerificationUrl?.let { fallbackUrl ->
+                    runCatching { SimklQrGenerator.generate(fallbackUrl) }.getOrNull()
+                }
+            if (qrMatrix == null) {
+                val msg = "Impossibile generare il QR Code per l'URL Simkl."
+                _qrDialogState.value = SimklQrDialogState(
+                    profileId = profileId,
+                    flowMode = flowMode,
+                    isLoading = false,
+                    verificationUrl = displayVerificationUrl ?: qrTargetUrl,
+                    hasCompleteVerificationUri = normalizedComplete != null,
+                    userCode = userCode,
+                    statusMessage = "Errore generazione QR",
+                    errorMessage = msg
+                )
+                if (isProfileScoped) {
+                    updateMetaState(profileId, SimklConnectionState.ERROR, error = msg)
+                }
+                return@launch
+            }
+
             val expiresInSec = dto.expiresIn.coerceAtLeast(30)
             var pollIntervalSec = dto.interval.coerceAtLeast(1)
             val expiresAt = clockMs() + (expiresInSec * 1000L)
 
             _qrDialogState.value = SimklQrDialogState(
                 profileId = profileId,
+                flowMode = flowMode,
                 isLoading = false,
                 verificationUrl = displayVerificationUrl ?: qrTargetUrl,
+                hasCompleteVerificationUri = normalizedComplete != null,
                 userCode = userCode,
                 expiresAtMs = expiresAt,
                 remainingSeconds = expiresInSec,
                 pollIntervalSeconds = pollIntervalSec,
-                statusMessage = "In attesa di conferma dallo smartphone…",
+                statusMessage = "In attesa di autorizzazione dallo smartphone…",
                 qrMatrix = qrMatrix
             )
-            updateMetaState(profileId, SimklConnectionState.AUTHORIZING_POLLING, clearError = true)
+            if (isProfileScoped) {
+                updateMetaState(profileId, SimklConnectionState.AUTHORIZING_POLLING, clearError = true)
+            }
 
-            // Loop countdown + polling secondo l'intervallo ufficiale Simkl (`interval` / `slow_down`)
+            // Loop countdown + polling secondo RFC 8628 / Simkl AUTH V2 (`interval` / `slow_down` / HTTP 429)
             var nextPollAtMs = clockMs() + maxOf(authPollMinIntervalMs, pollIntervalSec * 1000L)
             while (true) {
                 val now = clockMs()
@@ -253,10 +321,10 @@ class SimklSyncManager(
                             remainingSeconds = 0,
                             isExpired = true,
                             statusMessage = "Codice scaduto",
-                            errorMessage = "Il codice QR è scaduto. Premi \"Rigenera codice\" per continuare."
+                            errorMessage = "Il codice QR è scaduto. Premi \"Genera nuovo codice\" per continuare."
                         )
                     }
-                    revertToPreAuthMeta(profileId)
+                    if (isProfileScoped) revertToPreAuthMeta(profileId)
                     return@launch
                 }
 
@@ -274,14 +342,24 @@ class SimklSyncManager(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
-                        // Errore di rete temporaneo: non interrompere subito l'attesa, riprova al prossimo intervallo
                         nextPollAtMs = clockMs() + maxOf(authPollMinIntervalMs, pollIntervalSec * 1000L)
-                        delay(1_000L)
+                        delay(minOf(1_000L, maxOf(100L, authPollMinIntervalMs)))
                         continue
                     }
 
-                    if (tokenResp.isSuccessful && tokenResp.body()?.accessToken?.isNotBlank() == true) {
-                        val tok = tokenResp.body()!!
+                    if (tokenResp.isSuccessful) {
+                        val tok = tokenResp.body()
+                        if (tok == null || tok.accessToken.isBlank()) {
+                            _qrDialogState.update { cur ->
+                                cur?.takeIf { it.profileId == profileId }?.copy(
+                                    statusMessage = "Risposta non valida",
+                                    errorMessage = "Simkl ha restituito un token non valido. Genera un nuovo codice."
+                                )
+                            }
+                            if (isProfileScoped) revertToPreAuthMeta(profileId)
+                            return@launch
+                        }
+
                         val expMs = tok.expiresIn?.takeIf { it > 0L }?.let { clockMs() + it * 1000L }
                         val bundle = SimklTokenBundle(
                             accessToken = tok.accessToken.trim(),
@@ -291,47 +369,45 @@ class SimklSyncManager(
                             scope = tok.scope,
                             savedAtMs = clockMs()
                         )
-                        tokenStore.saveTokens(profileId, bundle)
 
-                        val profileInfo = runCatching {
+                        val userSettingsResp = runCatching {
                             apiService.getUserSettings("Bearer ${bundle.accessToken}")
-                        }.getOrNull()?.body()
+                        }.getOrNull()
+                        if (userSettingsResp != null && userSettingsResp.code() == 401) {
+                            _qrDialogState.update { cur ->
+                                cur?.takeIf { it.profileId == profileId }?.copy(
+                                    statusMessage = "Token non valido",
+                                    errorMessage = "Token di autorizzazione Simkl non valido. Genera un nuovo codice."
+                                )
+                            }
+                            if (isProfileScoped) revertToPreAuthMeta(profileId)
+                            return@launch
+                        }
+
+                        val profileInfo = userSettingsResp?.body()
                         val displayName = profileInfo?.user?.name?.trim()?.takeIf { it.isNotBlank() }
                             ?: "Utente Simkl"
-                        val accountId = profileInfo?.account?.id?.toString()
+                        val accountId = profileInfo?.account?.id?.takeIf { it > 0L }?.toString()
 
-                        val currentMeta = dao.getSimklProfileMeta(profileId)
-                        dao.upsertSimklProfileMeta(
-                            (currentMeta ?: SimklProfileSyncMetaEntity(profileId = profileId)).copy(
-                                connectionState = SimklConnectionState.SYNCING.name,
-                                accountDisplayName = displayName,
-                                accountId = accountId,
-                                lastErrorMessage = null,
-                                updatedAtMs = clockMs()
-                            )
+                        handleAuthorizedSimklAccount(
+                            requestedProfileId = profileId,
+                            flowMode = flowMode,
+                            bundle = bundle,
+                            simklAccountId = accountId,
+                            simklDisplayName = displayName
                         )
-
-                        _qrDialogState.update { cur ->
-                            cur?.takeIf { it.profileId == profileId }?.copy(
-                                isCompleted = true,
-                                errorMessage = null,
-                                statusMessage = "Collegato come $displayName!"
-                            )
-                        }
-                        syncProfileNow(profileId, SimklSyncTrigger.POST_AUTH)
-                        delay(600L)
-                        if (_qrDialogState.value?.profileId == profileId && _qrDialogState.value?.isCompleted == true) {
-                            _qrDialogState.value = null
-                        }
                         return@launch
                     } else {
                         val err = parseOAuthError(tokenResp.errorBody()?.string())
-                        when (err?.error?.lowercase()) {
-                            "authorization_pending" -> {
+                        val errCode = err?.error?.lowercase()
+                        when {
+                            errCode == "authorization_pending" -> {
                                 nextPollAtMs = clockMs() + maxOf(authPollMinIntervalMs, pollIntervalSec * 1000L)
                             }
-                            "slow_down" -> {
-                                pollIntervalSec += 5
+                            errCode == "slow_down" || tokenResp.code() == 429 -> {
+                                val retryAfterSec = tokenResp.headers()["Retry-After"]
+                                    ?.trim()?.toIntOrNull()?.takeIf { it > 0 } ?: 0
+                                pollIntervalSec = maxOf(pollIntervalSec + 5, retryAfterSec)
                                 _qrDialogState.update { cur ->
                                     cur?.takeIf { it.profileId == profileId }?.copy(
                                         pollIntervalSeconds = pollIntervalSec,
@@ -341,7 +417,7 @@ class SimklSyncManager(
                                 }
                                 nextPollAtMs = clockMs() + maxOf(authPollMinIntervalMs, pollIntervalSec * 1000L)
                             }
-                            "access_denied" -> {
+                            errCode == "access_denied" -> {
                                 _qrDialogState.update { cur ->
                                     cur?.takeIf { it.profileId == profileId }?.copy(
                                         isDenied = true,
@@ -349,33 +425,34 @@ class SimklSyncManager(
                                         errorMessage = "Autorizzazione rifiutata su Simkl."
                                     )
                                 }
-                                revertToPreAuthMeta(profileId)
+                                if (isProfileScoped) revertToPreAuthMeta(profileId)
                                 return@launch
                             }
-                            "expired_token" -> {
+                            errCode == "expired_token" -> {
                                 _qrDialogState.update { cur ->
                                     cur?.takeIf { it.profileId == profileId }?.copy(
                                         isExpired = true,
                                         statusMessage = "Codice scaduto",
-                                        errorMessage = "Il codice di autorizzazione è scaduto. Premi \"Rigenera codice\"."
+                                        errorMessage = "Il codice di autorizzazione è scaduto. Premi \"Genera nuovo codice\"."
                                     )
                                 }
-                                revertToPreAuthMeta(profileId)
+                                if (isProfileScoped) revertToPreAuthMeta(profileId)
+                                return@launch
+                            }
+                            errCode in setOf("invalid_token", "invalid_grant", "invalid_client", "unauthorized_client") ||
+                                tokenResp.code() in 400..499 -> {
+                                val msg = err?.errorDescription?.takeIf { it.isNotBlank() }
+                                    ?: "Errore OAuth Simkl (HTTP ${tokenResp.code()})."
+                                _qrDialogState.update { cur ->
+                                    cur?.takeIf { it.profileId == profileId }?.copy(
+                                        statusMessage = "Errore collegamento",
+                                        errorMessage = msg
+                                    )
+                                }
+                                if (isProfileScoped) revertToPreAuthMeta(profileId)
                                 return@launch
                             }
                             else -> {
-                                if (tokenResp.code() in 400..499 && tokenResp.code() != 429) {
-                                    val msg = err?.errorDescription?.takeIf { it.isNotBlank() }
-                                        ?: "Errore OAuth Simkl (HTTP ${tokenResp.code()})."
-                                    _qrDialogState.update { cur ->
-                                        cur?.takeIf { it.profileId == profileId }?.copy(
-                                            statusMessage = "Errore collegamento",
-                                            errorMessage = msg
-                                        )
-                                    }
-                                    revertToPreAuthMeta(profileId)
-                                    return@launch
-                                }
                                 nextPollAtMs = clockMs() + maxOf(authPollMinIntervalMs, pollIntervalSec * 1000L)
                             }
                         }
@@ -387,16 +464,260 @@ class SimklSyncManager(
         activeAuthJobs[profileId] = job
     }
 
+    private suspend fun handleAuthorizedSimklAccount(
+        requestedProfileId: String,
+        flowMode: SimklAuthFlowMode,
+        bundle: SimklTokenBundle,
+        simklAccountId: String?,
+        simklDisplayName: String
+    ) {
+        val allProfiles = dao.getAllProfiles()
+        val existingProfileIds = allProfiles.map { it.id }.toSet()
+        val existingLinkedMeta = if (!simklAccountId.isNullOrBlank()) {
+            dao.getSimklProfileMetasByAccountId(simklAccountId).firstOrNull { meta ->
+                meta.profileId in existingProfileIds &&
+                    (meta.connectionState != SimklConnectionState.NOT_CONNECTED.name || tokenStore.hasTokens(meta.profileId))
+            }
+        } else {
+            null
+        }
+
+        val targetProfile = allProfiles.firstOrNull { it.id == requestedProfileId }
+
+        if (flowMode == SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE || targetProfile == null) {
+            if (existingLinkedMeta != null) {
+                val existingName = allProfiles.firstOrNull { it.id == existingLinkedMeta.profileId }?.name
+                    ?: simklDisplayName
+                bindTokensAndSync(
+                    targetProfileId = existingLinkedMeta.profileId,
+                    dialogKeyProfileId = requestedProfileId,
+                    bundle = bundle,
+                    simklAccountId = simklAccountId,
+                    simklDisplayName = simklDisplayName,
+                    completionStatus = "Profilo \"$existingName\" riconosciuto e sincronizzato!",
+                    emitResolvedProfile = true
+                )
+                return
+            }
+
+            val resolvedName = resolveAvailableSimklProfileName(simklDisplayName, allProfiles)
+            val accentColor = ProfileCatalogDefaults.accentOptions[
+                allProfiles.size % ProfileCatalogDefaults.accentOptions.size
+            ].colorHex
+            val createResult = repository.createProfile(
+                name = resolvedName,
+                avatarId = INITIAL_AVATAR_ID,
+                accentColorHex = accentColor
+            )
+            val created = createResult.getOrNull()
+            if (created == null) {
+                _qrDialogState.update { cur ->
+                    cur?.takeIf { it.profileId == requestedProfileId }?.copy(
+                        statusMessage = "Limite profili raggiunto",
+                        errorMessage = createResult.exceptionOrNull()?.localizedMessage
+                            ?: "Limite massimo di $MAX_USER_PROFILES profili raggiunto. Seleziona un profilo esistente dalle Impostazioni."
+                    )
+                }
+                return
+            }
+            bindTokensAndSync(
+                targetProfileId = created.id,
+                dialogKeyProfileId = requestedProfileId,
+                bundle = bundle,
+                simklAccountId = simklAccountId,
+                simklDisplayName = simklDisplayName,
+                completionStatus = "Profilo \"${created.name}\" creato e collegato a Simkl!",
+                emitResolvedProfile = true
+            )
+            return
+        }
+
+        // LINK_ACTIVE_PROFILE con profilo locale esistente:
+        // 1. Impedisci di collegare lo stesso account Simkl a due profili VixFlix sullo stesso dispositivo
+        if (existingLinkedMeta != null && existingLinkedMeta.profileId != requestedProfileId) {
+            val otherProfileName = allProfiles.firstOrNull { it.id == existingLinkedMeta.profileId }?.name
+                ?: "Altro profilo"
+            pendingAuthorizedAccount = PendingAuthorizedAccount(
+                requestedProfileId = requestedProfileId,
+                flowMode = flowMode,
+                bundle = bundle,
+                simklAccountId = simklAccountId,
+                simklDisplayName = simklDisplayName
+            )
+            revertToPreAuthMeta(requestedProfileId)
+            _qrDialogState.update { cur ->
+                cur?.takeIf { it.profileId == requestedProfileId }?.copy(
+                    statusMessage = "Account già associato a \"$otherProfileName\"",
+                    errorMessage = null,
+                    resolutionPrompt = SimklQrResolutionPrompt.AlreadyLinkedToOtherProfile(
+                        existingProfileId = existingLinkedMeta.profileId,
+                        existingProfileName = otherProfileName,
+                        simklAccountId = simklAccountId.orEmpty(),
+                        simklDisplayName = simklDisplayName
+                    )
+                )
+            }
+            return
+        }
+
+        // 2. Non sovrascrivere un profilo già collegato a un account Simkl diverso senza conferma esplicita
+        val currentMeta = dao.getSimklProfileMeta(requestedProfileId)
+        val hasDifferentExistingAccount = currentMeta != null &&
+            !currentMeta.accountId.isNullOrBlank() &&
+            !simklAccountId.isNullOrBlank() &&
+            currentMeta.accountId != simklAccountId &&
+            (tokenStore.hasTokens(requestedProfileId) ||
+                currentMeta.connectionState == SimklConnectionState.CONNECTED_SYNCED.name ||
+                currentMeta.connectionState == SimklConnectionState.AUTH_EXPIRED.name ||
+                currentMeta.connectionState == SimklConnectionState.OFFLINE_QUEUE_PENDING.name)
+
+        if (hasDifferentExistingAccount) {
+            pendingAuthorizedAccount = PendingAuthorizedAccount(
+                requestedProfileId = requestedProfileId,
+                flowMode = flowMode,
+                bundle = bundle,
+                simklAccountId = simklAccountId,
+                simklDisplayName = simklDisplayName
+            )
+            revertToPreAuthMeta(requestedProfileId)
+            _qrDialogState.update { cur ->
+                cur?.takeIf { it.profileId == requestedProfileId }?.copy(
+                    statusMessage = "Conferma sostituzione account Simkl",
+                    errorMessage = null,
+                    resolutionPrompt = SimklQrResolutionPrompt.ConfirmReplaceExistingSimkl(
+                        targetProfileId = requestedProfileId,
+                        targetProfileName = targetProfile.name,
+                        currentAccountName = currentMeta?.accountDisplayName,
+                        newAccountId = simklAccountId.orEmpty(),
+                        newAccountName = simklDisplayName
+                    )
+                )
+            }
+            return
+        }
+
+        bindTokensAndSync(
+            targetProfileId = requestedProfileId,
+            dialogKeyProfileId = requestedProfileId,
+            bundle = bundle,
+            simklAccountId = simklAccountId,
+            simklDisplayName = simklDisplayName,
+            completionStatus = "Collegato come $simklDisplayName!",
+            emitResolvedProfile = false
+        )
+    }
+
+    suspend fun confirmSwitchToExistingSimklProfile(): String? = withContext(Dispatchers.IO) {
+        val pending = pendingAuthorizedAccount ?: return@withContext null
+        val prompt = _qrDialogState.value?.resolutionPrompt as? SimklQrResolutionPrompt.AlreadyLinkedToOtherProfile
+            ?: return@withContext null
+        pendingAuthorizedAccount = null
+        bindTokensAndSync(
+            targetProfileId = prompt.existingProfileId,
+            dialogKeyProfileId = pending.requestedProfileId,
+            bundle = pending.bundle,
+            simklAccountId = pending.simklAccountId,
+            simklDisplayName = pending.simklDisplayName,
+            completionStatus = "Passato al profilo \"${prompt.existingProfileName}\" (${pending.simklDisplayName})!",
+            emitResolvedProfile = true
+        )
+        prompt.existingProfileId
+    }
+
+    suspend fun confirmReplaceExistingSimklAccount(): Boolean = withContext(Dispatchers.IO) {
+        val pending = pendingAuthorizedAccount ?: return@withContext false
+        val prompt = _qrDialogState.value?.resolutionPrompt as? SimklQrResolutionPrompt.ConfirmReplaceExistingSimkl
+            ?: return@withContext false
+        pendingAuthorizedAccount = null
+        // Rimuove solo i token e i baseline remoti precedenti: i dati locali (preferiti e progressi) restano intatti
+        val cfg = configProvider()
+        val prevBundle = tokenStore.readTokens(prompt.targetProfileId)
+        if (prevBundle != null && cfg.isClientIdConfigured) {
+            prevBundle.refreshToken?.let { runCatching { apiService.revokeToken(it, cfg.clientId) } }
+            runCatching { apiService.revokeToken(prevBundle.accessToken, cfg.clientId) }
+        }
+        tokenStore.clearTokens(prompt.targetProfileId)
+        dao.deleteSimklPendingForProfile(prompt.targetProfileId)
+        dao.deleteSimklBaselinesForProfile(prompt.targetProfileId)
+
+        bindTokensAndSync(
+            targetProfileId = prompt.targetProfileId,
+            dialogKeyProfileId = pending.requestedProfileId,
+            bundle = pending.bundle,
+            simklAccountId = pending.simklAccountId,
+            simklDisplayName = pending.simklDisplayName,
+            completionStatus = "Collegato come ${pending.simklDisplayName}!",
+            emitResolvedProfile = false
+        )
+        true
+    }
+
+    private suspend fun bindTokensAndSync(
+        targetProfileId: String,
+        dialogKeyProfileId: String,
+        bundle: SimklTokenBundle,
+        simklAccountId: String?,
+        simklDisplayName: String,
+        completionStatus: String,
+        emitResolvedProfile: Boolean
+    ) {
+        tokenStore.saveTokens(targetProfileId, bundle)
+        val currentMeta = dao.getSimklProfileMeta(targetProfileId)
+        dao.upsertSimklProfileMeta(
+            (currentMeta ?: SimklProfileSyncMetaEntity(profileId = targetProfileId)).copy(
+                connectionState = SimklConnectionState.SYNCING.name,
+                accountDisplayName = simklDisplayName,
+                accountId = simklAccountId ?: currentMeta?.accountId,
+                lastErrorMessage = null,
+                updatedAtMs = clockMs()
+            )
+        )
+        if (emitResolvedProfile) {
+            _resolvedActiveProfileRequests.tryEmit(targetProfileId)
+        }
+        _qrDialogState.update { cur ->
+            cur?.takeIf { it.profileId == dialogKeyProfileId }?.copy(
+                isCompleted = true,
+                errorMessage = null,
+                resolutionPrompt = null,
+                statusMessage = completionStatus
+            )
+        }
+        syncProfileNow(targetProfileId, SimklSyncTrigger.POST_AUTH)
+        delay(600L)
+        if (_qrDialogState.value?.profileId == dialogKeyProfileId && _qrDialogState.value?.isCompleted == true) {
+            _qrDialogState.value = null
+        }
+    }
+
+    private fun resolveAvailableSimklProfileName(
+        rawDisplayName: String,
+        existingProfiles: List<com.example.data.local.UserProfileEntity>
+    ): String {
+        val base = rawDisplayName.trim().ifBlank { "Profilo Simkl" }.take(20)
+        val used = existingProfiles.map { it.name.lowercase() }.toSet()
+        if (base.lowercase() !in used) return base
+        for (i in 2..9) {
+            val candidate = "$base $i".take(24)
+            if (candidate.lowercase() !in used) return candidate
+        }
+        return "Simkl ${existingProfiles.size + 1}".take(24)
+    }
+
     fun dismissDeviceAuthorization(profileId: String? = null) {
         val targetProfile = profileId ?: _qrDialogState.value?.profileId
+        pendingAuthorizedAccount = null
         if (!targetProfile.isNullOrBlank()) {
             activeAuthJobs.remove(targetProfile)?.cancel()
-            scope.launch { revertToPreAuthMeta(targetProfile) }
+            if (targetProfile != SimklConfig.PROFILE_CREATION_PENDING_ID) {
+                scope.launch { revertToPreAuthMeta(targetProfile) }
+            }
         }
         _qrDialogState.value = null
     }
 
     suspend fun unlinkAccount(profileId: String) = withContext(Dispatchers.IO) {
+        pendingAuthorizedAccount = null
         activeAuthJobs.remove(profileId)?.cancel()
         activeSyncJobs.remove(profileId)?.cancel()
         if (_qrDialogState.value?.profileId == profileId) {

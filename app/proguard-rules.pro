@@ -50,12 +50,16 @@
 -keep class com.example.data.remote.TmdbWatchProviderDto { *; }
 -keep class com.example.data.remote.TmdbWatchProvidersResponse { *; }
 -keep class com.example.data.remote.SubtitleTrack { *; }
+-keep class com.example.data.remote.simkl.**Dto { *; }
+-keep class com.example.data.remote.simkl.**Response { *; }
+-keep class com.example.data.remote.simkl.**Request { *; }
 -keep class com.example.data.repository.CatalogFeed { *; }
 
 # ------------------------------------------------------------------------------
 # 3. Retrofit 2 & Kotlin Coroutines
 # ------------------------------------------------------------------------------
 -keep interface com.example.data.remote.TmdbApiService { *; }
+-keep interface com.example.data.remote.simkl.SimklApiService { *; }
 -keepclassmembers,allowshrinking,allowobfuscation interface * {
     @retrofit2.http.* <methods>;
 }

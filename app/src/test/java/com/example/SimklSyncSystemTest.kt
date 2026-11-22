@@ -18,9 +18,11 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
+import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.UserProfileUiState
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
+import com.example.data.local.WatchlistEntity
 import com.example.data.local.simkl.SimklPlaybackBaselineEntity
 import com.example.data.local.simkl.SimklProfileSyncMetaEntity
 import com.example.data.local.simkl.SimklSecureTokenStore
@@ -28,16 +30,19 @@ import com.example.data.local.simkl.SimklTokenBundle
 import com.example.data.local.simkl.SoftwareAesGcmSimklCipherEngine
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbApiService
+import com.example.data.remote.simkl.SimklAuthFlowMode
 import com.example.data.remote.simkl.SimklConfig
 import com.example.data.remote.simkl.SimklConnectionState
 import com.example.data.remote.simkl.SimklProfileUiState
 import com.example.data.remote.simkl.SimklQrDialogState
+import com.example.data.remote.simkl.SimklQrResolutionPrompt
 import com.example.data.remote.simkl.SimklSyncManager
 import com.example.data.remote.simkl.SimklSyncTrigger
 import com.example.data.repository.VixFlixRepository
 import com.example.ui.VixFlixViewModel
 import com.example.ui.components.SimklQrConnectDialog
 import com.example.ui.components.SimklQrGenerator
+import com.example.ui.screens.ProfileSelectionScreen
 import com.example.ui.screens.SettingsCategory
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.MyApplicationTheme
@@ -832,14 +837,316 @@ class SimklSyncSystemTest {
         }
         composeRule.waitForIdle()
         composeRule.onNodeWithText("COLLEGA IL TUO ACCOUNT SIMKL", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "Scansiona il QR Code con il tuo smartphone per collegare il tuo account Simkl.",
+            useUnmergedTree = true
+        ).assertIsDisplayed()
         composeRule.onNodeWithTag("simkl_qr_code", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithTag("simkl_user_code", useUnmergedTree = true).assertTextContains("QR-8899")
         composeRule.onNodeWithTag("simkl_qr_countdown", useUnmergedTree = true).assertTextContains("09:00")
         composeRule.onNodeWithTag("simkl_copy_code_button", useUnmergedTree = true).performClick()
+        composeRule.onNodeWithText("GENERA NUOVO CODICE", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithTag("simkl_regenerate_code_button", useUnmergedTree = true).performClick()
         assertTrue(regenClicked)
+        composeRule.onNodeWithText("ANNULLA", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithTag("simkl_close_qr_dialog_button", useUnmergedTree = true).performClick()
         assertTrue(closeClicked)
+    }
+
+    // 31. Device authorization sends required media scopes & client_id in form body
+    @Test
+    fun `31 device authorization sends media_read media_write scope and internal client_id`() = runBlocking {
+        server.tokenResponses.add(400 to """{"error":"authorization_pending"}""")
+        val manager = buildManager(clientId = "vixflix_public_client_123")
+        manager.startDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+
+        waitUntil { server.recordedRequests.any { it.path == "/oauth2/device" } }
+        val req = server.recordedRequests.first { it.path == "/oauth2/device" }
+        val formParams = req.body.split("&").mapNotNull { pair ->
+            val idx = pair.indexOf('=')
+            if (idx > 0) {
+                java.net.URLDecoder.decode(pair.substring(0, idx), "UTF-8") to
+                    java.net.URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+            } else {
+                null
+            }
+        }.toMap()
+        assertEquals("vixflix_public_client_123", formParams["client_id"])
+        assertEquals(SimklConfig.DEFAULT_SCOPES, formParams["scope"])
+        manager.dismissDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+    }
+
+    // 32. Long verification_uri_complete (>= 183 bytes) generates valid V10+ QR matrix
+    @Test
+    fun `32 qr generator encodes long simkl verification_uri_complete urls cleanly via V10+ 16-bit header`() = runBlocking {
+        val longCompleteUrl = "${server.baseUrl.trimEnd('/')}/pin?user_code=LONG-9988&device_session=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        assertTrue(longCompleteUrl.length > 185)
+        val matrix = SimklQrGenerator.generate(longCompleteUrl)
+        // V10+ has module size >= 57
+        assertTrue(matrix.size >= 57)
+        assertTrue(matrix[0, 0])
+        assertTrue(matrix[3, 3])
+        assertFalse(matrix[1, 1])
+
+        server.deviceResponseJson = """
+            {
+              "device_code": "dev_long_url",
+              "user_code": "LONG-9988",
+              "verification_uri": "${server.baseUrl.trimEnd('/')}/pin",
+              "verification_uri_complete": "$longCompleteUrl",
+              "expires_in": 600,
+              "interval": 1
+            }
+        """.trimIndent()
+        server.tokenResponses.add(400 to """{"error":"authorization_pending"}""")
+
+        val manager = buildManager()
+        manager.startDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+        waitUntil { manager.globalQrDialogState.value?.qrMatrix != null }
+        val dialog = manager.globalQrDialogState.value!!
+        assertTrue(dialog.hasCompleteVerificationUri)
+        assertTrue(dialog.qrMatrix!!.size >= 57)
+        manager.dismissDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+    }
+
+    // 33. verification_uri without verification_uri_complete preserves verification_uri and shows manual PIN guidance
+    @Test
+    fun `33 verification_uri without verification_uri_complete is preserved without fabricating AUTH V1 path`() = runBlocking {
+        server.deviceResponseJson = """
+            {
+              "device_code": "dev_manual_pin",
+              "user_code": "PIN-4455",
+              "verification_uri": "${server.baseUrl.trimEnd('/')}/oauth2/device/verify",
+              "expires_in": 600,
+              "interval": 1
+            }
+        """.trimIndent()
+        server.tokenResponses.add(400 to """{"error":"authorization_pending"}""")
+
+        val manager = buildManager()
+        manager.startDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+        waitUntil { manager.globalQrDialogState.value?.userCode == "PIN-4455" }
+
+        val dialog = manager.globalQrDialogState.value!!
+        assertFalse(dialog.hasCompleteVerificationUri)
+        assertEquals("${server.baseUrl.trimEnd('/')}/oauth2/device/verify", dialog.verificationUrl)
+        assertNotNull(dialog.qrMatrix)
+        manager.dismissDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+    }
+
+    // 34. Cross-profile duplicate guard prevents linking same Simkl account to two VixFlix profiles
+    @Test
+    fun `34 cross-profile duplicate simkl account prompts switching instead of duplicating link`() = runBlocking {
+        val profileB = repo.createProfile("Giulia", "avatar_2", 0xFF2196F3L).getOrThrow()
+        tokenStore.saveTokens(DEFAULT_PRIMARY_PROFILE_ID, SimklTokenBundle("tok_a", "ref_a", nowMs() + 86_400_000L))
+        db.vixFlixDao().upsertSimklProfileMeta(
+            SimklProfileSyncMetaEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                connectionState = SimklConnectionState.CONNECTED_SYNCED.name,
+                accountDisplayName = "MarcoSimkl",
+                accountId = "777888"
+            )
+        )
+
+        server.deviceResponseJson = """
+            {"device_code":"dev_dup","user_code":"DUP-1122","verification_uri":"${server.baseUrl.trimEnd('/')}/pin","expires_in":600,"interval":1}
+        """.trimIndent()
+        server.tokenResponses.add(200 to """{"access_token":"tok_dup_new","refresh_token":"ref_dup","expires_in":86400}""")
+        server.userSettingsJson = """{"user":{"name":"MarcoSimkl"},"account":{"id":777888}}"""
+
+        val manager = buildManager()
+        manager.startDeviceAuthorization(profileB.id, SimklAuthFlowMode.LINK_ACTIVE_PROFILE)
+
+        waitUntil {
+            manager.globalQrDialogState.value?.resolutionPrompt is SimklQrResolutionPrompt.AlreadyLinkedToOtherProfile
+        }
+        val prompt = manager.globalQrDialogState.value?.resolutionPrompt as SimklQrResolutionPrompt.AlreadyLinkedToOtherProfile
+        assertEquals(DEFAULT_PRIMARY_PROFILE_ID, prompt.existingProfileId)
+        assertNull(tokenStore.readTokens(profileB.id))
+
+        val switchedProfile = manager.confirmSwitchToExistingSimklProfile()
+        assertEquals(DEFAULT_PRIMARY_PROFILE_ID, switchedProfile)
+        assertEquals("tok_dup_new", tokenStore.readTokens(DEFAULT_PRIMARY_PROFILE_ID)?.accessToken)
+        assertNull(tokenStore.readTokens(profileB.id))
+    }
+
+    // 35. Existing different Simkl account on profile requires confirmation before overwrite and preserves local data
+    @Test
+    fun `35 replacing existing different simkl account asks confirmation and preserves local watchlist and progress`() = runBlocking {
+        val movie = MediaItem(27205, "movie", "Inception", "desc", "/p.jpg", "/b.jpg", 8.8, "2010")
+        repo.toggleWatchlist(movie, currentlyInList = false, profileId = DEFAULT_PRIMARY_PROFILE_ID)
+        repo.saveWatchProgress(movie, null, null, null, 1_500_000L, 6_000_000L, DEFAULT_PRIMARY_PROFILE_ID)
+        tokenStore.saveTokens(DEFAULT_PRIMARY_PROFILE_ID, SimklTokenBundle("tok_old", "ref_old", nowMs() + 86_400_000L))
+        db.vixFlixDao().upsertSimklProfileMeta(
+            SimklProfileSyncMetaEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                connectionState = SimklConnectionState.CONNECTED_SYNCED.name,
+                accountDisplayName = "OldUser",
+                accountId = "1001"
+            )
+        )
+
+        server.deviceResponseJson = """
+            {"device_code":"dev_rep","user_code":"REP-3344","verification_uri":"${server.baseUrl.trimEnd('/')}/pin","expires_in":600,"interval":1}
+        """.trimIndent()
+        server.tokenResponses.add(200 to """{"access_token":"tok_new_2002","refresh_token":"ref_new","expires_in":86400}""")
+        server.userSettingsJson = """{"user":{"name":"NewUser"},"account":{"id":2002}}"""
+
+        val manager = buildManager()
+        manager.startDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID, SimklAuthFlowMode.LINK_ACTIVE_PROFILE)
+
+        waitUntil {
+            manager.globalQrDialogState.value?.resolutionPrompt is SimklQrResolutionPrompt.ConfirmReplaceExistingSimkl
+        }
+        // Token precedente intatto finché l'utente non conferma esplicitamente
+        assertEquals("tok_old", tokenStore.readTokens(DEFAULT_PRIMARY_PROFILE_ID)?.accessToken)
+
+        assertTrue(manager.confirmReplaceExistingSimklAccount())
+        assertEquals("tok_new_2002", tokenStore.readTokens(DEFAULT_PRIMARY_PROFILE_ID)?.accessToken)
+        assertTrue(server.recordedRequests.any { it.path == "/oauth2/revoke" })
+        // Preferiti e progressi locali devono rimanere intatti
+        assertTrue(db.vixFlixDao().observeWatchlist(DEFAULT_PRIMARY_PROFILE_ID).first().any { it.id == "movie_27205" })
+        assertNotNull(repo.getWatchProgress("movie_27205", DEFAULT_PRIMARY_PROFILE_ID))
+    }
+
+    // 36. AUTHENTICATE_OR_CREATE_PROFILE recognizes existing profile or creates a new one up to MAX_USER_PROFILES
+    @Test
+    fun `36 authenticate_or_create_profile creates new profile once and recognizes it on subsequent login`() = runBlocking {
+        server.deviceResponseJson = """
+            {"device_code":"dev_prof_new","user_code":"PROF-001","verification_uri":"${server.baseUrl.trimEnd('/')}/pin","expires_in":600,"interval":1}
+        """.trimIndent()
+        server.tokenResponses.add(200 to """{"access_token":"tok_elena","refresh_token":"ref_elena","expires_in":86400}""")
+        server.userSettingsJson = """{"user":{"name":"Elena"},"account":{"id":551234}}"""
+
+        val manager = buildManager()
+        manager.startDeviceAuthorization(SimklConfig.PROFILE_CREATION_PENDING_ID, SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE)
+
+        waitUntil {
+            repo.getAllProfiles().any { it.name == "Elena" }
+        }
+        val elena = repo.getAllProfiles().first { it.name == "Elena" }
+        assertEquals("tok_elena", tokenStore.readTokens(elena.id)?.accessToken)
+
+        // Seconda autenticazione con lo stesso account Simkl -> riconosce Elena senza creare duplicati
+        server.tokenResponses.add(200 to """{"access_token":"tok_elena_2","refresh_token":"ref_elena_2","expires_in":86400}""")
+        manager.startDeviceAuthorization(SimklConfig.PROFILE_CREATION_PENDING_ID, SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE)
+        waitUntil { tokenStore.readTokens(elena.id)?.accessToken == "tok_elena_2" }
+        assertEquals(1, repo.getAllProfiles().count { it.name.startsWith("Elena") })
+
+        // Riempie fino al limite MAX_USER_PROFILES e verifica blocco pulito per nuovo account sconosciuto
+        var idx = 1
+        while (repo.getAllProfiles().size < MAX_USER_PROFILES) {
+            repo.createProfile("Extra$idx", "initial_letter", 0xFF4CAF50L)
+            idx++
+        }
+        server.tokenResponses.add(200 to """{"access_token":"tok_full","refresh_token":"ref_full","expires_in":86400}""")
+        server.userSettingsJson = """{"user":{"name":"Overflow"},"account":{"id":999999}}"""
+        manager.startDeviceAuthorization(SimklConfig.PROFILE_CREATION_PENDING_ID, SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE)
+        waitUntil {
+            manager.globalQrDialogState.value?.errorMessage?.contains("Limite", ignoreCase = true) == true
+        }
+        assertEquals(MAX_USER_PROFILES, repo.getAllProfiles().size)
+    }
+
+    // 37. Unconfigured SIMKL_CLIENT_ID & invalid / 401 user token responses fail safely
+    @Test
+    fun `37 missing client_id and HTTP 401 or blank tokens are handled cleanly without saving broken state`() = runBlocking {
+        val managerNoKey = buildManager(clientId = "")
+        managerNoKey.startDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+        val noKeyState = managerNoKey.globalQrDialogState.value!!
+        assertTrue(noKeyState.isClientIdMissing)
+        assertFalse(noKeyState.canRegenerate)
+        assertTrue(noKeyState.errorMessage?.contains("SIMKL_CLIENT_ID") == true)
+
+        // Blank access token rejected
+        server.deviceResponseJson = """
+            {"device_code":"dev_blank","user_code":"BLK-111","verification_uri":"${server.baseUrl.trimEnd('/')}/pin","expires_in":600,"interval":1}
+        """.trimIndent()
+        server.tokenResponses.add(200 to """{"access_token":"   ","expires_in":86400}""")
+        val manager = buildManager()
+        manager.startDeviceAuthorization(DEFAULT_PRIMARY_PROFILE_ID)
+        waitUntil { manager.globalQrDialogState.value?.errorMessage?.contains("token", ignoreCase = true) == true }
+        assertNull(tokenStore.readTokens(DEFAULT_PRIMARY_PROFILE_ID))
+    }
+
+    // 38. Conflict resolution UI renders switch & replace confirmation actions cleanly
+    @Test
+    fun `38 qr dialog renders resolution prompt buttons and executes switch or replace callbacks`() {
+        var switchClicked = false
+        var replaceClicked = false
+        var prompt by mutableStateOf<SimklQrResolutionPrompt>(
+            SimklQrResolutionPrompt.AlreadyLinkedToOtherProfile(
+                existingProfileId = "p2",
+                existingProfileName = "Giulia",
+                simklAccountId = "777",
+                simklDisplayName = "MarcoSimkl"
+            )
+        )
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                SimklQrConnectDialog(
+                    state = SimklQrDialogState(
+                        profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                        isLoading = false,
+                        resolutionPrompt = prompt
+                    ),
+                    profileName = "Principale",
+                    onRegenerate = {},
+                    onDismiss = {},
+                    onConfirmSwitchProfile = { switchClicked = true },
+                    onConfirmReplaceAccount = { replaceClicked = true }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("simkl_resolution_prompt", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("simkl_switch_existing_profile_button", useUnmergedTree = true).performClick()
+        assertTrue(switchClicked)
+
+        prompt = SimklQrResolutionPrompt.ConfirmReplaceExistingSimkl(
+            targetProfileId = DEFAULT_PRIMARY_PROFILE_ID,
+            targetProfileName = "Principale",
+            currentAccountName = "OldUser",
+            newAccountId = "2002",
+            newAccountName = "NewUser"
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("simkl_confirm_replace_account_button", useUnmergedTree = true).performClick()
+        assertTrue(replaceClicked)
+    }
+
+    // 39. ProfileSelectionScreen exposes Simkl QR auth button cleanly
+    @Test
+    fun `39 profile selection screen exposes QR auth entry point`() {
+        var simklAuthClicked = false
+        val profiles = runBlocking { repo.getAllProfiles() }
+        composeRule.setContent {
+            MyApplicationTheme {
+                ProfileSelectionScreen(
+                    state = UserProfileUiState(
+                        profiles = profiles,
+                        activeProfile = profiles.firstOrNull(),
+                        showProfileSelector = true,
+                        isInitialized = true
+                    ),
+                    isTvLayout = true,
+                    onSelectProfile = {},
+                    onToggleManageMode = {},
+                    onCreateProfile = { _, _, _, _, _, _, _, done -> done(true) },
+                    onUpdateProfile = {},
+                    onDeleteProfile = { _, done -> done(true) },
+                    onSetAutoLogin = {},
+                    onSetDefaultProfile = {},
+                    onClearError = {},
+                    onClose = {},
+                    onAuthenticateWithSimkl = { simklAuthClicked = true }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("profile_simkl_auth_button", useUnmergedTree = true).performScrollTo().performClick()
+        assertTrue(simklAuthClicked)
     }
 
     data class RecordedHttpRequest(

@@ -50,17 +50,17 @@ jobs:
           echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "Building VixFlix v${VERSION_NAME} (code ${VERSION_CODE}, commit ${SHORT_SHA})"
 
-      - name: Configure .env with TMDB_API_KEY
+      - name: Configure .env with TMDB_API_KEY and SIMKL_CLIENT_ID
         env:
           SECRET_TMDB_KEY: ${{ secrets.TMDB_API_KEY }}
+          SECRET_SIMKL_CLIENT_ID: ${{ secrets.SIMKL_CLIENT_ID }}
         run: |
-          if [ -n "$SECRET_TMDB_KEY" ]; then
-            echo "TMDB_API_KEY=$SECRET_TMDB_KEY" > .env
-          elif [ -f .env.example ]; then
-            cp .env.example .env
-          else
-            echo "TMDB_API_KEY=8bbf9bcc418b752d137d973fd97fcb0f" > .env
-          fi
+          TMDB_VAL="${SECRET_TMDB_KEY:-8bbf9bcc418b752d137d973fd97fcb0f}"
+          SIMKL_VAL="${SECRET_SIMKL_CLIENT_ID:-MY_SIMKL_CLIENT_ID}"
+          {
+            echo "TMDB_API_KEY=${TMDB_VAL}"
+            echo "SIMKL_CLIENT_ID=${SIMKL_VAL}"
+          } > .env
 
       - name: Prepare Persistent Signing Keystore
         run: |

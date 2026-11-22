@@ -166,25 +166,54 @@ data class SimklQrMatrix(
     }
 }
 
+enum class SimklAuthFlowMode {
+    LINK_ACTIVE_PROFILE,
+    AUTHENTICATE_OR_CREATE_PROFILE
+}
+
+@Immutable
+sealed interface SimklQrResolutionPrompt {
+    @Immutable
+    data class AlreadyLinkedToOtherProfile(
+        val existingProfileId: String,
+        val existingProfileName: String,
+        val simklAccountId: String,
+        val simklDisplayName: String
+    ) : SimklQrResolutionPrompt
+
+    @Immutable
+    data class ConfirmReplaceExistingSimkl(
+        val targetProfileId: String,
+        val targetProfileName: String,
+        val currentAccountName: String?,
+        val newAccountId: String,
+        val newAccountName: String
+    ) : SimklQrResolutionPrompt
+}
+
 @Immutable
 data class SimklQrDialogState(
     val profileId: String,
+    val flowMode: SimklAuthFlowMode = SimklAuthFlowMode.LINK_ACTIVE_PROFILE,
     val isLoading: Boolean = true,
     val verificationUrl: String? = null,
+    val hasCompleteVerificationUri: Boolean = false,
     val userCode: String? = null,
     val expiresAtMs: Long = 0L,
     val remainingSeconds: Int = 0,
     val pollIntervalSeconds: Int = 5,
     val statusMessage: String = "Preparazione codice Simkl…",
     val errorMessage: String? = null,
+    val isClientIdMissing: Boolean = false,
     val isSlowDownActive: Boolean = false,
     val isExpired: Boolean = false,
     val isDenied: Boolean = false,
     val isCompleted: Boolean = false,
+    val resolutionPrompt: SimklQrResolutionPrompt? = null,
     val qrMatrix: SimklQrMatrix? = null
 ) {
     val canRegenerate: Boolean
-        get() = !isLoading && !isCompleted
+        get() = !isLoading && !isCompleted && !isClientIdMissing && resolutionPrompt == null
 }
 
 @Immutable

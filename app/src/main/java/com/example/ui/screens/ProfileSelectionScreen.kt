@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -124,6 +125,7 @@ fun ProfileSelectionScreen(
     onSetDefaultProfile: (String?) -> Unit,
     onClearError: () -> Unit,
     onClose: () -> Unit,
+    onAuthenticateWithSimkl: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     isSelectorVisible: Boolean = true
 ) {
@@ -141,6 +143,7 @@ fun ProfileSelectionScreen(
     val manageActionFocusRequester = remember { FocusRequester() }
     val autoLoginFocusRequester = remember { FocusRequester() }
     val closeActionFocusRequester = remember { FocusRequester() }
+    val simklAuthFocusRequester = remember { FocusRequester() }
 
     val activeIdx = remember(state.profiles, state.activeProfile?.id) {
         val idx = state.profiles.indexOfFirst { it.id == state.activeProfile?.id }
@@ -451,134 +454,193 @@ fun ProfileSelectionScreen(
                             .heightIn(min = 48.dp)
                             .safeFocusRequester(manageActionFocusRequester)
                             .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionUp -> upToGridRequester?.safeRequestFocus() ?: false
-                                        Key.DirectionRight -> autoLoginFocusRequester.safeRequestFocus()
-                                        Key.DirectionLeft -> true
-                                        else -> false
-                                    }
-                                } else false
-                            }
-                            .focusProperties {
-                                upToGridRequester.takeIfAttached()?.let { up = it }
-                                autoLoginFocusRequester.takeIfAttached()?.let { right = it }
-                            }
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(10.dp),
-                                focusedScale = 1.05f,
-                                focusedBorderColor = NetflixWhite,
-                                focusTag = "profile_manage_button"
-                            )
-                            .testTag("profile_manage_button")
-                    ) {
-                        Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Gestisci profili")
-                    }
-
-                    // Toggle accesso automatico rapido
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (state.autoLoginEnabled) NetflixMatchGreen.copy(alpha = 0.2f) else NetflixCardSurface,
-                        border = BorderStroke(
-                            1.2.dp,
-                            if (state.autoLoginEnabled) NetflixMatchGreen else NetflixElevatedSurface
-                        ),
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .safeFocusRequester(autoLoginFocusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionUp -> upToGridRequester?.safeRequestFocus() ?: false
-                                        Key.DirectionLeft -> manageActionFocusRequester.safeRequestFocus()
-                                        Key.DirectionRight -> if (showCloseBtn) closeActionFocusRequester.safeRequestFocus() else true
-                                        else -> false
-                                    }
-                                } else false
-                            }
-                            .focusProperties {
-                                upToGridRequester.takeIfAttached()?.let { up = it }
-                                manageActionFocusRequester.takeIfAttached()?.let { left = it }
-                                if (showCloseBtn) {
-                                    closeActionFocusRequester.takeIfAttached()?.let { right = it }
-                                }
-                            }
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(10.dp),
-                                focusedScale = 1.04f,
-                                focusedBorderColor = NetflixWhite,
-                                focusTag = "profile_autologin_toggle",
-                                onClick = { onSetAutoLogin(!state.autoLoginEnabled) }
-                            )
-                            .testTag("profile_autologin_toggle")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .clip(CircleShape)
-                                    .background(if (state.autoLoginEnabled) NetflixMatchGreen else NetflixElevatedSurface),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (state.autoLoginEnabled) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = NetflixBlack,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                }
-                            }
-                            Text(
-                                text = if (state.autoLoginEnabled) "Accesso automatico attivo" else "Ricorda all'avvio",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = NetflixWhite
-                            )
-                        }
-                    }
-
-                    if (showCloseBtn) {
-                        OutlinedButton(
-                            onClick = onClose,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, NetflixElevatedSurface),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixLightGray),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .safeFocusRequester(closeActionFocusRequester)
-                                .onPreviewKeyEvent { keyEvent ->
                                     if (keyEvent.type == KeyEventType.KeyDown) {
                                         when (keyEvent.key) {
                                             Key.DirectionUp -> upToGridRequester?.safeRequestFocus() ?: false
-                                            Key.DirectionLeft -> autoLoginFocusRequester.safeRequestFocus()
-                                            Key.DirectionRight -> true
+                                            Key.DirectionRight -> autoLoginFocusRequester.safeRequestFocus()
+                                            Key.DirectionDown -> if (onAuthenticateWithSimkl != null) simklAuthFocusRequester.safeRequestFocus() else true
+                                            Key.DirectionLeft -> true
                                             else -> false
                                         }
                                     } else false
                                 }
                                 .focusProperties {
                                     upToGridRequester.takeIfAttached()?.let { up = it }
-                                    autoLoginFocusRequester.takeIfAttached()?.let { left = it }
+                                    autoLoginFocusRequester.takeIfAttached()?.let { right = it }
+                                    if (onAuthenticateWithSimkl != null) {
+                                        simklAuthFocusRequester.takeIfAttached()?.let { down = it }
+                                    }
                                 }
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(10.dp),
                                     focusedScale = 1.05f,
                                     focusedBorderColor = NetflixWhite,
-                                    focusTag = "profile_selector_close_button"
+                                    focusTag = "profile_manage_button"
                                 )
-                                .testTag("profile_selector_close_button")
+                                .testTag("profile_manage_button")
                         ) {
-                            Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Chiudi")
+                            Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Gestisci profili")
+                        }
+
+                        // Toggle accesso automatico rapido
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (state.autoLoginEnabled) NetflixMatchGreen.copy(alpha = 0.2f) else NetflixCardSurface,
+                            border = BorderStroke(
+                                1.2.dp,
+                                if (state.autoLoginEnabled) NetflixMatchGreen else NetflixElevatedSurface
+                            ),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .safeFocusRequester(autoLoginFocusRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp -> upToGridRequester?.safeRequestFocus() ?: false
+                                            Key.DirectionLeft -> manageActionFocusRequester.safeRequestFocus()
+                                            Key.DirectionRight -> if (showCloseBtn) closeActionFocusRequester.safeRequestFocus() else true
+                                            Key.DirectionDown -> if (onAuthenticateWithSimkl != null) simklAuthFocusRequester.safeRequestFocus() else true
+                                            else -> false
+                                        }
+                                    } else false
+                                }
+                                .focusProperties {
+                                    upToGridRequester.takeIfAttached()?.let { up = it }
+                                    manageActionFocusRequester.takeIfAttached()?.let { left = it }
+                                    if (showCloseBtn) {
+                                        closeActionFocusRequester.takeIfAttached()?.let { right = it }
+                                    }
+                                    if (onAuthenticateWithSimkl != null) {
+                                        simklAuthFocusRequester.takeIfAttached()?.let { down = it }
+                                    }
+                                }
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedScale = 1.04f,
+                                    focusedBorderColor = NetflixWhite,
+                                    focusTag = "profile_autologin_toggle",
+                                    onClick = { onSetAutoLogin(!state.autoLoginEnabled) }
+                                )
+                                .testTag("profile_autologin_toggle")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(if (state.autoLoginEnabled) NetflixMatchGreen else NetflixElevatedSurface),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (state.autoLoginEnabled) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = NetflixBlack,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = if (state.autoLoginEnabled) "Accesso automatico attivo" else "Ricorda all'avvio",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = NetflixWhite
+                                )
+                            }
+                        }
+
+                        if (showCloseBtn) {
+                            OutlinedButton(
+                                onClick = onClose,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, NetflixElevatedSurface),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixLightGray),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .safeFocusRequester(closeActionFocusRequester)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.key) {
+                                                Key.DirectionUp -> upToGridRequester?.safeRequestFocus() ?: false
+                                                Key.DirectionLeft -> autoLoginFocusRequester.safeRequestFocus()
+                                                Key.DirectionDown -> if (onAuthenticateWithSimkl != null) simklAuthFocusRequester.safeRequestFocus() else true
+                                                Key.DirectionRight -> true
+                                                else -> false
+                                            }
+                                        } else false
+                                    }
+                                    .focusProperties {
+                                        upToGridRequester.takeIfAttached()?.let { up = it }
+                                        autoLoginFocusRequester.takeIfAttached()?.let { left = it }
+                                        if (onAuthenticateWithSimkl != null) {
+                                            simklAuthFocusRequester.takeIfAttached()?.let { down = it }
+                                        }
+                                    }
+                                    .tvFocusableControl(
+                                        shape = RoundedCornerShape(10.dp),
+                                        focusedScale = 1.05f,
+                                        focusedBorderColor = NetflixWhite,
+                                        focusTag = "profile_selector_close_button"
+                                    )
+                                    .testTag("profile_selector_close_button")
+                            ) {
+                                Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Chiudi")
+                            }
                         }
                     }
+                }
+
+            if (!state.isManageMode && onAuthenticateWithSimkl != null) {
+                Spacer(modifier = Modifier.height(14.dp))
+                OutlinedButton(
+                    onClick = {
+                        onClearError()
+                        onAuthenticateWithSimkl()
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.65f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = NetflixRed.copy(alpha = 0.12f),
+                        contentColor = NetflixWhite
+                    ),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .safeFocusRequester(simklAuthFocusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> manageActionFocusRequester.safeRequestFocus()
+                                    Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusProperties {
+                            manageActionFocusRequester.takeIfAttached()?.let { up = it }
+                        }
+                        .tvFocusableControl(
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.04f,
+                            focusedBorderColor = NetflixWhite,
+                            focusTag = "profile_simkl_auth_button"
+                        )
+                        .testTag("profile_simkl_auth_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.QrCode2,
+                        contentDescription = null,
+                        tint = NetflixRed,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Accedi o crea profilo con Simkl (QR)", fontWeight = FontWeight.SemiBold)
                 }
             }
         }

@@ -299,6 +299,12 @@ interface VixFlixDao {
     @Query("SELECT * FROM simkl_profile_sync_meta WHERE profileId = :profileId LIMIT 1")
     suspend fun getSimklProfileMeta(profileId: String): SimklProfileSyncMetaEntity?
 
+    @Query("SELECT * FROM simkl_profile_sync_meta")
+    suspend fun getAllSimklProfileMetas(): List<SimklProfileSyncMetaEntity>
+
+    @Query("SELECT * FROM simkl_profile_sync_meta WHERE accountId = :accountId")
+    suspend fun getSimklProfileMetasByAccountId(accountId: String): List<SimklProfileSyncMetaEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSimklProfileMeta(entity: SimklProfileSyncMetaEntity)
 

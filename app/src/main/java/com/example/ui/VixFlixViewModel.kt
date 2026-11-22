@@ -29,7 +29,10 @@ import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
 import com.example.data.local.simkl.SimklSecureTokenStore
 import com.example.data.remote.ActorDetails
+import com.example.data.remote.simkl.SimklAuthFlowMode
+import com.example.data.remote.simkl.SimklConfig
 import com.example.data.remote.simkl.SimklProfileUiState
+import com.example.data.remote.simkl.SimklQrDialogState
 import com.example.data.remote.simkl.SimklSyncManager
 import com.example.data.remote.simkl.SimklSyncTrigger
 import com.example.data.remote.GitHubReleaseInfo
@@ -322,6 +325,8 @@ class VixFlixViewModel @JvmOverloads constructor(
         .flatMapLatest { profileId -> simklSyncManager.observeProfileUiState(profileId) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, SimklProfileUiState())
 
+    val simklQrDialogState: StateFlow<SimklQrDialogState?> = simklSyncManager.globalQrDialogState
+
     val streamLanguage: StateFlow<String> = combine(activeProfile, preferences.streamLanguageFlow) { profile, prefLang ->
         profile?.preferredLanguage?.takeIf { it.isNotBlank() } ?: prefLang
     }.stateIn(viewModelScope, SharingStarted.Eagerly, "it")
@@ -435,6 +440,11 @@ class VixFlixViewModel @JvmOverloads constructor(
         loadCatalog(forceRefresh = false)
         initGitHubUpdateChecker()
         initContinueWatchingDurationEnricher()
+        viewModelScope.launch {
+            simklSyncManager.resolvedActiveProfileRequests.collect { resolvedProfileId ->
+                selectProfile(resolvedProfileId)
+            }
+        }
     }
 
     /**
@@ -718,15 +728,43 @@ class VixFlixViewModel @JvmOverloads constructor(
     }
 
     fun openSimklConnectDialog() {
-        simklSyncManager.startDeviceAuthorization(_activeProfileId.value)
+        simklSyncManager.startDeviceAuthorization(
+            profileId = _activeProfileId.value,
+            flowMode = SimklAuthFlowMode.LINK_ACTIVE_PROFILE
+        )
+    }
+
+    fun openSimklAuthForProfileSelector() {
+        simklSyncManager.startDeviceAuthorization(
+            profileId = SimklConfig.PROFILE_CREATION_PENDING_ID,
+            flowMode = SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE
+        )
     }
 
     fun retrySimklDeviceFlow() {
-        simklSyncManager.startDeviceAuthorization(_activeProfileId.value)
+        val activeQr = simklSyncManager.globalQrDialogState.value
+        if (activeQr?.flowMode == SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE) {
+            openSimklAuthForProfileSelector()
+        } else {
+            openSimklConnectDialog()
+        }
     }
 
     fun dismissSimklConnectDialog() {
-        simklSyncManager.dismissDeviceAuthorization(_activeProfileId.value)
+        val targetId = simklSyncManager.globalQrDialogState.value?.profileId ?: _activeProfileId.value
+        simklSyncManager.dismissDeviceAuthorization(targetId)
+    }
+
+    fun confirmSimklSwitchToExistingProfile() {
+        viewModelScope.launch {
+            simklSyncManager.confirmSwitchToExistingSimklProfile()
+        }
+    }
+
+    fun confirmSimklReplaceExistingAccount() {
+        viewModelScope.launch {
+            simklSyncManager.confirmReplaceExistingSimklAccount()
+        }
     }
 
     fun syncSimklNow() {

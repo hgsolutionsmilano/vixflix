@@ -133,6 +133,7 @@ import com.example.data.local.WatchlistEntity
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbWatchProviderDto
+import com.example.data.remote.simkl.SimklAuthFlowMode
 import com.example.data.repository.CatalogFeed
 import com.example.ui.ActorDetailUiState
 import com.example.ui.CatalogUiState
@@ -215,6 +216,7 @@ fun VixFlixAppScreen(
     val movieGenreState by viewModel.movieGenreState.collectAsStateWithLifecycle()
     val platformState by viewModel.platformState.collectAsStateWithLifecycle()
     val simklUiState by viewModel.simklUiState.collectAsStateWithLifecycle()
+    val simklQrDialogState by viewModel.simklQrDialogState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner) {
@@ -312,7 +314,9 @@ fun VixFlixAppScreen(
     val isPlayerVisible = playbackSession != null
     val isOverlayActive = isDetailVisible || isPlayerVisible
     val isUpdateDialogVisible = !isSplashVisible && !isProfileSelectorVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
-    val isSimklQrDialogVisible = !isSplashVisible && !isProfileSelectorVisible && simklUiState.qrDialogState != null
+    val isSimklQrDialogVisible = !isSplashVisible &&
+        simklQrDialogState != null &&
+        (!isProfileSelectorVisible || simklQrDialogState?.flowMode == SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE)
     val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible || isSimklQrDialogVisible || showExitConfirmDialog
     val isCatalogInteractive = !isSplashVisible && !isProfileSelectorVisible && !isDetailVisible && !isPlayerVisible
     val activeDpadScope = when {
@@ -1226,12 +1230,14 @@ fun VixFlixAppScreen(
 
         // Modale TV collegamento Simkl tramite QR Code AUTH V2
         if (isSimklQrDialogVisible) {
-            simklUiState.qrDialogState?.let { qrState ->
+            simklQrDialogState?.let { qrState ->
                 SimklQrConnectDialog(
                     state = qrState,
                     profileName = profileUiState.activeProfile?.name ?: "Profilo Principale",
                     onRegenerate = viewModel::retrySimklDeviceFlow,
-                    onDismiss = viewModel::dismissSimklConnectDialog
+                    onDismiss = viewModel::dismissSimklConnectDialog,
+                    onConfirmSwitchProfile = viewModel::confirmSimklSwitchToExistingProfile,
+                    onConfirmReplaceAccount = viewModel::confirmSimklReplaceExistingAccount
                 )
             }
         }
@@ -1396,7 +1402,8 @@ fun VixFlixAppScreen(
                 onSetAutoLogin = viewModel::setAutoLoginProfile,
                 onSetDefaultProfile = viewModel::setDefaultProfileId,
                 onClearError = viewModel::clearProfileError,
-                onClose = viewModel::closeProfileSelector
+                onClose = viewModel::closeProfileSelector,
+                onAuthenticateWithSimkl = viewModel::openSimklAuthForProfileSelector
             )
         }
 

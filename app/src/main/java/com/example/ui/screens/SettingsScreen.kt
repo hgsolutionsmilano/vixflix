@@ -2290,7 +2290,7 @@ private fun SimklSettingsSectionCard(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "SIMKL_CLIENT_ID non configurato: inseriscilo nel pannello Secrets di AI Studio per abilitare il collegamento Simkl.",
+                        text = "Credenziale applicazione SIMKL_CLIENT_ID non configurata nella build: impostala nei Secrets di AI Studio per abilitare il collegamento tramite QR Code.",
                         style = MaterialTheme.typography.bodySmall,
                         color = NetflixWhite,
                         modifier = Modifier.padding(12.dp)
@@ -2339,12 +2339,7 @@ private fun SimklSettingsSectionCard(
                                 color = NetflixLightGray
                             )
                             Text(
-                                text = buildString {
-                                    append(simklUiState.accountDisplayName)
-                                    if (!simklUiState.accountId.isNullOrBlank()) {
-                                        append(" (#${simklUiState.accountId})")
-                                    }
-                                },
+                                text = simklUiState.accountDisplayName,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = NetflixWhite,

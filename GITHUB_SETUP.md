@@ -8,9 +8,9 @@ Questo progetto include tutto il necessario per:
 ## Come caricare su GitHub e attivare la build automatica
 
 1. Crea un repository su GitHub (es. `tuo-utente/vixflix-android`) o usa il pulsante **Push to GitHub** nelle impostazioni di AI Studio.
-2. Nel repository GitHub, vai in **Settings -> Secrets and variables -> Actions** e aggiungi il secret:
-   - Nome: `TMDB_API_KEY`
-   - Valore: la tua chiave API TMDB
+2. Nel repository GitHub, vai in **Settings -> Secrets and variables -> Actions** e aggiungi i seguenti secrets:
+   - Nome: `TMDB_API_KEY` — Valore: la tua chiave API TMDB
+   - Nome: `SIMKL_CLIENT_ID` — Valore: il tuo Client ID pubblico Simkl API v2 (`OAuth2 Device Flow`)
 3. Ad ogni `git push` sul branch `main` o `master`:
    - La GitHub Action incrementa automaticamente `CI_VERSION_NAME` (`1.0.X`) e `CI_VERSION_CODE` (`100 + X`).
    - Imposta `DEFAULT_GITHUB_REPO` automaticamente al nome del tuo repository (`owner/repo`).

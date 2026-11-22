@@ -35,14 +35,9 @@ data class SimklConfig(
             (authBaseUrl.startsWith("http://127.0.0.1", ignoreCase = true) && trimmed.startsWith(authBaseUrl, ignoreCase = true))
     }
 
-    fun normalizeVerificationUrl(rawUri: String?, userCode: String?): String? {
+    fun normalizeVerificationUrl(rawUri: String?): String? {
         val trimmed = rawUri?.trim().orEmpty()
-        if (trimmed.isEmpty()) {
-            val code = userCode?.trim().orEmpty()
-            if (code.isEmpty()) return null
-            val base = authBaseUrl.trimEnd('/')
-            return "$base/pin/$code"
-        }
+        if (trimmed.isEmpty()) return null
         val resolved = when {
             trimmed.startsWith("https://", ignoreCase = true) || trimmed.startsWith("http://", ignoreCase = true) -> trimmed
             trimmed.startsWith("/") -> "${authBaseUrl.trimEnd('/')}$trimmed"
@@ -58,6 +53,8 @@ data class SimklConfig(
         val SIMKL_APP_VERSION: String get() = BuildConfig.VERSION_NAME
         const val PLACEHOLDER_CLIENT_ID = "MY_SIMKL_CLIENT_ID"
 
+        const val DEFAULT_SCOPES = "media:read media:write"
+        const val PROFILE_CREATION_PENDING_ID = "__simkl_profile_creation__"
         const val GRANT_TYPE_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code"
         const val GRANT_TYPE_REFRESH_TOKEN = "refresh_token"
         const val DEFAULT_MIN_PROGRESS_STOP = 96

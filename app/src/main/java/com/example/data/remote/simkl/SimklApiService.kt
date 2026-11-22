@@ -22,7 +22,7 @@ interface SimklApiService {
     @POST("oauth2/device")
     suspend fun requestDeviceCode(
         @Field("client_id") clientId: String,
-        @Field("scope") scope: String? = null
+        @Field("scope") scope: String = SimklConfig.DEFAULT_SCOPES
     ): Response<SimklDeviceCodeResponse>
 
     @FormUrlEncoded
