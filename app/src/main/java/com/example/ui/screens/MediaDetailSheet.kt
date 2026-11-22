@@ -82,8 +82,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -100,6 +102,7 @@ import com.example.ui.DetailUiState
 import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.MediaCatalogRow
+import com.example.ui.components.animatedPosterShowcase
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.rememberOptimizedImageRequest
 import com.example.ui.components.rememberIsTvDevice
@@ -152,12 +155,26 @@ fun MediaDetailScreen(
     onToggleWatchlist: () -> Unit,
     onSelectSimilar: (MediaItem) -> Unit,
     onSelectSimilarWithScroll: ((MediaItem, Int, Int) -> Unit)? = null,
+    onSelectSagaWithScroll: ((MediaItem, Int, Int) -> Unit)? = null,
+    onMarkEpisodeWatched: (seasonNumber: Int, episodeNumber: Int) -> Unit = { _, _ -> },
+    onMarkSeasonWatched: (seasonNumber: Int, episodeNumbers: List<Int>) -> Unit = { _, _ -> },
     onSelectActor: (TmdbCastMemberDto, Int, Int) -> Unit = { _, _, _ -> }
 ) {
     val backAction = if (detailStackDepth > 1) onBack else onClose
+    var contextMenuEpisode by remember(state.mediaItem.uniqueKey) {
+        mutableStateOf<TmdbEpisodeDto?>(null)
+    }
+    var contextMenuEpisodeIndex by remember(state.mediaItem.uniqueKey) {
+        mutableStateOf<Int?>(null)
+    }
+    var contextMenuSeasonEpisodeNumbers by remember(state.mediaItem.uniqueKey) {
+        mutableStateOf<List<Int>>(emptyList())
+    }
 
     BackHandler(enabled = isInteractive) {
-        if (state.activeTrailer != null) {
+        if (contextMenuEpisode != null) {
+            contextMenuEpisode = null
+        } else if (state.activeTrailer != null) {
             onCloseTrailer()
         } else {
             backAction()
@@ -204,7 +221,9 @@ fun MediaDetailScreen(
             label = "detailItemTransition",
             modifier = Modifier
                 .fillMaxSize()
-                .focusProperties { canFocus = isInteractive && state.activeTrailer == null }
+                .focusProperties {
+                    canFocus = isInteractive && state.activeTrailer == null && contextMenuEpisode == null
+                }
         ) { currentKey ->
             val currentState = if (currentKey == state.mediaItem.uniqueKey) {
                 state
@@ -219,11 +238,22 @@ fun MediaDetailScreen(
             val episodesList = remember(currentState.episodes) {
                 currentState.episodes.distinctBy { it.seasonNumber to it.episodeNumber }
             }
+            val sagaList = remember(currentItem.isSeries, currentItem.id, details?.collectionMovies) {
+                if (!currentItem.isSeries) {
+                    details?.collectionMovies
+                        .orEmpty()
+                        .filter { it.id != currentItem.id }
+                        .distinctBy { it.uniqueKey }
+                } else {
+                    emptyList()
+                }
+            }
             val similarList = remember(details?.similar) {
                 details?.similar.orEmpty().distinctBy { it.uniqueKey }
             }
             val listState = rememberLazyListState()
             val castListState = rememberLazyListState()
+            val sagaListState = rememberLazyListState()
             val coroutineScope = rememberCoroutineScope()
             val detailPlayFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
             val detailTrailerFocusRequester = remember(currentItem.uniqueKey) { FocusRequester() }
@@ -247,6 +277,10 @@ fun MediaDetailScreen(
                     }
                 }
             }
+            val firstSagaFocus = remember(currentItem.uniqueKey) { FocusRequester() }
+            val sagaMovieRequesters = remember(currentItem.uniqueKey, sagaList) {
+                sagaList.associate { it.uniqueKey to FocusRequester() }
+            }
             val firstSimilarFocus = remember(currentItem.uniqueKey) { FocusRequester() }
 
             // Indici deterministici delle sezioni nel LazyColumn per scroll + focus a singola pressione D-Pad
@@ -268,6 +302,7 @@ fun MediaDetailScreen(
                 }
                 else -> null
             }
+            val sagaItemIndex: Int? = if (sagaList.isNotEmpty()) nextLazySectionIndex++ else null
             val similarItemIndex: Int? = if (similarList.isNotEmpty()) nextLazySectionIndex++ else null
 
             // Tracciamento focus non-reattivo per evitare ricomposizioni dell'intera scheda
@@ -306,13 +341,34 @@ fun MediaDetailScreen(
             val isCurrentActive = currentItem.uniqueKey == item.uniqueKey
             val isTrailerOpen = currentState.activeTrailer != null
 
+            val isEpisodeMenuOpen = contextMenuEpisode != null
+            var wasEpisodeMenuOpen by remember(currentItem.uniqueKey) { mutableStateOf(false) }
+            LaunchedEffect(isEpisodeMenuOpen) {
+                if (wasEpisodeMenuOpen && !isEpisodeMenuOpen && isCurrentActive && isInteractive) {
+                    val targetIdx = contextMenuEpisodeIndex
+                    val targetRequester = if (targetIdx != null) {
+                        episodeFocusRequesters.getOrNull(targetIdx) ?: firstEpisodeFocus
+                    } else {
+                        firstEpisodeFocus
+                    }
+                    for (attempt in 1..6) {
+                        androidx.compose.runtime.withFrameNanos { }
+                        if (targetRequester.safeRequestFocus()) break
+                        kotlinx.coroutines.delay(16L)
+                    }
+                }
+                wasEpisodeMenuOpen = isEpisodeMenuOpen
+            }
+
             LaunchedEffect(
                 isCurrentActive,
                 isInteractive,
                 isTrailerOpen,
                 currentState.savedFocusedCastActorId,
+                currentState.savedFocusedSagaKey,
                 currentState.savedFocusedSimilarKey,
                 castList.size,
+                sagaList.size,
                 similarList.size
             ) {
                 if (!isCurrentActive) return@LaunchedEffect
@@ -322,6 +378,7 @@ fun MediaDetailScreen(
                 }
                 if (isInteractive) {
                     val savedCastId = currentState.savedFocusedCastActorId
+                    val savedSagaKey = currentState.savedFocusedSagaKey
                     val savedSimilarKey = currentState.savedFocusedSimilarKey
 
                     // 1. Ripristino deterministico su un attore del Cast al ritorno dalla schermata Dettaglio Attore
@@ -370,7 +427,41 @@ fun MediaDetailScreen(
                         }
                     }
 
-                    // 2. Ripristino deterministico sulla sezione Titoli Simili al ritorno da un titolo simile
+                    // 2A. Ripristino deterministico sulla sezione FILM DELLA STESSA SAGA al ritorno da un film della saga
+                    if (savedSagaKey != null && sagaItemIndex != null && sagaList.isNotEmpty()) {
+                        val sagaIdx = sagaList.indexOfFirst { it.uniqueKey == savedSagaKey }.coerceAtLeast(0)
+                        focusTracker.wasTrailerOpen = false
+                        focusTracker.userMovedFocus = true
+                        focusTracker.heroStageLockActive = false
+                        if (currentState.savedScrollIndex > 0 || currentState.savedScrollOffset > 0) {
+                            runCatching {
+                                listState.scrollToItem(
+                                    currentState.savedScrollIndex,
+                                    currentState.savedScrollOffset
+                                )
+                            }
+                        } else {
+                            runCatching { listState.scrollToItem(sagaItemIndex, 0) }
+                        }
+                        runCatching { sagaListState.scrollToItem(sagaIdx) }
+                        androidx.compose.runtime.withFrameNanos { }
+                        val sagaReq = sagaMovieRequesters[savedSagaKey] ?: firstSagaFocus
+                        var restored = false
+                        for (attempt in 1..6) {
+                            if (sagaReq.safeRequestFocus()) {
+                                restored = true
+                                break
+                            }
+                            kotlinx.coroutines.delay(20L)
+                            androidx.compose.runtime.withFrameNanos { }
+                        }
+                        if (!restored) {
+                            firstSagaFocus.safeRequestFocus()
+                        }
+                        return@LaunchedEffect
+                    }
+
+                    // 2B. Ripristino deterministico sulla sezione Titoli Simili al ritorno da un titolo simile
                     if (savedSimilarKey != null && similarItemIndex != null && similarList.isNotEmpty()) {
                         focusTracker.wasTrailerOpen = false
                         focusTracker.userMovedFocus = true
@@ -443,6 +534,7 @@ fun MediaDetailScreen(
                 castItemIndex != null -> castItemIndex to firstCastFocus
                 hasSeasons && seasonsItemIndex != null -> seasonsItemIndex to firstSeasonFocus
                 episodesStartIndex != null -> episodesStartIndex to firstEpisodeFocus
+                sagaItemIndex != null -> sagaItemIndex to firstSagaFocus
                 similarItemIndex != null -> similarItemIndex to firstSimilarFocus
                 else -> null
             }
@@ -480,10 +572,12 @@ fun MediaDetailScreen(
             }
 
             val handleDetailBack: () -> Unit = {
-                if (isTrailerOpen) {
+                if (contextMenuEpisode != null) {
+                    contextMenuEpisode = null
+                } else if (isTrailerOpen) {
                     onCloseTrailer()
                 } else if (detailStackDepth > 1) {
-                    // Quando si è in una catena di navigazione (es. Film B aperto da Attore X),
+                    // Quando si è in una catena di navigazione (es. Film B aperto da Attore X o dalla Saga),
                     // BACK torna immediatamente alla schermata precedente nello stack.
                     backAction()
                 } else if (
@@ -632,7 +726,7 @@ fun MediaDetailScreen(
             DpadFocusScopeProvider(
                 scope = DpadFocusScope.DETAIL_SHEET,
                 onRecoverFocus = {
-                    if (isCurrentActive && isInteractive && !isTrailerOpen) {
+                    if (isCurrentActive && isInteractive && !isTrailerOpen && contextMenuEpisode == null) {
                         when {
                             detailPlayFocusRequester.safeRequestFocus() -> "detail_play_button"
                             detailTrailerFocusRequester.safeRequestFocus() -> "detail_watch_trailer_button"
@@ -648,7 +742,7 @@ fun MediaDetailScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .onPreviewKeyEvent { keyEvent ->
-                        if (isInteractive && isCurrentActive && !isTrailerOpen && keyEvent.type == KeyEventType.KeyDown) {
+                        if (isInteractive && isCurrentActive && !isTrailerOpen && contextMenuEpisode == null && keyEvent.type == KeyEventType.KeyDown) {
                             when (keyEvent.key) {
                                 Key.MediaPlay, Key.MediaPlayPause -> {
                                     onPlayMain(false)
@@ -1367,6 +1461,7 @@ fun MediaDetailScreen(
                         val downFromCastTarget: Pair<Int, FocusRequester>? = when {
                             hasSeasons && seasonsItemIndex != null -> seasonsItemIndex to firstSeasonFocus
                             episodesStartIndex != null -> episodesStartIndex to firstEpisodeFocus
+                            sagaItemIndex != null -> sagaItemIndex to firstSagaFocus
                             similarItemIndex != null -> similarItemIndex to firstSimilarFocus
                             else -> null
                         }
@@ -1623,13 +1718,20 @@ fun MediaDetailScreen(
                                 val prevEpRequester = episodeFocusRequesters.getOrNull(epIndex - 1)
                                 val nextEpRequester = episodeFocusRequesters.getOrNull(epIndex + 1)
                                 val currentEpLazyIndex = (episodesStartIndex ?: 0) + epIndex
+                                val isEpisodeWatched = ep.episodeNumber in currentState.watchedEpisodeNumbers
                                 EpisodeRowItem(
                                     episode = ep,
                                     savedEpProgress = currentState.episodeProgressMap[ep.episodeNumber],
+                                    isWatched = isEpisodeWatched,
                                     fallbackBackdropUrl = currentItem.backdropUrl,
                                     isTvDevice = isTvDevice,
                                     onPlayEpisode = {
                                         onPlayEpisode(ep.seasonNumber, ep.episodeNumber, ep.name)
+                                    },
+                                    onLongPressEpisode = {
+                                        contextMenuEpisodeIndex = epIndex
+                                        contextMenuSeasonEpisodeNumbers = episodesList.map { it.episodeNumber }
+                                        contextMenuEpisode = ep
                                     },
                                     onFocusChange = { focused ->
                                         if (focused) {
@@ -1709,9 +1811,145 @@ fun MediaDetailScreen(
                         }
                     }
 
+                    // Film della stessa saga / collezione ufficiale TMDB (solo per i Film)
+                    if (!currentItem.isSeries && sagaList.isNotEmpty()) {
+                        val upFromSagaTarget: Pair<Int, FocusRequester>? =
+                            castItemIndex?.let { it to firstCastFocus }
+                        val downFromSagaTarget: Pair<Int, FocusRequester>? =
+                            similarItemIndex?.let { it to firstSimilarFocus }
+                        item(key = "detail_saga_section_${currentItem.uniqueKey}", contentType = "detail_saga") {
+                            Spacer(modifier = Modifier.height(20.dp))
+                            var lastFocusedSagaIdx by remember(currentItem.uniqueKey) {
+                                androidx.compose.runtime.mutableIntStateOf(0)
+                            }
+                            LaunchedEffect(currentState.savedFocusedSagaKey, sagaList) {
+                                val savedKey = currentState.savedFocusedSagaKey ?: return@LaunchedEffect
+                                val idx = sagaList.indexOfFirst { it.uniqueKey == savedKey }
+                                if (idx >= 0) {
+                                    lastFocusedSagaIdx = idx
+                                }
+                            }
+                            val targetSagaIdx by remember(sagaListState, sagaList.size) {
+                                derivedStateOf {
+                                    val maxIdx = (sagaList.size - 1).coerceAtLeast(0)
+                                    val firstVisibleIdx = sagaListState.firstVisibleItemIndex.coerceIn(0, maxIdx)
+                                    val rememberedIdx = lastFocusedSagaIdx.coerceIn(0, maxIdx)
+                                    val visibleItems = sagaListState.layoutInfo.visibleItemsInfo
+                                    if (visibleItems.isEmpty() || visibleItems.any { it.index == rememberedIdx }) {
+                                        rememberedIdx
+                                    } else {
+                                        firstVisibleIdx
+                                    }
+                                }
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp)
+                                    .testTag("detail_saga_section")
+                            ) {
+                                Text(
+                                    text = "FILM DELLA STESSA SAGA",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NetflixWhite,
+                                    modifier = Modifier
+                                        .padding(horizontal = 24.dp, vertical = 4.dp)
+                                        .testTag("detail_saga_section_title")
+                                )
+                                LazyRow(
+                                    state = sagaListState,
+                                    contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                    modifier = Modifier.testTag("detail_saga_row_${currentItem.uniqueKey}")
+                                ) {
+                                    itemsIndexed(
+                                        items = sagaList,
+                                        key = { _, sagaItem -> "saga_${sagaItem.uniqueKey}" },
+                                        contentType = { _, _ -> "detail_saga_card" }
+                                    ) { index, sagaItem ->
+                                        val ownSagaRequester = sagaMovieRequesters[sagaItem.uniqueKey]
+                                            ?: remember(sagaItem.uniqueKey) { FocusRequester() }
+                                        SagaMovieCard(
+                                            item = sagaItem,
+                                            itemIndex = index,
+                                            listState = sagaListState,
+                                            onClick = {
+                                                lastFocusedSagaIdx = index
+                                                val handler = onSelectSagaWithScroll ?: onSelectSimilarWithScroll
+                                                if (handler != null) {
+                                                    handler(
+                                                        sagaItem,
+                                                        listState.firstVisibleItemIndex,
+                                                        listState.firstVisibleItemScrollOffset
+                                                    )
+                                                } else {
+                                                    onSelectSimilar(sagaItem)
+                                                }
+                                            },
+                                            onFocused = {
+                                                lastFocusedSagaIdx = index
+                                                focusTracker.userMovedFocus = true
+                                                focusTracker.heroStageLockActive = false
+                                            },
+                                            modifier = Modifier
+                                                .safeFocusRequester(ownSagaRequester)
+                                                .then(
+                                                    if (index == targetSagaIdx) {
+                                                        Modifier.safeFocusRequester(firstSagaFocus)
+                                                    } else {
+                                                        Modifier
+                                                    }
+                                                )
+                                                .onPreviewKeyEvent { keyEvent ->
+                                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                                        when (keyEvent.key) {
+                                                            Key.DirectionUp -> {
+                                                                if (upFromSagaTarget != null) {
+                                                                    navigateToDetailSection(
+                                                                        upFromSagaTarget.first,
+                                                                        upFromSagaTarget.second,
+                                                                        false
+                                                                    )
+                                                                } else {
+                                                                    returnToHeroStage()
+                                                                }
+                                                            }
+                                                            Key.DirectionDown -> {
+                                                                if (downFromSagaTarget != null) {
+                                                                    navigateToDetailSection(
+                                                                        downFromSagaTarget.first,
+                                                                        downFromSagaTarget.second,
+                                                                        true
+                                                                    )
+                                                                } else {
+                                                                    true
+                                                                }
+                                                            }
+                                                            Key.DirectionLeft -> index == 0
+                                                            Key.DirectionRight -> index == sagaList.lastIndex
+                                                            else -> false
+                                                        }
+                                                    } else {
+                                                        false
+                                                    }
+                                                }
+                                                .focusProperties {
+                                                    (upFromSagaTarget?.second ?: detailPlayFocusRequester)
+                                                        .takeIfAttached()?.let { up = it }
+                                                    downFromSagaTarget?.second?.takeIfAttached()?.let { down = it }
+                                                }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Contenuti simili da TMDB
                     if (similarList.isNotEmpty()) {
                         val upToBeforeSimilarTarget: Pair<Int, FocusRequester>? = when {
+                            sagaItemIndex != null -> sagaItemIndex to firstSagaFocus
                             episodesStartIndex != null && episodesList.isNotEmpty() ->
                                 (episodesStartIndex + episodesList.lastIndex) to (episodeFocusRequesters.lastOrNull() ?: firstEpisodeFocus)
                             hasSeasons && seasonsItemIndex != null -> seasonsItemIndex to firstSeasonFocus
@@ -1907,6 +2145,40 @@ fun MediaDetailScreen(
                 onSelectTrailer = onSelectYouTubeTrailer,
                 onRetry = onRetryYouTubeTrailer,
                 onClose = onCloseTrailer
+            )
+        }
+
+        // Menu Contestuale Episodio Serie TV (Pressione prolungata tasto OK su un episodio)
+        val activeContextEpisode = contextMenuEpisode
+        if (activeContextEpisode != null) {
+            val allSeasonNums = if (contextMenuSeasonEpisodeNumbers.isNotEmpty()) {
+                contextMenuSeasonEpisodeNumbers
+            } else {
+                state.episodes
+                    .filter { it.seasonNumber == activeContextEpisode.seasonNumber }
+                    .map { it.episodeNumber }
+                    .ifEmpty { listOf(activeContextEpisode.episodeNumber) }
+            }
+            TvEpisodeWatchedContextDialog(
+                episode = activeContextEpisode,
+                seasonEpisodeCount = allSeasonNums.size,
+                onMarkEpisodeWatched = {
+                    contextMenuEpisode = null
+                    onMarkEpisodeWatched(
+                        activeContextEpisode.seasonNumber,
+                        activeContextEpisode.episodeNumber
+                    )
+                },
+                onMarkSeasonWatched = {
+                    contextMenuEpisode = null
+                    onMarkSeasonWatched(
+                        activeContextEpisode.seasonNumber,
+                        allSeasonNums
+                    )
+                },
+                onDismiss = {
+                    contextMenuEpisode = null
+                }
             )
         }
     }
@@ -2163,9 +2435,11 @@ private fun CastCard(
 private fun EpisodeRowItem(
     episode: TmdbEpisodeDto,
     savedEpProgress: EpisodeProgressEntity?,
+    isWatched: Boolean = false,
     fallbackBackdropUrl: String?,
     isTvDevice: Boolean = false,
     onPlayEpisode: () -> Unit,
+    onLongPressEpisode: (() -> Unit)? = null,
     onFocusChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -2183,6 +2457,8 @@ private fun EpisodeRowItem(
         ),
         border = if (isFocused) {
             BorderStroke(if (isTvDevice) 2.5.dp else 2.dp, NetflixWhite)
+        } else if (isWatched) {
+            BorderStroke(1.dp, NetflixMatchGreen.copy(alpha = 0.45f))
         } else {
             BorderStroke(1.dp, NetflixElevatedSurface.copy(alpha = 0.55f))
         },
@@ -2201,6 +2477,7 @@ private fun EpisodeRowItem(
                     isFocused = focused
                     onFocusChange?.invoke(focused)
                 },
+                onLongClick = onLongPressEpisode,
                 onClick = onPlayEpisode
             )
             .testTag("episode_card_${episode.seasonNumber}_${episode.episodeNumber}")
@@ -2281,14 +2558,50 @@ private fun EpisodeRowItem(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(if (isTvDevice) 6.dp else 5.dp)
                 ) {
-                    Text(
-                        text = "${episode.episodeNumber}. ${episode.name ?: "Episodio ${episode.episodeNumber}"}",
-                        style = if (isTvDevice) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = NetflixWhite,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "${episode.episodeNumber}. ${episode.name ?: "Episodio ${episode.episodeNumber}"}",
+                            style = if (isTvDevice) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        if (isWatched) {
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Surface(
+                                color = NetflixMatchGreen.copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(1.dp, NetflixMatchGreen.copy(alpha = 0.65f)),
+                                modifier = Modifier.testTag("episode_watched_badge_${episode.seasonNumber}_${episode.episodeNumber}")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Episodio visto",
+                                        tint = NetflixMatchGreen,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = "VISTO",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = NetflixMatchGreen
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -2367,3 +2680,120 @@ private fun EpisodeRowItem(
         }
     }
 }
+
+@Composable
+private fun SagaMovieCard(
+    item: MediaItem,
+    itemIndex: Int,
+    listState: androidx.compose.foundation.lazy.LazyListState?,
+    onClick: () -> Unit,
+    onFocused: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    var isFocused by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier
+            .width(136.dp)
+            .animatedPosterShowcase(
+                itemIndex = itemIndex,
+                listState = listState,
+                isFocused = isFocused,
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.08f,
+                focusTag = "saga_poster_card_${item.uniqueKey}",
+                onFocusedChanged = { focused ->
+                    isFocused = focused
+                    if (focused) onFocused()
+                },
+                onQuickPlay = onClick,
+                onClick = onClick
+            )
+            .testTag("saga_poster_card_${item.uniqueKey}")
+    ) {
+        Card(
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(0.67f)
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                AsyncImage(
+                    model = rememberSizedDetailImageRequest(item.posterUrl, 136.dp, 202.dp),
+                    contentDescription = item.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                Surface(
+                    color = NetflixBlack.copy(alpha = 0.78f),
+                    shape = RoundedCornerShape(bottomEnd = 6.dp),
+                    modifier = Modifier.align(Alignment.TopStart)
+                ) {
+                    Text(
+                        text = "SAGA",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = NetflixRed,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+
+                if (item.voteAverage > 0.0) {
+                    Surface(
+                        color = NetflixBlack.copy(alpha = 0.78f),
+                        shape = RoundedCornerShape(bottomStart = 6.dp),
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = NetflixGold,
+                                modifier = Modifier.size(10.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            val formattedVote = remember(item.voteAverage) {
+                                String.format(Locale.US, "%.1f", item.voteAverage)
+                            }
+                            Text(
+                                text = formattedVote,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp,
+                                color = NetflixWhite
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = item.title,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (isFocused) FontWeight.Bold else FontWeight.SemiBold,
+            color = if (isFocused) NetflixWhite else NetflixWhite.copy(alpha = 0.92f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("saga_card_title_${item.uniqueKey}")
+        )
+        if (!item.releaseYear.isNullOrBlank()) {
+            Text(
+                text = item.releaseYear,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isFocused) NetflixLightGray else NetflixMutedGray,
+                maxLines = 1,
+                modifier = Modifier.testTag("saga_card_year_${item.uniqueKey}")
+            )
+        }
+    }
+}
+

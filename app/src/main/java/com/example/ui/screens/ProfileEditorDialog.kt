@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,12 +53,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -72,12 +75,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.example.data.local.INITIAL_AVATAR_ID
 import com.example.data.local.ProfileAvatarPreset
 import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.UserProfileEntity
 import com.example.ui.components.ProfileAvatarArtwork
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
+import com.example.ui.components.takeIfAttached
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -88,11 +93,12 @@ import com.example.ui.theme.NetflixMatchGreen
 import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
+import kotlinx.coroutines.launch
 
 /**
  * Dialogo modale cinematografico per creare un nuovo profilo o modificare un profilo esistente.
- * In modalita modifica salva automaticamente ogni personalizzazione (avatar, colore, lingua,
- * audio, sottotitoli e nome valido).
+ * Supporta navigazione completa tramite D-Pad Android TV (frecce direzionali, OK, BACK) senza
+ * punti morti o blocchi del focus, e include l'avatar automatico con l'iniziale del nome profilo.
  */
 @Composable
 fun ProfileEditorDialog(
@@ -118,7 +124,7 @@ fun ProfileEditorDialog(
 ) {
     val isEditMode = editingProfile != null
     val defaultAvatar = remember(editingProfile) {
-        editingProfile?.avatarId ?: ProfileAvatarPreset.entries.first().id
+        editingProfile?.avatarId?.takeIf { it.isNotBlank() } ?: INITIAL_AVATAR_ID
     }
     val defaultAccent = remember(editingProfile) {
         editingProfile?.accentColorHex ?: ProfileCatalogDefaults.accentOptions.first().colorHex
@@ -134,11 +140,93 @@ fun ProfileEditorDialog(
     var validationError by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
+    val avatarOptionIds = remember {
+        listOf(INITIAL_AVATAR_ID) + ProfileAvatarPreset.entries.map { it.id }
+    }
+    val accentOptions = ProfileCatalogDefaults.accentOptions
+
     val keyboardController = LocalSoftwareKeyboardController.current
+    val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+    val avatarListState = rememberLazyListState()
+    val colorListState = rememberLazyListState()
+
+    // FocusRequester per ogni riga e controllo interattivo del dialogo
+    val closeButtonFocusRequester = remember { FocusRequester() }
     val nameFieldFocusRequester = remember { FocusRequester() }
+    val avatarFocusRequesters = remember(avatarOptionIds.size) {
+        List(avatarOptionIds.size) { FocusRequester() }
+    }
+    val colorFocusRequesters = remember(accentOptions.size) {
+        List(accentOptions.size) { FocusRequester() }
+    }
+    val langItFocusRequester = remember { FocusRequester() }
+    val langEnFocusRequester = remember { FocusRequester() }
+    val audioItFocusRequester = remember { FocusRequester() }
+    val audioEnFocusRequester = remember { FocusRequester() }
+    val audioOriginalFocusRequester = remember { FocusRequester() }
+    val subtitlesToggleFocusRequester = remember { FocusRequester() }
+    val subLangItFocusRequester = remember { FocusRequester() }
+    val subLangEnFocusRequester = remember { FocusRequester() }
+    val setDefaultFocusRequester = remember { FocusRequester() }
+    val deleteOrSwitchFocusRequester = remember { FocusRequester() }
+    val cancelButtonFocusRequester = remember { FocusRequester() }
     val primaryActionFocusRequester = remember { FocusRequester() }
     val deleteCancelFocusRequester = remember { FocusRequester() }
-    val scrollState = rememberScrollState()
+    val deleteConfirmFocusRequester = remember { FocusRequester() }
+
+    val hasDeleteOrSwitchAction = editingProfile != null && !editingProfile.isPrimary
+
+    val preferredAvatarFocusRequester: () -> FocusRequester = {
+        val selectedIdx = avatarOptionIds.indexOf(selectedAvatarId).coerceAtLeast(0)
+        avatarFocusRequesters[selectedIdx].takeIfAttached()
+            ?: avatarFocusRequesters.firstOrNull { it.takeIfAttached() != null }
+            ?: avatarFocusRequesters.first()
+    }
+
+    val preferredColorFocusRequester: () -> FocusRequester = {
+        val selectedIdx = accentOptions.indexOfFirst { it.colorHex == selectedAccentHex }.coerceAtLeast(0)
+        colorFocusRequesters[selectedIdx].takeIfAttached()
+            ?: colorFocusRequesters.firstOrNull { it.takeIfAttached() != null }
+            ?: colorFocusRequesters.first()
+    }
+
+    val preferredLangFocusRequester: () -> FocusRequester = {
+        if (preferredLanguage == "en") langEnFocusRequester else langItFocusRequester
+    }
+
+    val preferredAudioFocusRequester: () -> FocusRequester = {
+        when (preferredAudio) {
+            "en" -> audioEnFocusRequester
+            "original" -> audioOriginalFocusRequester
+            else -> audioItFocusRequester
+        }
+    }
+
+    val preferredSubLangFocusRequester: () -> FocusRequester = {
+        if (preferredSubLang == "en") subLangEnFocusRequester else subLangItFocusRequester
+    }
+
+    val focusBelowPreferences: () -> Boolean = {
+        coroutineScope.launch {
+            runCatching { scrollState.animateScrollTo(scrollState.maxValue) }
+        }
+        when {
+            editingProfile != null -> {
+                setDefaultFocusRequester.safeRequestFocus() || primaryActionFocusRequester.safeRequestFocus()
+            }
+            else -> primaryActionFocusRequester.safeRequestFocus()
+        }
+    }
+
+    val focusAboveBottomButtons: () -> Boolean = {
+        when {
+            hasDeleteOrSwitchAction && deleteOrSwitchFocusRequester.safeRequestFocus() -> true
+            editingProfile != null && setDefaultFocusRequester.safeRequestFocus() -> true
+            subtitlesEnabled && preferredSubLangFocusRequester().safeRequestFocus() -> true
+            else -> subtitlesToggleFocusRequester.safeRequestFocus()
+        }
+    }
 
     val persistAutoSaveIfEditing: (
         String, String, Long, String, String, Boolean, String
@@ -159,22 +247,51 @@ fun ProfileEditorDialog(
         }
     }
 
-    LaunchedEffect(isEditMode) {
-        repeat(3) {
-            withFrameNanos { }
-            if (isEditMode) {
-                primaryActionFocusRequester.safeRequestFocus()
-            } else {
+    val handleSaveOrCreate: () -> Unit = {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            validationError = "Inserisci un nome per il profilo."
+            coroutineScope.launch {
+                runCatching { scrollState.animateScrollTo(0) }
                 nameFieldFocusRequester.safeRequestFocus()
             }
+        } else if (editingProfile != null) {
+            persistAutoSaveIfEditing(
+                trimmed,
+                selectedAvatarId,
+                selectedAccentHex,
+                preferredLanguage,
+                preferredAudio,
+                subtitlesEnabled,
+                preferredSubLang
+            )
+            onDismiss()
+        } else {
+            onCreateProfile(
+                trimmed,
+                selectedAvatarId,
+                selectedAccentHex,
+                preferredLanguage,
+                preferredAudio,
+                subtitlesEnabled,
+                preferredSubLang
+            )
+        }
+    }
+
+    LaunchedEffect(editingProfile?.id) {
+        runCatching { scrollState.scrollTo(0) }
+        repeat(4) {
+            withFrameNanos { }
+            if (nameFieldFocusRequester.safeRequestFocus()) return@LaunchedEffect
         }
     }
 
     LaunchedEffect(showDeleteConfirm) {
         if (showDeleteConfirm) {
-            repeat(3) {
+            repeat(4) {
                 withFrameNanos { }
-                deleteCancelFocusRequester.safeRequestFocus()
+                if (deleteCancelFocusRequester.safeRequestFocus()) return@LaunchedEffect
             }
         }
     }
@@ -192,25 +309,24 @@ fun ProfileEditorDialog(
             .fillMaxSize()
             .zIndex(95f)
             .background(NetflixBlack.copy(alpha = 0.88f))
-            .padding(horizontal = if (isTvLayout) 40.dp else 16.dp, vertical = 20.dp)
+            .padding(horizontal = if (isTvLayout) 32.dp else 12.dp, vertical = 8.dp)
             .testTag("profile_editor_dialog"),
         contentAlignment = Alignment.Center
     ) {
         Surface(
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(20.dp),
             color = NetflixDarkSurface,
             border = BorderStroke(1.5.dp, Color(selectedAccentHex).copy(alpha = 0.65f)),
             modifier = Modifier
-                .widthIn(max = 720.dp)
+                .widthIn(max = 760.dp)
                 .fillMaxWidth()
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .padding(if (isTvLayout) 28.dp else 20.dp)
+                    .padding(horizontal = if (isTvLayout) 20.dp else 16.dp, vertical = 12.dp)
             ) {
-                // Header
+                // Header fisso
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -236,7 +352,26 @@ fun ProfileEditorDialog(
                     IconButton(
                         onClick = onDismiss,
                         modifier = Modifier
-                            .tvFocusableControl(shape = CircleShape, focusTag = "profile_editor_close")
+                            .safeFocusRequester(closeButtonFocusRequester)
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown) {
+                                    when (event.key) {
+                                        Key.DirectionDown -> nameFieldFocusRequester.safeRequestFocus()
+                                        Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                nameFieldFocusRequester.takeIfAttached()?.let { down = it }
+                            }
+                            .tvFocusableControl(
+                                shape = CircleShape,
+                                focusTag = "profile_editor_close",
+                                onClick = onDismiss
+                            )
                             .testTag("profile_editor_close_button")
                     ) {
                         Icon(
@@ -247,115 +382,155 @@ fun ProfileEditorDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // Anteprima profilo live
+                // Corpo centrale scorrevole
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(scrollState)
+                ) {
+
+                // Anteprima profilo live + Campo nome profilo affiancati per visibilità completa su schermi TV 540dp
+                val previewDisplayName = name.trim().ifBlank { "Nuovo spettatore" }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color(selectedAccentHex).copy(alpha = 0.24f),
-                                    NetflixCardSurface
-                                )
-                            )
-                        )
-                        .border(1.dp, NetflixElevatedSurface, RoundedCornerShape(16.dp))
-                        .padding(16.dp)
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    ProfileAvatarArtwork(
-                        avatarId = selectedAvatarId,
-                        accentColorHex = selectedAccentHex,
-                        size = if (isTvLayout) 88.dp else 72.dp,
-                        cornerRadius = 16.dp
-                    )
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = name.trim().ifBlank { "Nuovo spettatore" },
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = NetflixWhite,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (editingProfile?.isPrimary == true) {
-                                ProfileInfoPill(
-                                    text = "Profilo Principale",
-                                    color = NetflixRed
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier
+                            .weight(0.95f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color(selectedAccentHex).copy(alpha = 0.24f),
+                                        NetflixCardSurface
+                                    )
                                 )
-                            }
-                            if (editingProfile != null && editingProfile.id == defaultProfileId) {
-                                ProfileInfoPill(
-                                    text = "Predefinito",
-                                    color = NetflixMatchGreen
-                                )
-                            }
-                            ProfileInfoPill(
-                                text = "Lingua ${preferredLanguage.uppercase()}",
-                                color = Color(selectedAccentHex)
                             )
+                            .border(1.dp, NetflixElevatedSurface, RoundedCornerShape(14.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .testTag("profile_editor_live_preview")
+                    ) {
+                        ProfileAvatarArtwork(
+                            avatarId = selectedAvatarId,
+                            accentColorHex = selectedAccentHex,
+                            size = 52.dp,
+                            cornerRadius = 12.dp,
+                            profileName = previewDisplayName
+                        )
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = previewDisplayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = NetflixWhite,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (editingProfile?.isPrimary == true) {
+                                    ProfileInfoPill(
+                                        text = "Profilo Principale",
+                                        color = NetflixRed
+                                    )
+                                }
+                                if (editingProfile != null && editingProfile.id == defaultProfileId) {
+                                    ProfileInfoPill(
+                                        text = "Predefinito",
+                                        color = NetflixMatchGreen
+                                    )
+                                }
+                                ProfileInfoPill(
+                                    text = "Lingua ${preferredLanguage.uppercase()}",
+                                    color = Color(selectedAccentHex)
+                                )
+                            }
                         }
                     }
+
+                    // Campo nome profilo (navigabile con D-Pad Su -> Chiudi, Giù -> Avatar)
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { raw ->
+                            val capped = raw.take(24)
+                            name = capped
+                            validationError = null
+                            persistAutoSaveIfEditing(
+                                capped,
+                                selectedAvatarId,
+                                selectedAccentHex,
+                                preferredLanguage,
+                                preferredAudio,
+                                subtitlesEnabled,
+                                preferredSubLang
+                            )
+                        },
+                        label = { Text("Nome profilo") },
+                        placeholder = { Text("Es. Marco, Veronica…") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                keyboardController?.hide()
+                                preferredAvatarFocusRequester().safeRequestFocus()
+                            }
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(selectedAccentHex),
+                            unfocusedBorderColor = NetflixElevatedSurface,
+                            focusedLabelColor = NetflixWhite,
+                            unfocusedLabelColor = NetflixLightGray,
+                            focusedTextColor = NetflixWhite,
+                            unfocusedTextColor = NetflixWhite,
+                            cursorColor = NetflixRed
+                        ),
+                        modifier = Modifier
+                            .weight(1.05f)
+                            .safeFocusRequester(nameFieldFocusRequester)
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown) {
+                                    when (event.key) {
+                                        Key.DirectionUp -> {
+                                            keyboardController?.hide()
+                                            closeButtonFocusRequester.safeRequestFocus()
+                                        }
+                                        Key.DirectionDown -> {
+                                            keyboardController?.hide()
+                                            val selectedIdx = avatarOptionIds.indexOf(selectedAvatarId).coerceAtLeast(0)
+                                            coroutineScope.launch {
+                                                runCatching { avatarListState.scrollToItem(selectedIdx) }
+                                            }
+                                            preferredAvatarFocusRequester().safeRequestFocus()
+                                        }
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                closeButtonFocusRequester.takeIfAttached()?.let { up = it }
+                                preferredAvatarFocusRequester().takeIfAttached()?.let { down = it }
+                            }
+                            .testTag("profile_name_input")
+                    )
                 }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                // Campo nome profilo
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { raw ->
-                        val capped = raw.take(24)
-                        name = capped
-                        validationError = null
-                        persistAutoSaveIfEditing(
-                            capped,
-                            selectedAvatarId,
-                            selectedAccentHex,
-                            preferredLanguage,
-                            preferredAudio,
-                            subtitlesEnabled,
-                            preferredSubLang
-                        )
-                    },
-                    label = { Text("Nome profilo") },
-                    placeholder = { Text("Es. Marco, Sara, Salotto…") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            keyboardController?.hide()
-                            primaryActionFocusRequester.safeRequestFocus()
-                        }
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color(selectedAccentHex),
-                        unfocusedBorderColor = NetflixElevatedSurface,
-                        focusedLabelColor = NetflixWhite,
-                        unfocusedLabelColor = NetflixLightGray,
-                        focusedTextColor = NetflixWhite,
-                        unfocusedTextColor = NetflixWhite,
-                        cursorColor = NetflixRed
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .safeFocusRequester(nameFieldFocusRequester)
-                        .testTag("profile_name_input")
-                )
 
                 val shownError = validationError ?: errorMessage
                 if (!shownError.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = shownError,
                         style = MaterialTheme.typography.bodySmall,
@@ -364,25 +539,31 @@ fun ProfileEditorDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                // Galleria 12 Avatar
+                // Galleria Avatar: Avatar automatico con Iniziale + 12 Avatar Grafici Personalizzati
                 Text(
                     text = "Scegli un avatar",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = NetflixWhite
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(vertical = 4.dp),
+                    state = avatarListState,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(vertical = 2.dp),
                     modifier = Modifier.testTag("profile_avatar_picker_row")
                 ) {
-                    itemsIndexed(ProfileAvatarPreset.entries) { _, preset ->
-                        val isChosen = selectedAvatarId == preset.id
+                    itemsIndexed(
+                        items = avatarOptionIds,
+                        key = { _, avatarId -> avatarId }
+                    ) { idx, optionAvatarId ->
+                        val isChosen = selectedAvatarId == optionAvatarId
+                        val itemRequester = avatarFocusRequesters[idx]
                         Box(
                             modifier = Modifier
+                                .safeFocusRequester(itemRequester)
                                 .clip(RoundedCornerShape(14.dp))
                                 .then(
                                     if (isChosen) {
@@ -391,16 +572,59 @@ fun ProfileEditorDialog(
                                         Modifier.border(1.dp, NetflixElevatedSurface, RoundedCornerShape(14.dp))
                                     }
                                 )
+                                .onPreviewKeyEvent { event ->
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        when (event.key) {
+                                            Key.DirectionUp -> nameFieldFocusRequester.safeRequestFocus()
+                                            Key.DirectionDown -> {
+                                                val colorIdx = accentOptions.indexOfFirst { it.colorHex == selectedAccentHex }.coerceAtLeast(0)
+                                                coroutineScope.launch {
+                                                    runCatching { colorListState.scrollToItem(colorIdx) }
+                                                }
+                                                preferredColorFocusRequester().safeRequestFocus()
+                                            }
+                                            Key.DirectionLeft -> {
+                                                if (idx > 0) {
+                                                    val prevIdx = idx - 1
+                                                    coroutineScope.launch {
+                                                        runCatching { avatarListState.animateScrollToItem(prevIdx) }
+                                                        withFrameNanos { }
+                                                        avatarFocusRequesters[prevIdx].safeRequestFocus()
+                                                    }
+                                                }
+                                                true
+                                            }
+                                            Key.DirectionRight -> {
+                                                if (idx < avatarOptionIds.lastIndex) {
+                                                    val nextIdx = idx + 1
+                                                    coroutineScope.launch {
+                                                        runCatching { avatarListState.animateScrollToItem(nextIdx) }
+                                                        withFrameNanos { }
+                                                        avatarFocusRequesters[nextIdx].safeRequestFocus()
+                                                    }
+                                                }
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .focusProperties {
+                                    nameFieldFocusRequester.takeIfAttached()?.let { up = it }
+                                    preferredColorFocusRequester().takeIfAttached()?.let { down = it }
+                                }
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(14.dp),
                                     focusedScale = 1.07f,
                                     focusedBorderColor = NetflixWhite,
-                                    focusTag = "profile_avatar_option_${preset.id}",
+                                    focusTag = "profile_avatar_option_$optionAvatarId",
                                     onClick = {
-                                        selectedAvatarId = preset.id
+                                        selectedAvatarId = optionAvatarId
                                         persistAutoSaveIfEditing(
                                             name,
-                                            preset.id,
+                                            optionAvatarId,
                                             selectedAccentHex,
                                             preferredLanguage,
                                             preferredAudio,
@@ -410,20 +634,23 @@ fun ProfileEditorDialog(
                                     }
                                 )
                                 .padding(4.dp)
-                                .testTag("profile_avatar_option_${preset.id}"),
+                                .testTag("avatar_option_$optionAvatarId"),
                             contentAlignment = Alignment.Center
                         ) {
-                            ProfileAvatarArtwork(
-                                avatarId = preset.id,
-                                accentColorHex = selectedAccentHex,
-                                size = 58.dp,
-                                cornerRadius = 11.dp
-                            )
+                            Box(modifier = Modifier.testTag("profile_avatar_option_$optionAvatarId")) {
+                                ProfileAvatarArtwork(
+                                    avatarId = optionAvatarId,
+                                    accentColorHex = selectedAccentHex,
+                                    size = 50.dp,
+                                    cornerRadius = 10.dp,
+                                    profileName = previewDisplayName
+                                )
+                            }
                             if (isChosen) {
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.BottomEnd)
-                                        .size(20.dp)
+                                        .size(18.dp)
                                         .clip(CircleShape)
                                         .background(NetflixMatchGreen),
                                     contentAlignment = Alignment.Center
@@ -432,7 +659,7 @@ fun ProfileEditorDialog(
                                         imageVector = Icons.Default.Check,
                                         contentDescription = "Avatar selezionato",
                                         tint = NetflixBlack,
-                                        modifier = Modifier.size(13.dp)
+                                        modifier = Modifier.size(12.dp)
                                     )
                                 }
                             }
@@ -440,7 +667,7 @@ fun ProfileEditorDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 // Selettore Colore Identificativo
                 Text(
@@ -449,17 +676,23 @@ fun ProfileEditorDialog(
                     fontWeight = FontWeight.SemiBold,
                     color = NetflixWhite
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(vertical = 4.dp),
+                    state = colorListState,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(vertical = 2.dp),
                     modifier = Modifier.testTag("profile_color_picker_row")
                 ) {
-                    itemsIndexed(ProfileCatalogDefaults.accentOptions) { idx, option ->
+                    itemsIndexed(
+                        items = accentOptions,
+                        key = { idx, option -> "${idx}_${option.colorHex}" }
+                    ) { idx, option ->
                         val isChosen = selectedAccentHex == option.colorHex
+                        val colorRequester = colorFocusRequesters[idx]
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(40.dp)
+                                .safeFocusRequester(colorRequester)
                                 .clip(CircleShape)
                                 .background(Color(option.colorHex))
                                 .then(
@@ -469,6 +702,43 @@ fun ProfileEditorDialog(
                                         Modifier.border(1.dp, NetflixWhite.copy(alpha = 0.25f), CircleShape)
                                     }
                                 )
+                                .onPreviewKeyEvent { event ->
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        when (event.key) {
+                                            Key.DirectionUp -> preferredAvatarFocusRequester().safeRequestFocus()
+                                            Key.DirectionDown -> preferredLangFocusRequester().safeRequestFocus()
+                                            Key.DirectionLeft -> {
+                                                if (idx > 0) {
+                                                    val prevIdx = idx - 1
+                                                    coroutineScope.launch {
+                                                        runCatching { colorListState.animateScrollToItem(prevIdx) }
+                                                        withFrameNanos { }
+                                                        colorFocusRequesters[prevIdx].safeRequestFocus()
+                                                    }
+                                                }
+                                                true
+                                            }
+                                            Key.DirectionRight -> {
+                                                if (idx < accentOptions.lastIndex) {
+                                                    val nextIdx = idx + 1
+                                                    coroutineScope.launch {
+                                                        runCatching { colorListState.animateScrollToItem(nextIdx) }
+                                                        withFrameNanos { }
+                                                        colorFocusRequesters[nextIdx].safeRequestFocus()
+                                                    }
+                                                }
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .focusProperties {
+                                    preferredAvatarFocusRequester().takeIfAttached()?.let { up = it }
+                                    preferredLangFocusRequester().takeIfAttached()?.let { down = it }
+                                }
                                 .tvFocusableControl(
                                     shape = CircleShape,
                                     focusedScale = 1.12f,
@@ -487,22 +757,29 @@ fun ProfileEditorDialog(
                                         )
                                     }
                                 )
-                                .testTag("profile_color_option_$idx"),
+                                .testTag("accent_color_option_$idx"),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (isChosen) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = option.label,
-                                    tint = NetflixWhite,
-                                    modifier = Modifier.size(22.dp)
-                                )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("profile_color_option_$idx"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isChosen) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = option.label,
+                                        tint = NetflixWhite,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 // Preferenze personali (Lingua, Audio, Sottotitoli)
                 Surface(
@@ -512,8 +789,8 @@ fun ProfileEditorDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                        modifier = Modifier.padding(16.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(12.dp)
                     ) {
                         Text(
                             text = "Preferenze personali",
@@ -534,26 +811,52 @@ fun ProfileEditorDialog(
                                 color = NetflixLightGray
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf("it" to "Italiano", "en" to "English").forEach { (code, label) ->
-                                    ProfileChoiceChip(
-                                        label = label,
-                                        selected = preferredLanguage == code,
-                                        accentColor = Color(selectedAccentHex),
-                                        tag = "profile_lang_$code",
-                                        onClick = {
-                                            preferredLanguage = code
-                                            persistAutoSaveIfEditing(
-                                                name,
-                                                selectedAvatarId,
-                                                selectedAccentHex,
-                                                code,
-                                                preferredAudio,
-                                                subtitlesEnabled,
-                                                preferredSubLang
-                                            )
-                                        }
-                                    )
-                                }
+                                ProfileChoiceChip(
+                                    label = "Italiano",
+                                    selected = preferredLanguage == "it",
+                                    accentColor = Color(selectedAccentHex),
+                                    tag = "profile_lang_it",
+                                    focusRequester = langItFocusRequester,
+                                    onUp = { preferredColorFocusRequester().safeRequestFocus() },
+                                    onDown = { preferredAudioFocusRequester().safeRequestFocus() },
+                                    onLeft = { true },
+                                    onRight = { langEnFocusRequester.safeRequestFocus() },
+                                    onClick = {
+                                        preferredLanguage = "it"
+                                        persistAutoSaveIfEditing(
+                                            name,
+                                            selectedAvatarId,
+                                            selectedAccentHex,
+                                            "it",
+                                            preferredAudio,
+                                            subtitlesEnabled,
+                                            preferredSubLang
+                                        )
+                                    }
+                                )
+                                ProfileChoiceChip(
+                                    label = "English",
+                                    selected = preferredLanguage == "en",
+                                    accentColor = Color(selectedAccentHex),
+                                    tag = "profile_lang_en",
+                                    focusRequester = langEnFocusRequester,
+                                    onUp = { preferredColorFocusRequester().safeRequestFocus() },
+                                    onDown = { preferredAudioFocusRequester().safeRequestFocus() },
+                                    onLeft = { langItFocusRequester.safeRequestFocus() },
+                                    onRight = { true },
+                                    onClick = {
+                                        preferredLanguage = "en"
+                                        persistAutoSaveIfEditing(
+                                            name,
+                                            selectedAvatarId,
+                                            selectedAccentHex,
+                                            "en",
+                                            preferredAudio,
+                                            subtitlesEnabled,
+                                            preferredSubLang
+                                        )
+                                    }
+                                )
                             }
                         }
 
@@ -569,53 +872,122 @@ fun ProfileEditorDialog(
                                 color = NetflixLightGray
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf("it" to "ITA", "en" to "ENG", "original" to "Originale").forEach { (code, label) ->
-                                    ProfileChoiceChip(
-                                        label = label,
-                                        selected = preferredAudio == code,
-                                        accentColor = Color(selectedAccentHex),
-                                        tag = "profile_audio_$code",
-                                        onClick = {
-                                            preferredAudio = code
-                                            persistAutoSaveIfEditing(
-                                                name,
-                                                selectedAvatarId,
-                                                selectedAccentHex,
-                                                preferredLanguage,
-                                                code,
-                                                subtitlesEnabled,
-                                                preferredSubLang
-                                            )
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        // Preferenza sottotitoli
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .tvFocusableControl(
-                                    shape = RoundedCornerShape(10.dp),
-                                    focusedScale = 1.01f,
-                                    focusTag = "profile_subtitles_toggle",
+                                ProfileChoiceChip(
+                                    label = "ITA",
+                                    selected = preferredAudio == "it",
+                                    accentColor = Color(selectedAccentHex),
+                                    tag = "profile_audio_it",
+                                    focusRequester = audioItFocusRequester,
+                                    onUp = { preferredLangFocusRequester().safeRequestFocus() },
+                                    onDown = { subtitlesToggleFocusRequester.safeRequestFocus() },
+                                    onLeft = { true },
+                                    onRight = { audioEnFocusRequester.safeRequestFocus() },
                                     onClick = {
-                                        val nextSubs = !subtitlesEnabled
-                                        subtitlesEnabled = nextSubs
+                                        preferredAudio = "it"
                                         persistAutoSaveIfEditing(
                                             name,
                                             selectedAvatarId,
                                             selectedAccentHex,
                                             preferredLanguage,
-                                            preferredAudio,
-                                            nextSubs,
+                                            "it",
+                                            subtitlesEnabled,
                                             preferredSubLang
                                         )
                                     }
+                                )
+                                ProfileChoiceChip(
+                                    label = "ENG",
+                                    selected = preferredAudio == "en",
+                                    accentColor = Color(selectedAccentHex),
+                                    tag = "profile_audio_en",
+                                    focusRequester = audioEnFocusRequester,
+                                    onUp = { preferredLangFocusRequester().safeRequestFocus() },
+                                    onDown = { subtitlesToggleFocusRequester.safeRequestFocus() },
+                                    onLeft = { audioItFocusRequester.safeRequestFocus() },
+                                    onRight = { audioOriginalFocusRequester.safeRequestFocus() },
+                                    onClick = {
+                                        preferredAudio = "en"
+                                        persistAutoSaveIfEditing(
+                                            name,
+                                            selectedAvatarId,
+                                            selectedAccentHex,
+                                            preferredLanguage,
+                                            "en",
+                                            subtitlesEnabled,
+                                            preferredSubLang
+                                        )
+                                    }
+                                )
+                                ProfileChoiceChip(
+                                    label = "Originale",
+                                    selected = preferredAudio == "original",
+                                    accentColor = Color(selectedAccentHex),
+                                    tag = "profile_audio_original",
+                                    focusRequester = audioOriginalFocusRequester,
+                                    onUp = { preferredLangFocusRequester().safeRequestFocus() },
+                                    onDown = { subtitlesToggleFocusRequester.safeRequestFocus() },
+                                    onLeft = { audioEnFocusRequester.safeRequestFocus() },
+                                    onRight = { true },
+                                    onClick = {
+                                        preferredAudio = "original"
+                                        persistAutoSaveIfEditing(
+                                            name,
+                                            selectedAvatarId,
+                                            selectedAccentHex,
+                                            preferredLanguage,
+                                            "original",
+                                            subtitlesEnabled,
+                                            preferredSubLang
+                                        )
+                                    }
+                                )
+                            }
+                        }
+
+                        // Preferenza sottotitoli (Switch interno non-focusable per evitare trappole di focus D-Pad)
+                        val toggleSubtitles: () -> Unit = {
+                            val nextSubs = !subtitlesEnabled
+                            subtitlesEnabled = nextSubs
+                            persistAutoSaveIfEditing(
+                                name,
+                                selectedAvatarId,
+                                selectedAccentHex,
+                                preferredLanguage,
+                                preferredAudio,
+                                nextSubs,
+                                preferredSubLang
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .safeFocusRequester(subtitlesToggleFocusRequester)
+                                .clip(RoundedCornerShape(10.dp))
+                                .onPreviewKeyEvent { event ->
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        when (event.key) {
+                                            Key.DirectionUp -> preferredAudioFocusRequester().safeRequestFocus()
+                                            Key.DirectionDown -> {
+                                                if (subtitlesEnabled) {
+                                                    preferredSubLangFocusRequester().safeRequestFocus()
+                                                } else {
+                                                    focusBelowPreferences()
+                                                }
+                                            }
+                                            Key.DirectionLeft, Key.DirectionRight -> true
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedScale = 1.01f,
+                                    focusTag = "profile_subtitles_toggle",
+                                    onClick = toggleSubtitles
                                 )
                                 .padding(horizontal = 6.dp, vertical = 4.dp)
                                 .testTag("profile_subtitles_toggle")
@@ -638,22 +1010,12 @@ fun ProfileEditorDialog(
                             }
                             Switch(
                                 checked = subtitlesEnabled,
-                                onCheckedChange = { checked ->
-                                    subtitlesEnabled = checked
-                                    persistAutoSaveIfEditing(
-                                        name,
-                                        selectedAvatarId,
-                                        selectedAccentHex,
-                                        preferredLanguage,
-                                        preferredAudio,
-                                        checked,
-                                        preferredSubLang
-                                    )
-                                },
+                                onCheckedChange = null,
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = NetflixWhite,
                                     checkedTrackColor = Color(selectedAccentHex)
-                                )
+                                ),
+                                modifier = Modifier.focusProperties { canFocus = false }
                             )
                         }
 
@@ -669,26 +1031,52 @@ fun ProfileEditorDialog(
                                     color = NetflixLightGray
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf("it" to "Italiano", "en" to "English").forEach { (code, label) ->
-                                        ProfileChoiceChip(
-                                            label = label,
-                                            selected = preferredSubLang == code,
-                                            accentColor = Color(selectedAccentHex),
-                                            tag = "profile_sub_lang_$code",
-                                            onClick = {
-                                                preferredSubLang = code
-                                                persistAutoSaveIfEditing(
-                                                    name,
-                                                    selectedAvatarId,
-                                                    selectedAccentHex,
-                                                    preferredLanguage,
-                                                    preferredAudio,
-                                                    subtitlesEnabled,
-                                                    code
-                                                )
-                                            }
-                                        )
-                                    }
+                                    ProfileChoiceChip(
+                                        label = "Italiano",
+                                        selected = preferredSubLang == "it",
+                                        accentColor = Color(selectedAccentHex),
+                                        tag = "profile_sub_lang_it",
+                                        focusRequester = subLangItFocusRequester,
+                                        onUp = { subtitlesToggleFocusRequester.safeRequestFocus() },
+                                        onDown = { focusBelowPreferences() },
+                                        onLeft = { true },
+                                        onRight = { subLangEnFocusRequester.safeRequestFocus() },
+                                        onClick = {
+                                            preferredSubLang = "it"
+                                            persistAutoSaveIfEditing(
+                                                name,
+                                                selectedAvatarId,
+                                                selectedAccentHex,
+                                                preferredLanguage,
+                                                preferredAudio,
+                                                subtitlesEnabled,
+                                                "it"
+                                            )
+                                        }
+                                    )
+                                    ProfileChoiceChip(
+                                        label = "English",
+                                        selected = preferredSubLang == "en",
+                                        accentColor = Color(selectedAccentHex),
+                                        tag = "profile_sub_lang_en",
+                                        focusRequester = subLangEnFocusRequester,
+                                        onUp = { subtitlesToggleFocusRequester.safeRequestFocus() },
+                                        onDown = { focusBelowPreferences() },
+                                        onLeft = { subLangItFocusRequester.safeRequestFocus() },
+                                        onRight = { true },
+                                        onClick = {
+                                            preferredSubLang = "en"
+                                            persistAutoSaveIfEditing(
+                                                name,
+                                                selectedAvatarId,
+                                                selectedAccentHex,
+                                                preferredLanguage,
+                                                preferredAudio,
+                                                subtitlesEnabled,
+                                                "en"
+                                            )
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -699,10 +1087,11 @@ fun ProfileEditorDialog(
                 if (editingProfile != null) {
                     Spacer(modifier = Modifier.height(16.dp))
                     val isDefault = defaultProfileId == editingProfile.id
+                    val toggleDefaultProfile: () -> Unit = {
+                        onSetDefaultProfile(if (isDefault) null else editingProfile.id)
+                    }
                     OutlinedButton(
-                        onClick = {
-                            onSetDefaultProfile(if (isDefault) null else editingProfile.id)
-                        },
+                        onClick = toggleDefaultProfile,
                         shape = RoundedCornerShape(10.dp),
                         border = BorderStroke(1.dp, if (isDefault) NetflixMatchGreen else NetflixElevatedSurface),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -711,10 +1100,36 @@ fun ProfileEditorDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 48.dp)
+                            .safeFocusRequester(setDefaultFocusRequester)
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown) {
+                                    when (event.key) {
+                                        Key.DirectionUp -> {
+                                            if (subtitlesEnabled) {
+                                                preferredSubLangFocusRequester().safeRequestFocus()
+                                            } else {
+                                                subtitlesToggleFocusRequester.safeRequestFocus()
+                                            }
+                                        }
+                                        Key.DirectionDown -> {
+                                            if (hasDeleteOrSwitchAction) {
+                                                deleteOrSwitchFocusRequester.safeRequestFocus()
+                                            } else {
+                                                primaryActionFocusRequester.safeRequestFocus()
+                                            }
+                                        }
+                                        Key.DirectionLeft, Key.DirectionRight -> true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedScale = 1.02f,
-                                focusTag = "profile_set_default_button"
+                                focusTag = "profile_set_default_button",
+                                onClick = toggleDefaultProfile
                             )
                             .testTag("profile_set_default_button")
                     ) {
@@ -783,9 +1198,23 @@ fun ProfileEditorDialog(
                                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
                                         modifier = Modifier
                                             .heightIn(min = 44.dp)
+                                            .safeFocusRequester(deleteOrSwitchFocusRequester)
+                                            .onPreviewKeyEvent { event ->
+                                                if (event.type == KeyEventType.KeyDown) {
+                                                    when (event.key) {
+                                                        Key.DirectionUp -> setDefaultFocusRequester.safeRequestFocus()
+                                                        Key.DirectionDown -> primaryActionFocusRequester.safeRequestFocus()
+                                                        Key.DirectionLeft, Key.DirectionRight -> true
+                                                        else -> false
+                                                    }
+                                                } else {
+                                                    false
+                                                }
+                                            }
                                             .tvFocusableControl(
                                                 shape = RoundedCornerShape(8.dp),
-                                                focusTag = "profile_switch_before_delete_button"
+                                                focusTag = "profile_switch_before_delete_button",
+                                                onClick = onSwitchBeforeDelete
                                             )
                                             .testTag("profile_switch_before_delete_button")
                                     ) {
@@ -798,19 +1227,34 @@ fun ProfileEditorDialog(
                         }
 
                         else -> {
+                            val openDeleteConfirm: () -> Unit = { showDeleteConfirm = true }
                             OutlinedButton(
-                                onClick = { showDeleteConfirm = true },
+                                onClick = openDeleteConfirm,
                                 shape = RoundedCornerShape(10.dp),
                                 border = BorderStroke(1.dp, NetflixRed),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixRed),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .heightIn(min = 48.dp)
+                                    .safeFocusRequester(deleteOrSwitchFocusRequester)
+                                    .onPreviewKeyEvent { event ->
+                                        if (event.type == KeyEventType.KeyDown) {
+                                            when (event.key) {
+                                                Key.DirectionUp -> setDefaultFocusRequester.safeRequestFocus()
+                                                Key.DirectionDown -> primaryActionFocusRequester.safeRequestFocus()
+                                                Key.DirectionLeft, Key.DirectionRight -> true
+                                                else -> false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .tvFocusableControl(
                                         shape = RoundedCornerShape(10.dp),
                                         focusedScale = 1.02f,
                                         focusedBorderColor = NetflixWhite,
-                                        focusTag = "profile_delete_button"
+                                        focusTag = "profile_delete_button",
+                                        onClick = openDeleteConfirm
                                     )
                                     .testTag("profile_delete_button")
                             ) {
@@ -821,10 +1265,11 @@ fun ProfileEditorDialog(
                         }
                     }
                 }
+                }
 
-                Spacer(modifier = Modifier.height(22.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                // Pulsanti finali
+                // Pulsanti finali sempre visibili (ANNULLA/Chiudi e SALVA/Fine/Crea profilo)
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth()
@@ -837,10 +1282,27 @@ fun ProfileEditorDialog(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 48.dp)
+                            .safeFocusRequester(cancelButtonFocusRequester)
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown) {
+                                    when (event.key) {
+                                        Key.DirectionUp -> focusAboveBottomButtons()
+                                        Key.DirectionRight -> primaryActionFocusRequester.safeRequestFocus()
+                                        Key.DirectionLeft, Key.DirectionDown -> true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                primaryActionFocusRequester.takeIfAttached()?.let { right = it }
+                            }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedScale = 1.02f,
-                                focusTag = "profile_editor_cancel"
+                                focusTag = "profile_editor_cancel",
+                                onClick = onDismiss
                             )
                             .testTag("profile_editor_cancel_button")
                     ) {
@@ -848,36 +1310,7 @@ fun ProfileEditorDialog(
                     }
 
                     Button(
-                        onClick = {
-                            val trimmed = name.trim()
-                            if (trimmed.isEmpty()) {
-                                validationError = "Inserisci un nome per il profilo."
-                                nameFieldFocusRequester.safeRequestFocus()
-                                return@Button
-                            }
-                            if (editingProfile != null) {
-                                persistAutoSaveIfEditing(
-                                    trimmed,
-                                    selectedAvatarId,
-                                    selectedAccentHex,
-                                    preferredLanguage,
-                                    preferredAudio,
-                                    subtitlesEnabled,
-                                    preferredSubLang
-                                )
-                                onDismiss()
-                            } else {
-                                onCreateProfile(
-                                    trimmed,
-                                    selectedAvatarId,
-                                    selectedAccentHex,
-                                    preferredLanguage,
-                                    preferredAudio,
-                                    subtitlesEnabled,
-                                    preferredSubLang
-                                )
-                            }
-                        },
+                        onClick = handleSaveOrCreate,
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(selectedAccentHex),
@@ -887,11 +1320,27 @@ fun ProfileEditorDialog(
                             .weight(1f)
                             .heightIn(min = 48.dp)
                             .safeFocusRequester(primaryActionFocusRequester)
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown) {
+                                    when (event.key) {
+                                        Key.DirectionUp -> focusAboveBottomButtons()
+                                        Key.DirectionLeft -> cancelButtonFocusRequester.safeRequestFocus()
+                                        Key.DirectionRight, Key.DirectionDown -> true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                cancelButtonFocusRequester.takeIfAttached()?.let { left = it }
+                            }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedScale = 1.03f,
                                 focusedBorderColor = NetflixWhite,
-                                focusTag = "profile_editor_save"
+                                focusTag = "profile_editor_save",
+                                onClick = handleSaveOrCreate
                             )
                             .testTag("profile_editor_save_button")
                     ) {
@@ -941,8 +1390,13 @@ fun ProfileEditorDialog(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
+                            val cancelDeleteAction: () -> Unit = { showDeleteConfirm = false }
+                            val confirmDeleteAction: () -> Unit = {
+                                showDeleteConfirm = false
+                                onDeleteProfile(editingProfile.id)
+                            }
                             OutlinedButton(
-                                onClick = { showDeleteConfirm = false },
+                                onClick = cancelDeleteAction,
                                 shape = RoundedCornerShape(10.dp),
                                 border = BorderStroke(1.dp, NetflixElevatedSurface),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
@@ -950,19 +1404,28 @@ fun ProfileEditorDialog(
                                     .weight(1f)
                                     .heightIn(min = 48.dp)
                                     .safeFocusRequester(deleteCancelFocusRequester)
+                                    .onPreviewKeyEvent { event ->
+                                        if (event.type == KeyEventType.KeyDown) {
+                                            when (event.key) {
+                                                Key.DirectionRight -> deleteConfirmFocusRequester.safeRequestFocus()
+                                                Key.DirectionLeft, Key.DirectionUp, Key.DirectionDown -> true
+                                                else -> false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .tvFocusableControl(
                                         shape = RoundedCornerShape(10.dp),
-                                        focusTag = "profile_delete_cancel"
+                                        focusTag = "profile_delete_cancel",
+                                        onClick = cancelDeleteAction
                                     )
                                     .testTag("profile_delete_cancel_button")
                             ) {
                                 Text("Annulla")
                             }
                             Button(
-                                onClick = {
-                                    showDeleteConfirm = false
-                                    onDeleteProfile(editingProfile.id)
-                                },
+                                onClick = confirmDeleteAction,
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = NetflixRed,
@@ -971,10 +1434,23 @@ fun ProfileEditorDialog(
                                 modifier = Modifier
                                     .weight(1f)
                                     .heightIn(min = 48.dp)
+                                    .safeFocusRequester(deleteConfirmFocusRequester)
+                                    .onPreviewKeyEvent { event ->
+                                        if (event.type == KeyEventType.KeyDown) {
+                                            when (event.key) {
+                                                Key.DirectionLeft -> deleteCancelFocusRequester.safeRequestFocus()
+                                                Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> true
+                                                else -> false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .tvFocusableControl(
                                         shape = RoundedCornerShape(10.dp),
                                         focusedBorderColor = NetflixWhite,
-                                        focusTag = "profile_delete_confirm"
+                                        focusTag = "profile_delete_confirm",
+                                        onClick = confirmDeleteAction
                                     )
                                     .testTag("profile_delete_confirm_button")
                             ) {
@@ -994,6 +1470,11 @@ private fun ProfileChoiceChip(
     selected: Boolean,
     accentColor: Color,
     tag: String,
+    focusRequester: FocusRequester,
+    onUp: () -> Boolean,
+    onDown: () -> Boolean,
+    onLeft: () -> Boolean,
+    onRight: () -> Boolean,
     onClick: () -> Unit
 ) {
     Surface(
@@ -1005,6 +1486,20 @@ private fun ProfileChoiceChip(
         ),
         modifier = Modifier
             .heightIn(min = 40.dp)
+            .safeFocusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) {
+                    when (event.key) {
+                        Key.DirectionUp -> onUp()
+                        Key.DirectionDown -> onDown()
+                        Key.DirectionLeft -> onLeft()
+                        Key.DirectionRight -> onRight()
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            }
             .tvFocusableControl(
                 shape = RoundedCornerShape(8.dp),
                 focusedScale = 1.05f,

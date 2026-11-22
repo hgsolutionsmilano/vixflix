@@ -262,6 +262,25 @@ data class TmdbVideosResponse(
     @param:Json(name = "results") val results: List<TmdbVideoDto> = emptyList()
 )
 
+@Immutable
+@JsonClass(generateAdapter = true)
+data class TmdbBelongsToCollectionDto(
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String? = null,
+    @param:Json(name = "poster_path") val posterPath: String? = null,
+    @param:Json(name = "backdrop_path") val backdropPath: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class TmdbCollectionDetailsDto(
+    @param:Json(name = "id") val id: Int,
+    @param:Json(name = "name") val name: String? = null,
+    @param:Json(name = "overview") val overview: String? = null,
+    @param:Json(name = "poster_path") val posterPath: String? = null,
+    @param:Json(name = "backdrop_path") val backdropPath: String? = null,
+    @param:Json(name = "parts") val parts: List<TmdbMediaItemDto> = emptyList()
+)
+
 @JsonClass(generateAdapter = true)
 data class TmdbMovieDetailsDto(
     @param:Json(name = "id") val id: Int,
@@ -274,6 +293,7 @@ data class TmdbMovieDetailsDto(
     @param:Json(name = "runtime") val runtime: Int? = null,
     @param:Json(name = "tagline") val tagline: String? = null,
     @param:Json(name = "genres") val genres: List<TmdbGenreDto> = emptyList(),
+    @param:Json(name = "belongs_to_collection") val belongsToCollection: TmdbBelongsToCollectionDto? = null,
     @param:Json(name = "credits") val credits: TmdbCreditsDto? = null,
     @param:Json(name = "similar") val similar: TmdbPagedResponse<TmdbMediaItemDto>? = null,
     @param:Json(name = "videos") val videos: TmdbVideosResponse? = null
@@ -332,6 +352,9 @@ data class MediaDetails(
     val genres: List<String>,
     val cast: List<TmdbCastMemberDto>,
     val similar: List<MediaItem>,
+    val collectionId: Int? = null,
+    val collectionTitle: String? = null,
+    val collectionMovies: List<MediaItem> = emptyList(),
     val seasons: List<TmdbSeasonSummaryDto> = emptyList(),
     val numberOfSeasons: Int = 0,
     val trailers: List<TmdbVideoDto> = emptyList()

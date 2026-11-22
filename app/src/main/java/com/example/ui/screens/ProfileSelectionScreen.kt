@@ -727,7 +727,8 @@ private fun ProfileAvatarTile(
                 accentColorHex = profile.accentColorHex,
                 size = avatarSize,
                 cornerRadius = 17.dp,
-                showEditOverlay = isManageMode
+                showEditOverlay = isManageMode,
+                profileName = profile.name
             )
 
             // Indicatore colore / attivo in basso a destra

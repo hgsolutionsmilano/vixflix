@@ -274,7 +274,7 @@ class VixFlixRepository(
             val profile = UserProfileEntity(
                 id = "profile_${UUID.randomUUID()}",
                 name = cleanedName.take(24),
-                avatarId = ProfileAvatarPreset.fromId(avatarId).id,
+                avatarId = ProfileAvatarPreset.normalizeAvatarId(avatarId),
                 accentColorHex = accentColorHex,
                 isPrimary = currentCount == 0,
                 preferredLanguage = normalizedLang,
@@ -297,7 +297,7 @@ class VixFlixRepository(
                 ?: throw IllegalArgumentException("Profilo non trovato.")
             val updated = existing.copy(
                 name = cleanedName.take(24),
-                avatarId = ProfileAvatarPreset.fromId(profile.avatarId).id,
+                avatarId = ProfileAvatarPreset.normalizeAvatarId(profile.avatarId),
                 accentColorHex = profile.accentColorHex,
                 preferredLanguage = if (profile.preferredLanguage.equals("en", ignoreCase = true)) "en" else "it",
                 preferredAudioLanguage = when (profile.preferredAudioLanguage.lowercase()) {
@@ -546,6 +546,18 @@ class VixFlixRepository(
                 runCatching { tmdbApi.getMovieVideos(mediaItem.id).results }.getOrDefault(emptyList())
             }
             val parentGenreIds = dto.genres.map { it.id }.toSet()
+            val collectionInfo = dto.belongsToCollection?.takeIf { it.id > 0 }
+            val collectionDto = collectionInfo?.let { info ->
+                runCatching { tmdbApi.getCollectionDetails(collectionId = info.id) }.getOrNull()
+            }
+            val collectionMovies = if (collectionDto != null) {
+                sanitizeAndSortCollectionMovies(
+                    rawParts = collectionDto.parts,
+                    currentMovieId = updatedItem.id
+                )
+            } else {
+                emptyList()
+            }
             MediaDetails(
                 item = updatedItem,
                 tagline = dto.tagline.orEmpty(),
@@ -558,6 +570,9 @@ class VixFlixRepository(
                     parentGenreIds = parentGenreIds,
                     expectedType = "movie"
                 ),
+                collectionId = collectionInfo?.id,
+                collectionTitle = collectionDto?.name?.takeIf { it.isNotBlank() } ?: collectionInfo?.name,
+                collectionMovies = collectionMovies,
                 trailers = prioritizeTrailers(rawVideos)
             )
         }
@@ -1402,7 +1417,174 @@ class VixFlixRepository(
         )
     }
 
-    // --- Per-Profile Completion State & Continue Watching Management ---
+    /**
+     * Filtra, deduplica e ordina cronologicamente i film ufficiali appartenenti alla stessa collezione/saga TMDB:
+     * 1. Esclude sempre il film attualmente visualizzato (`dto.id != currentMovieId`).
+     * 2. Mantiene esclusivamente film reali della collezione (`mediaType = "movie"`) con titolo valido.
+     * 3. Deduplica per ID TMDB.
+     * 4. Ordina cronologicamente per data/anno di uscita (`releaseDate`), lasciando eventuali film
+     *    senza data di uscita in coda secondo l'ordine originale della collezione.
+     */
+    internal fun sanitizeAndSortCollectionMovies(
+        rawParts: List<TmdbMediaItemDto>,
+        currentMovieId: Int
+    ): List<MediaItem> {
+        if (rawParts.isEmpty()) return emptyList()
+
+        data class SagaCandidate(
+            val item: MediaItem,
+            val releaseDateKey: String?,
+            val releaseYearInt: Int?,
+            val originalIndex: Int
+        )
+
+        val candidates = ArrayList<SagaCandidate>(rawParts.size)
+        val seenIds = HashSet<Int>(rawParts.size)
+
+        rawParts.forEachIndexed { index, dto ->
+            if (dto.id <= 0 || dto.id == currentMovieId) return@forEachIndexed
+            val rawType = dto.mediaType?.trim()?.lowercase()
+            if (!rawType.isNullOrEmpty() && rawType != "movie") return@forEachIndexed
+
+            val domainItem = dto.copy(mediaType = "movie").toDomain("movie") ?: return@forEachIndexed
+            if (domainItem.id == currentMovieId || domainItem.title.isBlank()) return@forEachIndexed
+            if (!seenIds.add(domainItem.id)) return@forEachIndexed
+
+            val rawDate = dto.releaseDate?.trim()?.takeIf { it.isNotBlank() }
+            val yearInt = domainItem.releaseYear.take(4).toIntOrNull()
+
+            candidates.add(
+                SagaCandidate(
+                    item = domainItem,
+                    releaseDateKey = rawDate,
+                    releaseYearInt = yearInt,
+                    originalIndex = index
+                )
+            )
+        }
+
+        return candidates
+            .sortedWith(
+                compareBy<SagaCandidate> { it.releaseDateKey == null && it.releaseYearInt == null }
+                    .thenBy { it.releaseDateKey ?: "${it.releaseYearInt ?: 9999}-12-31" }
+                    .thenBy { it.releaseYearInt ?: Int.MAX_VALUE }
+                    .thenBy { it.originalIndex }
+            )
+            .map { it.item }
+    }
+
+    // --- Per-Profile Completion State, Watched Episodes & Continue Watching Management ---
+
+    fun observeWatchedEpisodeNumbers(
+        tmdbId: Int,
+        seasonNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<List<Int>> = dao.observeWatchedEpisodeNumbers(
+        tmdbId = tmdbId,
+        seasonNumber = seasonNumber,
+        profileId = profileId
+    )
+
+    suspend fun getWatchedEpisodeNumbers(
+        tmdbId: Int,
+        seasonNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Set<Int> = withContext(Dispatchers.IO) {
+        dao.getWatchedEpisodeNumbers(
+            tmdbId = tmdbId,
+            seasonNumber = seasonNumber,
+            profileId = profileId
+        ).toSet()
+    }
+
+    /**
+     * Contrassegna un singolo episodio di una serie TV come visto per il profilo attivo,
+     * salvando lo stato in locale in modo isolato per `profileId`.
+     */
+    suspend fun markEpisodeAsWatched(
+        tmdbId: Int,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ) = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0 || seasonNumber < 0 || episodeNumber <= 0) return@withContext
+        val contentKey = PlayerSegmentKeys.completedMediaKey(
+            tmdbId = tmdbId,
+            mediaType = "tv",
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber
+        )
+        dao.upsertCompletedMedia(
+            CompletedMediaEntity(
+                profileId = profileId,
+                contentKey = contentKey,
+                tmdbId = tmdbId,
+                mediaType = "tv",
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                completedAtMs = System.currentTimeMillis()
+            )
+        )
+        dao.deleteEpisodeProgress(
+            episodeKey = "tv_${tmdbId}_s${seasonNumber}_e${episodeNumber}",
+            profileId = profileId
+        )
+        val mainId = "tv_$tmdbId"
+        val currentMainProgress = dao.getWatchProgress(mainId, profileId)
+        if (currentMainProgress != null &&
+            currentMainProgress.seasonNumber == seasonNumber &&
+            currentMainProgress.episodeNumber == episodeNumber
+        ) {
+            dao.deleteWatchProgress(mainId, profileId)
+        }
+    }
+
+    /**
+     * Contrassegna tutti gli episodi della stagione selezionata come visti per il profilo attivo,
+     * senza modificare gli episodi delle altre stagioni né i dati degli altri profili.
+     */
+    suspend fun markSeasonAsWatched(
+        tmdbId: Int,
+        seasonNumber: Int,
+        episodeNumbers: List<Int>,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ) = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0 || seasonNumber < 0) return@withContext
+        val validEpisodeNumbers = episodeNumbers.filter { it > 0 }.distinct()
+        if (validEpisodeNumbers.isEmpty()) return@withContext
+        val now = System.currentTimeMillis()
+        val entities = validEpisodeNumbers.map { epNum ->
+            CompletedMediaEntity(
+                profileId = profileId,
+                contentKey = PlayerSegmentKeys.completedMediaKey(
+                    tmdbId = tmdbId,
+                    mediaType = "tv",
+                    seasonNumber = seasonNumber,
+                    episodeNumber = epNum
+                ),
+                tmdbId = tmdbId,
+                mediaType = "tv",
+                seasonNumber = seasonNumber,
+                episodeNumber = epNum,
+                completedAtMs = now
+            )
+        }
+        dao.upsertCompletedMediaList(entities)
+        validEpisodeNumbers.forEach { epNum ->
+            dao.deleteEpisodeProgress(
+                episodeKey = "tv_${tmdbId}_s${seasonNumber}_e${epNum}",
+                profileId = profileId
+            )
+        }
+        val mainId = "tv_$tmdbId"
+        val currentMainProgress = dao.getWatchProgress(mainId, profileId)
+        if (currentMainProgress != null &&
+            currentMainProgress.seasonNumber == seasonNumber &&
+            currentMainProgress.episodeNumber in validEpisodeNumbers
+        ) {
+            dao.deleteWatchProgress(mainId, profileId)
+        }
+    }
 
     suspend fun markMovieCompleted(
         item: MediaItem,

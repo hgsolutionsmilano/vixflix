@@ -4,6 +4,30 @@ import androidx.compose.runtime.Immutable
 
 const val DEFAULT_PRIMARY_PROFILE_ID: String = "profile_primary"
 const val MAX_USER_PROFILES: Int = 8
+const val INITIAL_AVATAR_ID: String = "initial_letter"
+
+/**
+ * Estrae la lettera iniziale (in maiuscolo) dal nome del profilo per l'avatar automatico con iniziale.
+ * Esempi:
+ * - "Marco" -> "M"
+ * - "Veronica" -> "V"
+ * - "Prime Pixel" -> "P"
+ */
+fun extractProfileInitial(name: String?): String {
+    val trimmed = name?.trim().orEmpty()
+    val firstChar = trimmed.firstOrNull { it.isLetterOrDigit() } ?: trimmed.firstOrNull()
+    return firstChar?.uppercaseChar()?.toString() ?: "P"
+}
+
+/**
+ * Restituisce `true` se il profilo utilizza l'avatar automatico basato sull'iniziale del nome
+ * (nessun avatar grafico personalizzato selezionato manualmente).
+ */
+fun isInitialAvatarId(avatarId: String?): Boolean {
+    if (avatarId.isNullOrBlank()) return true
+    if (avatarId.equals(INITIAL_AVATAR_ID, ignoreCase = true)) return true
+    return ProfileAvatarPreset.fromIdOrNull(avatarId) == null
+}
 
 enum class AvatarEmblemStyle {
     CINEMA_SMILE,
@@ -57,7 +81,7 @@ enum class ProfileAvatarPreset(
         emblemStyle = AvatarEmblemStyle.SOLAR_FLARE
     ),
     EMERALD_QUEST(
-        id = "emerald_quest",
+        id = "emerald_pulse",
         label = "Smeraldo",
         primaryColorHex = 0xFF46D369L,
         secondaryColorHex = 0xFF1B6E33L,
@@ -114,8 +138,18 @@ enum class ProfileAvatarPreset(
     );
 
     companion object {
+        fun fromIdOrNull(id: String?): ProfileAvatarPreset? {
+            if (id.isNullOrBlank() || id.equals(INITIAL_AVATAR_ID, ignoreCase = true)) return null
+            val normalized = id.trim().lowercase()
+            if (normalized == "emerald_quest") return EMERALD_QUEST
+            return entries.firstOrNull { it.id == normalized }
+        }
+
         fun fromId(id: String?): ProfileAvatarPreset =
-            entries.firstOrNull { it.id == id } ?: CINEMA_CRIMSON
+            fromIdOrNull(id) ?: CINEMA_CRIMSON
+
+        fun normalizeAvatarId(id: String?): String =
+            fromIdOrNull(id)?.id ?: INITIAL_AVATAR_ID
     }
 }
 
@@ -140,7 +174,7 @@ object ProfileCatalogDefaults {
     fun defaultPrimaryProfile(): UserProfileEntity = UserProfileEntity(
         id = DEFAULT_PRIMARY_PROFILE_ID,
         name = "Profilo Principale",
-        avatarId = ProfileAvatarPreset.CINEMA_CRIMSON.id,
+        avatarId = INITIAL_AVATAR_ID,
         accentColorHex = 0xFFE50914L,
         isPrimary = true,
         preferredLanguage = "it",

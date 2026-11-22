@@ -221,8 +221,33 @@ interface VixFlixDao {
         profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     ): CompletedMediaEntity?
 
+    @Query(
+        "SELECT DISTINCT episodeNumber FROM completed_media " +
+            "WHERE profileId = :profileId AND tmdbId = :tmdbId AND mediaType = 'tv' " +
+            "AND seasonNumber = :seasonNumber AND episodeNumber IS NOT NULL"
+    )
+    fun observeWatchedEpisodeNumbers(
+        tmdbId: Int,
+        seasonNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<List<Int>>
+
+    @Query(
+        "SELECT DISTINCT episodeNumber FROM completed_media " +
+            "WHERE profileId = :profileId AND tmdbId = :tmdbId AND mediaType = 'tv' " +
+            "AND seasonNumber = :seasonNumber AND episodeNumber IS NOT NULL"
+    )
+    suspend fun getWatchedEpisodeNumbers(
+        tmdbId: Int,
+        seasonNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): List<Int>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCompletedMedia(entity: CompletedMediaEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCompletedMediaList(entities: List<CompletedMediaEntity>)
 
     @Query("DELETE FROM completed_media WHERE profileId = :profileId AND contentKey = :contentKey")
     suspend fun deleteCompletedMedia(

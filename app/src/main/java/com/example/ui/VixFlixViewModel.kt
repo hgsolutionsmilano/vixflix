@@ -130,12 +130,14 @@ data class DetailUiState(
     val episodes: List<TmdbEpisodeDto> = emptyList(),
     val isLoadingEpisodes: Boolean = false,
     val episodeProgressMap: Map<Int, EpisodeProgressEntity> = emptyMap(),
+    val watchedEpisodeNumbers: Set<Int> = emptySet(),
     val activeTrailer: TrailerPlaybackState? = null,
     val errorMessage: String? = null,
     val savedScrollIndex: Int = 0,
     val savedScrollOffset: Int = 0,
     val savedFocusedCastActorId: Int? = null,
-    val savedFocusedSimilarKey: String? = null
+    val savedFocusedSimilarKey: String? = null,
+    val savedFocusedSagaKey: String? = null
 )
 
 @Immutable
@@ -477,6 +479,9 @@ class VixFlixViewModel @JvmOverloads constructor(
         }
     }
 
+    @Volatile
+    private var explicitProfileSelectorStateSet = false
+
     private fun initUserProfiles() {
         viewModelScope.launch {
             val primary = repository.ensureDefaultPrimaryProfile()
@@ -496,15 +501,18 @@ class VixFlixViewModel @JvmOverloads constructor(
                 preferences.setStreamLanguage(resolvedProfile.preferredLanguage)
             }
 
-            val shouldPromptSelection = !hasSelectedOnce || !savedAutoLogin
-            _mustSelectProfile.value = shouldPromptSelection
-            _showProfileSelector.value = shouldPromptSelection
-            _isProfileManageMode.value = false
+            if (!explicitProfileSelectorStateSet) {
+                val shouldPromptSelection = !hasSelectedOnce || !savedAutoLogin
+                _mustSelectProfile.value = shouldPromptSelection
+                _showProfileSelector.value = shouldPromptSelection
+                _isProfileManageMode.value = false
+            }
             _profilesInitialized.value = true
         }
     }
 
     fun openProfileSelector(manageMode: Boolean = false) {
+        explicitProfileSelectorStateSet = true
         _profileErrorMessage.value = null
         _isProfileManageMode.value = manageMode
         _mustSelectProfile.value = false
@@ -513,12 +521,14 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     fun closeProfileSelector() {
         if (_mustSelectProfile.value) return
+        explicitProfileSelectorStateSet = true
         _profileErrorMessage.value = null
         _isProfileManageMode.value = false
         _showProfileSelector.value = false
     }
 
     fun setProfileManageMode(manage: Boolean) {
+        explicitProfileSelectorStateSet = true
         _profileErrorMessage.value = null
         _isProfileManageMode.value = manage
     }
@@ -1046,6 +1056,9 @@ class VixFlixViewModel @JvmOverloads constructor(
                 (currentStack + wrappedEntry).takeLast(16)
             }
             updateDetailStack(updatedStack)
+            if (item.isSeries) {
+                observeSeasonProgressForTop(item.id, initialEntry.selectedSeason)
+            }
 
             if (cachedEntry != null) {
                 if (cachedEntry.value.item.isSeries) {
@@ -1117,7 +1130,29 @@ class VixFlixViewModel @JvmOverloads constructor(
                 savedScrollIndex = originScrollIndex,
                 savedScrollOffset = originScrollOffset,
                 savedFocusedCastActorId = null,
-                savedFocusedSimilarKey = item.uniqueKey
+                savedFocusedSimilarKey = item.uniqueKey,
+                savedFocusedSagaKey = null
+            )
+        }
+        openDetails(item)
+    }
+
+    /**
+     * Apre il dettaglio di un film appartenente alla stessa saga TMDB preservando posizione di scorrimento
+     * e focus nella sezione "FILM DELLA STESSA SAGA" per il ritorno con BACK.
+     */
+    fun openDetailsFromSaga(
+        item: MediaItem,
+        originScrollIndex: Int = 0,
+        originScrollOffset: Int = 0
+    ) {
+        updateTopDetail { top ->
+            top.copy(
+                savedScrollIndex = originScrollIndex,
+                savedScrollOffset = originScrollOffset,
+                savedFocusedCastActorId = null,
+                savedFocusedSimilarKey = null,
+                savedFocusedSagaKey = item.uniqueKey
             )
         }
         openDetails(item)
@@ -1144,7 +1179,8 @@ class VixFlixViewModel @JvmOverloads constructor(
                 savedScrollIndex = originScrollIndex,
                 savedScrollOffset = originScrollOffset,
                 savedFocusedCastActorId = actor.id,
-                savedFocusedSimilarKey = null
+                savedFocusedSimilarKey = null,
+                savedFocusedSagaKey = null
             )
         }
 
@@ -1460,12 +1496,70 @@ class VixFlixViewModel @JvmOverloads constructor(
         seasonProgressJob?.cancel()
         val currentProfileId = _activeProfileId.value
         seasonProgressJob = viewModelScope.launch {
-            repository.observeSeasonProgress(tvId, seasonNumber, currentProfileId).collect { progressList ->
-                val map = progressList.associateBy { it.episodeNumber }
+            combine(
+                repository.observeSeasonProgress(tvId, seasonNumber, currentProfileId),
+                repository.observeWatchedEpisodeNumbers(tvId, seasonNumber, currentProfileId)
+            ) { progressList, watchedList ->
+                progressList.associateBy { it.episodeNumber } to watchedList.toSet()
+            }.collect { (map, watchedSet) ->
                 if (_detailState.value?.mediaItem?.id == tvId) {
-                    updateTopDetail { top -> top.copy(episodeProgressMap = map) }
+                    updateTopDetail { top ->
+                        top.copy(
+                            episodeProgressMap = map,
+                            watchedEpisodeNumbers = watchedSet
+                        )
+                    }
                 }
             }
+        }
+    }
+
+    fun markEpisodeAsWatched(seasonNumber: Int, episodeNumber: Int) {
+        val currentMedia = _detailState.value?.mediaItem ?: return
+        if (!currentMedia.isSeries) return
+        val profileId = _activeProfileId.value
+        updateTopDetail { top ->
+            if (top.selectedSeason == seasonNumber) {
+                top.copy(watchedEpisodeNumbers = top.watchedEpisodeNumbers + episodeNumber)
+            } else {
+                top
+            }
+        }
+        viewModelScope.launch {
+            repository.markEpisodeAsWatched(
+                tmdbId = currentMedia.id,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                profileId = profileId
+            )
+        }
+    }
+
+    fun markSeasonAsWatched(seasonNumber: Int, episodeNumbers: List<Int>) {
+        val currentMedia = _detailState.value?.mediaItem ?: return
+        if (!currentMedia.isSeries) return
+        val profileId = _activeProfileId.value
+        val resolvedNumbers = episodeNumbers.ifEmpty {
+            _detailState.value?.episodes
+                ?.filter { it.seasonNumber == seasonNumber }
+                ?.map { it.episodeNumber }
+                .orEmpty()
+        }.filter { it > 0 }.distinct()
+        if (resolvedNumbers.isEmpty()) return
+        updateTopDetail { top ->
+            if (top.selectedSeason == seasonNumber) {
+                top.copy(watchedEpisodeNumbers = top.watchedEpisodeNumbers + resolvedNumbers)
+            } else {
+                top
+            }
+        }
+        viewModelScope.launch {
+            repository.markSeasonAsWatched(
+                tmdbId = currentMedia.id,
+                seasonNumber = seasonNumber,
+                episodeNumbers = resolvedNumbers,
+                profileId = profileId
+            )
         }
     }
 

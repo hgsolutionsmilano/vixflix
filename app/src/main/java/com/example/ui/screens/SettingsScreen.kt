@@ -1656,7 +1656,8 @@ private fun SystemSettingsPanel(
                         avatarId = activeProfile.avatarId,
                         accentColorHex = activeProfile.accentColorHex,
                         size = 48.dp,
-                        cornerRadius = 10.dp
+                        cornerRadius = 10.dp,
+                        profileName = activeProfile.name
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(

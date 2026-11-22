@@ -82,6 +82,12 @@ interface TmdbApiService {
         @Query("include_video_language") includeVideoLanguage: String = "it,en,null"
     ): TmdbMovieDetailsDto
 
+    @GET("collection/{collection_id}")
+    suspend fun getCollectionDetails(
+        @Path("collection_id") collectionId: Int,
+        @Query("language") language: String = "it-IT"
+    ): TmdbCollectionDetailsDto
+
     @GET("tv/{tv_id}")
     suspend fun getTvDetails(
         @Path("tv_id") tvId: Int,

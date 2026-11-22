@@ -295,6 +295,13 @@ fun Modifier.tvFocusableControl(
             if (onClick != null) {
                 Modifier
                     .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown &&
+                            keyEvent.key == Key.Menu &&
+                            onLongClick != null
+                        ) {
+                            onLongClick()
+                            return@onPreviewKeyEvent true
+                        }
                         val isCenterKey = keyEvent.key == Key.DirectionCenter ||
                             keyEvent.key == Key.Enter ||
                             keyEvent.key == Key.NumPadEnter
@@ -302,23 +309,27 @@ fun Modifier.tvFocusableControl(
 
                         when (keyEvent.type) {
                             KeyEventType.KeyDown -> {
-                                if (!centerKeyHeld) {
+                                val isNativeLongPress = keyEvent.nativeKeyEvent.isLongPress ||
+                                    keyEvent.nativeKeyEvent.repeatCount > 0 ||
+                                    (keyEvent.nativeKeyEvent.flags and android.view.KeyEvent.FLAG_LONG_PRESS) != 0
+                                if (isNativeLongPress && onLongClick != null && !longPressTriggered) {
+                                    centerKeyHeld = true
+                                    longPressTriggered = true
+                                    longPressJob?.cancel()
+                                    onLongClick()
+                                } else if (!centerKeyHeld) {
                                     centerKeyHeld = true
                                     longPressTriggered = false
                                     if (onLongClick != null) {
                                         longPressJob?.cancel()
                                         longPressJob = scope.launch {
                                             delay(480L)
-                                            if (centerKeyHeld) {
+                                            if (centerKeyHeld && !longPressTriggered) {
                                                 longPressTriggered = true
                                                 onLongClick()
                                             }
                                         }
                                     }
-                                } else if (keyEvent.nativeKeyEvent.isLongPress && onLongClick != null && !longPressTriggered) {
-                                    longPressTriggered = true
-                                    longPressJob?.cancel()
-                                    onLongClick()
                                 }
                                 true
                             }

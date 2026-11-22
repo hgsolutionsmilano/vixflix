@@ -178,7 +178,8 @@ import kotlinx.coroutines.launch
 fun VixFlixAppScreen(
     viewModel: VixFlixViewModel,
     splashMinDurationMs: Long = 1_150L,
-    respectStartupProfileGate: Boolean = true
+    respectStartupProfileGate: Boolean = true,
+    onRequestExitApp: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val isTvDevice = rememberIsTvDevice()
@@ -217,8 +218,7 @@ fun VixFlixAppScreen(
     var isRailFocused by remember { mutableStateOf(false) }
     var tvQuickActionEntry by remember { mutableStateOf<WatchProgressEntity?>(null) }
     var tvQuickActionItem by remember { mutableStateOf<MediaItem?>(null) }
-    var lastBackPressMs by remember { mutableLongStateOf(0L) }
-    var showExitHintBanner by remember { mutableStateOf(false) }
+    var showExitConfirmDialog by remember { mutableStateOf(false) }
 
     val heroPlayFocusRequesters = remember { NavTab.entries.associateWith { FocusRequester() } }
     val firstRowFocusRequesters = remember { NavTab.entries.associateWith { FocusRequester() } }
@@ -293,7 +293,7 @@ fun VixFlixAppScreen(
     val isPlayerVisible = playbackSession != null
     val isOverlayActive = isDetailVisible || isPlayerVisible
     val isUpdateDialogVisible = !isSplashVisible && !isProfileSelectorVisible && gitHubState.showUpdateDialog && gitHubState.releaseInfo != null
-    val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible
+    val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible || showExitConfirmDialog
     val isCatalogInteractive = !isSplashVisible && !isProfileSelectorVisible && !isDetailVisible && !isPlayerVisible
     val activeDpadScope = when {
         isSplashVisible -> DpadFocusScope.SPLASH
@@ -314,6 +314,7 @@ fun VixFlixAppScreen(
         if (activeProfileId != null) {
             tvQuickActionEntry = null
             tvQuickActionItem = null
+            showExitConfirmDialog = false
             isSearchBarVisible = false
             lastFocusedContentRequester = null
             detailOriginFocusRequester = null
@@ -349,13 +350,6 @@ fun VixFlixAppScreen(
             if (searchResults.isNotEmpty() && !isSearching) searchFirstItemFocusRequester else null
         }
         else -> lastFocusedContentRequester.takeIfAttached() ?: tabContentEntryFocusRequester.takeIfAttached()
-    }
-
-    LaunchedEffect(showExitHintBanner) {
-        if (showExitHintBanner) {
-            delay(2_400L)
-            showExitHintBanner = false
-        }
     }
 
     LaunchedEffect(isSearchBarVisible) {
@@ -474,7 +468,7 @@ fun VixFlixAppScreen(
 
         // Ripristino deterministico del focus dopo la chiusura dei dialoghi rapidi TV o del dialogo aggiornamenti GitHub
         LaunchedEffect(isQuickModalVisible, isCatalogInteractive, useTvNavigationRail) {
-            if (wasQuickModalActive && !isQuickModalVisible && isCatalogInteractive && useTvNavigationRail) {
+            if (wasQuickModalActive && !isQuickModalVisible && isCatalogInteractive) {
                 val target = if (isSearchBarVisible) {
                     lastFocusedContentRequester.takeIfAttached()
                         ?: searchFirstItemFocusRequester.takeIfAttached()
@@ -515,12 +509,13 @@ fun VixFlixAppScreen(
             wasProfileSelectorVisible = isProfileSelectorVisible
         }
 
-        // Gestione tasto INDIETRO ottimale per Android TV / Google TV / Layout Orizzontale nel catalogo principale:
-        // 1. Chiude menu rapido o ricerca se aperti
-        // 2. Sposta prima il fuoco sulla barra laterale compatta (sulla voce attiva) se l'utente è sui contenuti
-        // 3. Su schede secondarie torna alla Home; sulla Home chiede doppia pressione entro 2.4s
-        BackHandler(enabled = isCatalogInteractive) {
+        // Gestione tasto INDIETRO per il catalogo principale:
+        // 1. Chiude menu rapido, popup uscita o ricerca se aperti
+        // 2. Su schede secondarie o filtri attivi torna alla schermata precedente / Home
+        // 3. Sulla schermata principale mostra il popup di conferma uscita "VUOI USCIRE DA VIXFLIX?"
+        val handleCatalogBack: () -> Unit = {
             when {
+                showExitConfirmDialog -> showExitConfirmDialog = false
                 tvQuickActionEntry != null -> tvQuickActionEntry = null
                 tvQuickActionItem != null -> tvQuickActionItem = null
                 isSearchBarVisible -> {
@@ -536,25 +531,19 @@ fun VixFlixAppScreen(
                 selectedTab == NavTab.MOVIES && movieGenreState.selectedGenre != null -> {
                     viewModel.selectMovieGenre(null)
                 }
-                useTvNavigationRail && !isRailFocused -> {
-                    navRailSelectedFocusRequester.safeRequestFocus()
-                }
                 selectedTab != NavTab.HOME -> {
                     lastFocusedContentRequester = null
                     tabScrollResetNonce++
                     viewModel.selectTab(NavTab.HOME)
                 }
                 else -> {
-                    val now = System.currentTimeMillis()
-                    if (now - lastBackPressMs <= 2_400L) {
-                        showExitHintBanner = false
-                        (context as? Activity)?.finish()
-                    } else {
-                        lastBackPressMs = now
-                        showExitHintBanner = true
-                    }
+                    showExitConfirmDialog = true
                 }
             }
+        }
+
+        BackHandler(enabled = isCatalogInteractive) {
+            handleCatalogBack()
         }
 
         GlobalDpadFocusObserverHost(
@@ -598,6 +587,18 @@ fun VixFlixAppScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .focusProperties { canFocus = isCatalogInteractive && !isQuickModalVisible }
+                .onPreviewKeyEvent { keyEvent ->
+                    if (isCatalogInteractive &&
+                        !isQuickModalVisible &&
+                        keyEvent.type == KeyEventType.KeyDown &&
+                        (keyEvent.key == Key.Back || keyEvent.key == Key.Escape)
+                    ) {
+                        handleCatalogBack()
+                        true
+                    } else {
+                        false
+                    }
+                }
                 .onKeyEvent { keyEvent ->
                     if (isCatalogInteractive &&
                         !isQuickModalVisible &&
@@ -1102,31 +1103,6 @@ fun VixFlixAppScreen(
                             .zIndex(10f)
                     )
                 }
-
-                // Banner discreto "Premi ancora Indietro per uscire" su Android TV / Google TV
-                AnimatedVisibility(
-                    visible = showExitHintBanner,
-                    enter = fadeIn(tween(200)) + slideInVertically(tween(220)) { it / 2 },
-                    exit = fadeOut(tween(200)) + slideOutVertically(tween(200)) { it / 2 },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = innerPadding.calculateBottomPadding() + 28.dp)
-                        .zIndex(14f)
-                ) {
-                    Surface(
-                        color = NetflixCardSurface.copy(alpha = 0.96f),
-                        shape = RoundedCornerShape(24.dp),
-                        border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.8f)),
-                        shadowElevation = 12.dp
-                    ) {
-                        Text(
-                            text = "Premi ancora Indietro per uscire da VixFlix",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = NetflixWhite,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                        )
-                    }
-                }
             }
         }
         }
@@ -1202,6 +1178,21 @@ fun VixFlixAppScreen(
                 }
             )
         }
+
+        // Popup di conferma uscita dall'applicazione sulla schermata principale
+        if (showExitConfirmDialog) {
+            VixFlixExitConfirmationDialog(
+                onCancel = { showExitConfirmDialog = false },
+                onConfirmExit = {
+                    showExitConfirmDialog = false
+                    if (onRequestExitApp != null) {
+                        onRequestExitApp()
+                    } else {
+                        (context as? android.app.Activity)?.finish()
+                    }
+                }
+            )
+        }
         }
 
         // 2. LIVELLO INTERMEDIO: Schermata Dettagli & Episodi (con stack cronologico tra Titoli Simili e Attori)
@@ -1258,6 +1249,9 @@ fun VixFlixAppScreen(
                         viewModel.openDetailsFromSimilar(similarItem)
                     },
                     onSelectSimilarWithScroll = viewModel::openDetailsFromSimilar,
+                    onSelectSagaWithScroll = viewModel::openDetailsFromSaga,
+                    onMarkEpisodeWatched = viewModel::markEpisodeAsWatched,
+                    onMarkSeasonWatched = viewModel::markSeasonAsWatched,
                     onSelectActor = viewModel::openActorDetails
                 )
             }
@@ -1596,10 +1590,11 @@ private fun TvExpandableNavigationRail(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     ProfileAvatarArtwork(
-                        avatarId = activeProfile?.avatarId ?: "cinema_crimson",
+                        avatarId = activeProfile?.avatarId ?: "initial_letter",
                         accentColorHex = activeProfile?.accentColorHex ?: 0xFFE50914L,
                         size = 30.dp,
-                        cornerRadius = 7.dp
+                        cornerRadius = 7.dp,
+                        profileName = activeProfile?.name.orEmpty()
                     )
                     AnimatedVisibility(
                         visible = isExpanded,
@@ -3794,7 +3789,8 @@ private fun MyListScreen(
                         avatarId = activeProfile.avatarId,
                         accentColorHex = activeProfile.accentColorHex,
                         size = 40.dp,
-                        cornerRadius = 10.dp
+                        cornerRadius = 10.dp,
+                        profileName = activeProfile.name
                     )
                     Column {
                         Text(

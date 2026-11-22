@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -26,16 +27,23 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.data.local.AvatarEmblemStyle
 import com.example.data.local.ProfileAvatarPreset
+import com.example.data.local.extractProfileInitial
+import com.example.data.local.isInitialAvatarId
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixWhite
 
 /**
- * Avatar cinematografico originale renderizzato via Canvas vettoriale (100% offline,
- * nitido a qualsiasi risoluzione TV 4K / smartphone, zero asset proprietari copiati).
+ * Avatar cinematografico originale renderizzato via Canvas vettoriale oppure
+ * avatar automatico basato sulla lettera iniziale del nome del profilo (100% offline,
+ * nitido a qualsiasi risoluzione TV 4K / smartphone, contrasto elevato).
  */
 @Composable
 fun ProfileAvatarArtwork(
@@ -44,51 +52,104 @@ fun ProfileAvatarArtwork(
     size: Dp,
     cornerRadius: Dp = 18.dp,
     showEditOverlay: Boolean = false,
+    profileName: String = "",
     modifier: Modifier = Modifier
 ) {
+    val useInitialAvatar = remember(avatarId) { isInitialAvatarId(avatarId) }
+    val initialLetter = remember(profileName) { extractProfileInitial(profileName) }
     val preset = remember(avatarId) { ProfileAvatarPreset.fromId(avatarId) }
     val accentColor = remember(accentColorHex) { Color(accentColorHex) }
+    val darkenedAccent = remember(accentColor) {
+        Color(
+            red = (accentColor.red * 0.48f).coerceIn(0f, 1f),
+            green = (accentColor.green * 0.48f).coerceIn(0f, 1f),
+            blue = (accentColor.blue * 0.48f).coerceIn(0f, 1f),
+            alpha = 1f
+        )
+    }
     val primaryColor = remember(preset, accentColor) {
         Color(preset.primaryColorHex).copy(alpha = 0.92f)
     }
     val secondaryColor = remember(preset) { Color(preset.secondaryColorHex) }
     val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
+    val backgroundBrush = remember(useInitialAvatar, accentColor, darkenedAccent, primaryColor, secondaryColor) {
+        if (useInitialAvatar) {
+            Brush.linearGradient(
+                colors = listOf(accentColor, darkenedAccent)
+            )
+        } else {
+            Brush.linearGradient(
+                colors = listOf(accentColor, primaryColor, secondaryColor)
+            )
+        }
+    }
 
     Box(
         modifier = modifier
             .size(size)
             .clip(shape)
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(accentColor, primaryColor, secondaryColor)
-                )
-            ),
+            .background(backgroundBrush),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            // Luce radiale superiore stile cinematografico
-            drawRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.28f),
-                        Color.Transparent
+        if (useInitialAvatar) {
+            // Avatar con iniziale del nome: disco centrale circolare ad alto contrasto con lettera centrata
+            val circleSize = (size * 0.74f).coerceAtLeast(18.dp)
+            val fontSizeSp = (size.value * 0.44f).coerceIn(13f, 54f).sp
+            Box(
+                modifier = Modifier
+                    .size(circleSize)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                accentColor,
+                                darkenedAccent
+                            )
+                        )
+                    )
+                    .border(
+                        width = (size * 0.025f).coerceIn(1.dp, 2.5.dp),
+                        color = NetflixWhite.copy(alpha = 0.38f),
+                        shape = CircleShape
                     ),
-                    center = Offset(this.size.width * 0.25f, this.size.height * 0.2f),
-                    radius = this.size.minDimension * 0.85f
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = initialLetter,
+                    color = NetflixWhite,
+                    fontSize = fontSizeSp,
+                    fontWeight = FontWeight.ExtraBold,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    modifier = Modifier.testTag("profile_avatar_initial_letter")
                 )
-            )
-            // Vignettatura scura inferiore per profondita
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.Transparent,
-                        Color.Black.copy(alpha = 0.34f)
-                    ),
-                    startY = this.size.height * 0.45f,
-                    endY = this.size.height
+            }
+        } else {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                // Luce radiale superiore stile cinematografico
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.28f),
+                            Color.Transparent
+                        ),
+                        center = Offset(this.size.width * 0.25f, this.size.height * 0.2f),
+                        radius = this.size.minDimension * 0.85f
+                    )
                 )
-            )
-            drawAvatarEmblem(preset.emblemStyle)
+                // Vignettatura scura inferiore per profondita
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.34f)
+                        ),
+                        startY = this.size.height * 0.45f,
+                        endY = this.size.height
+                    )
+                )
+                drawAvatarEmblem(preset.emblemStyle)
+            }
         }
 
         if (showEditOverlay) {

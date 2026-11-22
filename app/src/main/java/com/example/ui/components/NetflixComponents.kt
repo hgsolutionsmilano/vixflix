@@ -384,10 +384,11 @@ fun NetflixTopBar(
                             contentAlignment = Alignment.Center
                         ) {
                             ProfileAvatarArtwork(
-                                avatarId = activeProfile?.avatarId ?: "cinema_crimson",
+                                avatarId = activeProfile?.avatarId ?: "initial_letter",
                                 accentColorHex = activeProfile?.accentColorHex ?: 0xFFE50914L,
                                 size = 34.dp,
-                                cornerRadius = 8.dp
+                                cornerRadius = 8.dp,
+                                profileName = activeProfile?.name.orEmpty()
                             )
                         }
                     }

@@ -254,6 +254,78 @@ abstract class VixFlixDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `my_list_new` RENAME TO `my_list`")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_my_list_profileId_addedAt` ON `my_list` (`profileId`, `addedAt`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_my_list_addedAt` ON `my_list` (`addedAt`)")
+
+                // Allinea le tabelle di cache effimere allo schema Room corrente
+                db.execSQL("DROP TABLE IF EXISTS `catalog_snapshot_cache`")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `catalog_snapshot_cache` (
+                        `id` TEXT NOT NULL,
+                        `feedJson` TEXT NOT NULL,
+                        `movieGenresJson` TEXT NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE IF EXISTS `media_details_cache`")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_details_cache` (
+                        `cacheKey` TEXT NOT NULL,
+                        `mediaType` TEXT NOT NULL,
+                        `tmdbId` INTEGER NOT NULL,
+                        `detailsJson` TEXT NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        `lastAccessedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`cacheKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_details_cache_lastAccessedAtMs` ON `media_details_cache` (`lastAccessedAtMs`)")
+
+                db.execSQL("DROP TABLE IF EXISTS `season_episodes_cache`")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `season_episodes_cache` (
+                        `cacheKey` TEXT NOT NULL,
+                        `tvId` INTEGER NOT NULL,
+                        `seasonNumber` INTEGER NOT NULL,
+                        `episodesJson` TEXT NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        `lastAccessedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`cacheKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_season_episodes_cache_lastAccessedAtMs` ON `season_episodes_cache` (`lastAccessedAtMs`)")
+
+                db.execSQL("DROP TABLE IF EXISTS `stream_link_cache`")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `stream_link_cache` (
+                        `cacheKey` TEXT NOT NULL,
+                        `tmdbId` INTEGER NOT NULL,
+                        `mediaType` TEXT NOT NULL,
+                        `seasonNumber` INTEGER,
+                        `episodeNumber` INTEGER,
+                        `lang` TEXT NOT NULL,
+                        `streamUrl` TEXT NOT NULL,
+                        `embedUrl` TEXT NOT NULL,
+                        `referer` TEXT NOT NULL,
+                        `userAgent` TEXT NOT NULL,
+                        `startSeconds` INTEGER NOT NULL,
+                        `startMinutes` INTEGER NOT NULL,
+                        `subtitlesJson` TEXT NOT NULL,
+                        `expiresAtMs` INTEGER NOT NULL,
+                        `verifiedAtMs` INTEGER NOT NULL,
+                        `lastUsedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`cacheKey`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_stream_link_cache_expiresAtMs` ON `stream_link_cache` (`expiresAtMs`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_stream_link_cache_lastUsedAtMs` ON `stream_link_cache` (`lastUsedAtMs`)")
             }
         }
 
