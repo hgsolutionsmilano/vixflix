@@ -35,6 +35,7 @@ import com.example.data.remote.simkl.SimklConfig
 import com.example.data.remote.simkl.SimklConnectionState
 import com.example.data.remote.simkl.SimklProfileUiState
 import com.example.data.remote.simkl.SimklQrDialogState
+import com.example.data.remote.simkl.SimklQrMatrix
 import com.example.data.remote.simkl.SimklQrResolutionPrompt
 import com.example.data.remote.simkl.SimklSyncManager
 import com.example.data.remote.simkl.SimklSyncTrigger
@@ -1147,6 +1148,284 @@ class SimklSyncSystemTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("profile_simkl_auth_button", useUnmergedTree = true).performScrollTo().performClick()
         assertTrue(simklAuthClicked)
+    }
+
+    // 40. Full ISO/IEC 18004 decoder verification (Finder, Dark Module, Format BCH both copies, Version BCH, RS syndromes, UTF-8 round-trip)
+    @Test
+    fun `40 iso18004 full decode verifies format bits dark module reed solomon and exact urls across versions`() {
+        val testPayloads = listOf(
+            "https://simkl.com", // V2
+            "https://simkl.com/pin", // V2
+            "https://simkl.com/pin?user_code=ABCD-1234", // V3
+            "https://simkl.com/oauth2/device/verify?user_code=VIXF-9988&utm_source=android_tv&client=vixflix", // V6/V7 (triggers Version Info)
+            "https://simkl.com/pin?user_code=TV-7744&verification=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", // V7+
+            "https://simkl.com/pin?user_code=LONG-9988&device_session=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" // V10+ (16-bit byte count)
+        )
+
+        for (payload in testPayloads) {
+            val matrix = SimklQrGenerator.generate(payload)
+            val decoded = decodeAndVerifyIso18004Qr(matrix)
+            assertEquals("QR decode mismatch per payload: $payload", payload, decoded)
+        }
+    }
+
+    private fun decodeAndVerifyIso18004Qr(matrix: SimklQrMatrix): String {
+        val size = matrix.size
+        assertTrue("Dimensione QR non valida: $size", size >= 21 && (size - 17) % 4 == 0)
+        val version = (size - 17) / 4
+
+        // 1. Verifica Dark Module fisso (4 * V + 9, 8) = (size - 8, 8)
+        assertTrue("Dark module fisso mancante a (${size - 8}, 8) per V$version", matrix[size - 8, 8])
+
+        // 2. Verifica Finder Patterns (7x7) e separatori (1 modulo bianco)
+        val finderOrigins = listOf(0 to 0, 0 to (size - 7), (size - 7) to 0)
+        for ((fr, fc) in finderOrigins) {
+            for (dr in 0 until 7) {
+                for (dc in 0 until 7) {
+                    val expected = dr == 0 || dr == 6 || dc == 0 || dc == 6 || (dr in 2..4 && dc in 2..4)
+                    assertEquals("Finder errato in (${fr + dr}, ${fc + dc})", expected, matrix[fr + dr, fc + dc])
+                }
+            }
+        }
+        for (i in 0 until 8) {
+            assertFalse("Separatore top-left H ($i)", matrix[7, i])
+            assertFalse("Separatore top-left V ($i)", matrix[i, 7])
+            assertFalse("Separatore top-right H ($i)", matrix[7, size - 8 + i])
+            assertFalse("Separatore top-right V ($i)", matrix[i, size - 8])
+            assertFalse("Separatore bottom-left H ($i)", matrix[size - 8, i])
+            assertFalse("Separatore bottom-left V ($i)", matrix[size - 8 + i, 7])
+        }
+
+        // 3. Verifica Timing Patterns
+        for (i in 8 until size - 8) {
+            val expected = i % 2 == 0
+            assertEquals("Timing H errato a (6, $i)", expected, matrix[6, i])
+            assertEquals("Timing V errato a ($i, 6)", expected, matrix[i, 6])
+        }
+
+        // 4. Leggi e decodifica entrambe le copie di Format Information secondo ISO/IEC 18004
+        var formatCopy1 = 0
+        for (i in 0..5) if (matrix[i, 8]) formatCopy1 = formatCopy1 or (1 shl i)
+        if (matrix[7, 8]) formatCopy1 = formatCopy1 or (1 shl 6)
+        if (matrix[8, 8]) formatCopy1 = formatCopy1 or (1 shl 7)
+        if (matrix[8, 7]) formatCopy1 = formatCopy1 or (1 shl 8)
+        for (i in 9..14) if (matrix[8, 14 - i]) formatCopy1 = formatCopy1 or (1 shl i)
+
+        var formatCopy2 = 0
+        for (i in 0..7) if (matrix[8, size - 1 - i]) formatCopy2 = formatCopy2 or (1 shl i)
+        for (i in 8..14) if (matrix[size - 15 + i, 8]) formatCopy2 = formatCopy2 or (1 shl i)
+
+        assertEquals("Le due copie del Format Info non coincidono per V$version", formatCopy1, formatCopy2)
+        val unmaskedFormat = formatCopy1 xor 0x5412
+        // Verifica BCH(15, 5) resto == 0 modulo 0x537
+        var formatRem = unmaskedFormat
+        for (bit in 14 downTo 10) {
+            if (((formatRem ushr bit) and 1) == 1) {
+                formatRem = formatRem xor (0x537 shl (bit - 10))
+            }
+        }
+        assertEquals("BCH Format Information non valido per V$version", 0, formatRem and 0x3FF)
+
+        val eccBits = (unmaskedFormat ushr 13) and 0x3
+        assertEquals("ECC atteso M (0b00)", 0b00, eccBits)
+        val maskPattern = (unmaskedFormat ushr 10) and 0x7
+
+        // 5. Se V >= 7, verifica entrambe le copie del Version Info
+        if (version >= 7) {
+            var vCopyTr = 0
+            var vCopyBl = 0
+            for (i in 0 until 18) {
+                val a = size - 11 + (i % 3)
+                val b = i / 3
+                if (matrix[b, a]) vCopyTr = vCopyTr or (1 shl i)
+                if (matrix[a, b]) vCopyBl = vCopyBl or (1 shl i)
+            }
+            assertEquals("Version Info TR/BL non coincidono per V$version", vCopyTr, vCopyBl)
+            var vRem = vCopyTr
+            for (bit in 17 downTo 12) {
+                if (((vRem ushr bit) and 1) == 1) {
+                    vRem = vRem xor (0x1F25 shl (bit - 12))
+                }
+            }
+            assertEquals("BCH Version Info non valido per V$version", 0, vRem and 0xFFF)
+            assertEquals(version, (vCopyTr ushr 12) and 0x3F)
+        }
+
+        // 6. Ricostruisci mappa moduli funzione ISO/IEC 18004 e allineamenti
+        val alignmentCenters = when (version) {
+            1 -> intArrayOf()
+            2 -> intArrayOf(6, 18)
+            3 -> intArrayOf(6, 22)
+            4 -> intArrayOf(6, 26)
+            5 -> intArrayOf(6, 30)
+            6 -> intArrayOf(6, 34)
+            7 -> intArrayOf(6, 22, 38)
+            8 -> intArrayOf(6, 24, 42)
+            9 -> intArrayOf(6, 26, 46)
+            10 -> intArrayOf(6, 28, 50)
+            11 -> intArrayOf(6, 30, 54)
+            12 -> intArrayOf(6, 32, 58)
+            13 -> intArrayOf(6, 34, 62)
+            14 -> intArrayOf(6, 26, 46, 66)
+            15 -> intArrayOf(6, 26, 48, 70)
+            else -> error("Versione $version non coperta dal decoder test")
+        }
+        val isFunc = Array(size) { BooleanArray(size) }
+        for ((fr, fc) in finderOrigins) {
+            for (r in fr until fr + 7) for (c in fc until fc + 7) isFunc[r][c] = true
+        }
+        for (i in 0 until 8) {
+            isFunc[7][i] = true; isFunc[i][7] = true
+            isFunc[7][size - 8 + i] = true; isFunc[i][size - 8] = true
+            isFunc[size - 8][i] = true; isFunc[size - 8 + i][7] = true
+        }
+        for (rCenter in alignmentCenters) {
+            for (cCenter in alignmentCenters) {
+                if (!isFunc[rCenter][cCenter]) {
+                    for (dr in -2..2) for (dc in -2..2) {
+                        val expected = maxOf(kotlin.math.abs(dr), kotlin.math.abs(dc)) != 1
+                        assertEquals("Alignment errato in (${rCenter + dr}, ${cCenter + dc})", expected, matrix[rCenter + dr, cCenter + dc])
+                        isFunc[rCenter + dr][cCenter + dc] = true
+                    }
+                }
+            }
+        }
+        for (i in 8 until size - 8) {
+            isFunc[6][i] = true
+            isFunc[i][6] = true
+        }
+        isFunc[size - 8][8] = true
+        for (i in 0..8) if (i != 6) { isFunc[8][i] = true; isFunc[i][8] = true }
+        for (i in 0 until 8) { isFunc[8][size - 1 - i] = true; isFunc[size - 1 - i][8] = true }
+        if (version >= 7) {
+            for (i in 0 until 18) {
+                val a = size - 11 + (i % 3)
+                val b = i / 3
+                isFunc[b][a] = true
+                isFunc[a][b] = true
+            }
+        }
+
+        // 7. Estrai i bit dati a zig-zag applicando la maschera inversa
+        val specsM: Map<Int, Pair<List<Pair<Int, Int>>, Int>> = mapOf(
+            1 to (listOf(1 to 16) to 10),
+            2 to (listOf(1 to 28) to 16),
+            3 to (listOf(1 to 44) to 26),
+            4 to (listOf(2 to 32) to 18),
+            5 to (listOf(2 to 43) to 24),
+            6 to (listOf(4 to 27) to 16),
+            7 to (listOf(4 to 31) to 18),
+            8 to (listOf(2 to 38, 2 to 39) to 22),
+            9 to (listOf(3 to 36, 2 to 37) to 22),
+            10 to (listOf(4 to 43, 1 to 44) to 26),
+            11 to (listOf(1 to 50, 4 to 51) to 30),
+            12 to (listOf(6 to 36, 2 to 37) to 22),
+            13 to (listOf(8 to 37, 1 to 38) to 22),
+            14 to (listOf(4 to 40, 5 to 41) to 24),
+            15 to (listOf(5 to 41, 5 to 42) to 24)
+        )
+        val (groups, ecPerBlock) = specsM.getValue(version)
+        val blockDataSizes = ArrayList<Int>()
+        groups.forEach { (count, dataBytes) -> repeat(count) { blockDataSizes.add(dataBytes) } }
+        val totalCodewords = blockDataSizes.sum() + blockDataSizes.size * ecPerBlock
+        val extractedBits = ArrayList<Int>(totalCodewords * 8)
+
+        var right = size - 1
+        while (right >= 1) {
+            if (right == 6) right = 5
+            for (vert in 0 until size) {
+                for (j in 0 until 2) {
+                    val c = right - j
+                    val upward = ((right + 1) and 2) == 0
+                    val r = if (upward) size - 1 - vert else vert
+                    if (!isFunc[r][c] && extractedBits.size < totalCodewords * 8) {
+                        val invert = when (maskPattern) {
+                            0 -> (r + c) % 2 == 0
+                            1 -> r % 2 == 0
+                            2 -> c % 3 == 0
+                            3 -> (r + c) % 3 == 0
+                            4 -> ((r / 2) + (c / 3)) % 2 == 0
+                            5 -> (r * c) % 2 + (r * c) % 3 == 0
+                            6 -> ((r * c) % 2 + (r * c) % 3) % 2 == 0
+                            7 -> ((r + c) % 2 + (r * c) % 3) % 2 == 0
+                            else -> false
+                        }
+                        val bit = if (matrix[r, c] xor invert) 1 else 0
+                        extractedBits.add(bit)
+                    }
+                }
+            }
+            right -= 2
+        }
+        assertEquals(totalCodewords * 8, extractedBits.size)
+
+        val stream = IntArray(totalCodewords) { cw ->
+            var v = 0
+            for (k in 0 until 8) v = (v shl 1) or extractedBits[cw * 8 + k]
+            v
+        }
+
+        // 8. De-interleave e verifica sindrome Reed-Solomon == 0 su tutti i blocchi
+        val dataBlocks = blockDataSizes.map { IntArray(it) }
+        val ecBlocks = blockDataSizes.map { IntArray(ecPerBlock) }
+        var pos = 0
+        val maxData = blockDataSizes.max()
+        for (i in 0 until maxData) {
+            for (b in blockDataSizes.indices) {
+                if (i < dataBlocks[b].size) dataBlocks[b][i] = stream[pos++]
+            }
+        }
+        for (i in 0 until ecPerBlock) {
+            for (b in blockDataSizes.indices) {
+                ecBlocks[b][i] = stream[pos++]
+            }
+        }
+        assertEquals(totalCodewords, pos)
+
+        // GF(256) modulo 0x11D per calcolo sindromi RS
+        val gfExp = IntArray(512)
+        val gfLog = IntArray(256)
+        var x = 1
+        for (i in 0 until 255) {
+            gfExp[i] = x
+            gfLog[x] = i
+            x = x shl 1
+            if ((x and 0x100) != 0) x = x xor 0x11D
+        }
+        for (i in 255 until 512) gfExp[i] = gfExp[i - 255]
+        fun mul(a: Int, b: Int): Int = if (a == 0 || b == 0) 0 else gfExp[gfLog[a] + gfLog[b]]
+
+        for (b in blockDataSizes.indices) {
+            val codeword = dataBlocks[b] + ecBlocks[b]
+            for (rootExp in 0 until ecPerBlock) {
+                val alpha = gfExp[rootExp]
+                var eval = 0
+                for (coeff in codeword) {
+                    eval = mul(eval, alpha) xor coeff
+                }
+                assertEquals("Sindrome Reed-Solomon diversa da 0 per V$version blocco $b radice $rootExp", 0, eval)
+            }
+        }
+
+        // 9. Decodifica Byte Mode (0100) -> stringa UTF-8 originale
+        val allDataBits = ArrayList<Int>(blockDataSizes.sum() * 8)
+        for (block in dataBlocks) {
+            for (byteVal in block) {
+                for (bit in 7 downTo 0) allDataBits.add((byteVal ushr bit) and 1)
+            }
+        }
+        var ptr = 0
+        fun readBits(n: Int): Int {
+            var v = 0
+            repeat(n) { v = (v shl 1) or allDataBits[ptr++] }
+            return v
+        }
+        val mode = readBits(4)
+        assertEquals("Mode Atteso Byte (0100)", 0b0100, mode)
+        val countBits = if (version >= 10) 16 else 8
+        val byteCount = readBits(countBits)
+        val outBytes = ByteArray(byteCount) { readBits(8).toByte() }
+        return String(outBytes, Charsets.UTF_8)
     }
 
     data class RecordedHttpRequest(

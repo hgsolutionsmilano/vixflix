@@ -333,14 +333,20 @@ object SimklQrGenerator {
         }
         val bits = ((data shl 10) or rem) xor 0x5412
 
-        for (i in 0..5) modules[8][i] = ((bits ushr i) and 1) == 1
-        modules[8][7] = ((bits ushr 6) and 1) == 1
+        // Prima copia attorno al finder pattern in alto a sinistra:
+        // bit 0..5 verticali (col 8, righe 0..5), bit 6 (7,8), bit 7 (8,8), bit 8 (8,7), bit 9..14 orizzontali (riga 8, col 5..0)
+        for (i in 0..5) modules[i][8] = ((bits ushr i) and 1) == 1
+        modules[7][8] = ((bits ushr 6) and 1) == 1
         modules[8][8] = ((bits ushr 7) and 1) == 1
-        modules[7][8] = ((bits ushr 8) and 1) == 1
-        for (i in 9..14) modules[14 - i][8] = ((bits ushr i) and 1) == 1
+        modules[8][7] = ((bits ushr 8) and 1) == 1
+        for (i in 9..14) modules[8][14 - i] = ((bits ushr i) and 1) == 1
 
-        for (i in 0..7) modules[size - 1 - i][8] = ((bits ushr i) and 1) == 1
-        for (i in 8..14) modules[8][size - 15 + i] = ((bits ushr i) and 1) == 1
+        // Seconda copia:
+        // bit 0..7 orizzontali sotto al finder in alto a destra (riga 8, col size-1..size-8)
+        // bit 8..14 verticali accanto al finder in basso a sinistra (righe size-7..size-1, col 8)
+        // Preserva intatto il dark module fisso (4 * V + 9, 8) = (size - 8, 8).
+        for (i in 0..7) modules[8][size - 1 - i] = ((bits ushr i) and 1) == 1
+        for (i in 8..14) modules[size - 15 + i][8] = ((bits ushr i) and 1) == 1
     }
 
     private fun placeDataBits(modules: Array<BooleanArray>, isFunc: Array<BooleanArray>, size: Int, codewords: IntArray) {
@@ -426,6 +432,17 @@ object SimklQrGenerator {
                 }
             }
         }
+        // Regola 3: pattern 1:1:3:1:1 con 4 moduli chiari adiacenti (orizzontali e verticali)
+        for (r in 0 until size) {
+            for (c in 0..size - 11) {
+                if (matchesFinderPenalty(modules, r, c, horizontal = true)) penalty += 40
+            }
+        }
+        for (c in 0 until size) {
+            for (r in 0..size - 11) {
+                if (matchesFinderPenalty(modules, r, c, horizontal = false)) penalty += 40
+            }
+        }
         // Regola 4: bilanciamento moduli scuri ~50%
         var darkCount = 0
         for (r in 0 until size) {
@@ -437,6 +454,22 @@ object SimklQrGenerator {
         val k = kotlin.math.abs(darkCount * 20 - total * 10) / total
         penalty += k * 10
         return penalty
+    }
+
+    private fun matchesFinderPenalty(
+        modules: Array<BooleanArray>,
+        startRow: Int,
+        startCol: Int,
+        horizontal: Boolean
+    ): Boolean {
+        fun get(offset: Int): Boolean =
+            if (horizontal) modules[startRow][startCol + offset] else modules[startRow + offset][startCol]
+
+        val patternA = get(0) && !get(1) && get(2) && get(3) && get(4) && !get(5) && get(6) &&
+            !get(7) && !get(8) && !get(9) && !get(10)
+        val patternB = !get(0) && !get(1) && !get(2) && !get(3) && get(4) && !get(5) && get(6) &&
+            get(7) && get(8) && !get(9) && get(10)
+        return patternA || patternB
     }
 
     private fun markFunc(modules: Array<BooleanArray>, isFunc: Array<BooleanArray>, r: Int, c: Int, value: Boolean) {

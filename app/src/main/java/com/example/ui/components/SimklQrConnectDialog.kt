@@ -583,7 +583,7 @@ private fun SimklQrBox(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(14.dp)
+                .padding(6.dp)
         ) {
             when {
                 state.isLoading -> {
@@ -695,18 +695,28 @@ private fun SimklQrCodeCanvas(
             size = Size(cellPx * totalModules, cellPx * totalModules)
         )
 
+        val gridX = FloatArray(matrix.size + 1) { c ->
+            kotlin.math.round(originX + (c + quietModules) * cellPx)
+        }
+        val gridY = FloatArray(matrix.size + 1) { r ->
+            kotlin.math.round(originY + (r + quietModules) * cellPx)
+        }
+
         for (r in 0 until matrix.size) {
+            val top = gridY[r]
+            val height = gridY[r + 1] - top
+            if (height <= 0f) continue
             for (c in 0 until matrix.size) {
                 if (matrix[r, c]) {
-                    drawRect(
-                        color = Color.Black,
-                        topLeft = Offset(
-                            x = originX + (c + quietModules) * cellPx,
-                            y = originY + (r + quietModules) * cellPx
-                        ),
-                        // Piccolo overlap sub-pixel per evitare linee bianche anti-aliased su schermi TV
-                        size = Size(cellPx + 0.5f, cellPx + 0.5f)
-                    )
+                    val left = gridX[c]
+                    val width = gridX[c + 1] - left
+                    if (width > 0f) {
+                        drawRect(
+                            color = Color.Black,
+                            topLeft = Offset(left, top),
+                            size = Size(width, height)
+                        )
+                    }
                 }
             }
         }
