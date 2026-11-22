@@ -8,6 +8,8 @@ import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -15,6 +17,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -554,6 +558,246 @@ class VixFlixFeaturesUpdateTest {
         db.close()
     }
 
+    @Test
+    fun `updates 1 and 2 - marking episode or season updates Continua a guardare, highlights completed seasons, handles unmark and final completion`() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(app, VixFlixDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val repository = VixFlixRepository(
+            dao = db.vixFlixDao(),
+            tmdbBaseUrl = "http://127.0.0.1:${server.port}/3/"
+        )
+        repository.ensureDefaultPrimaryProfile()
+
+        val viewModel = VixFlixViewModel(app, repository)
+        viewModel.selectProfile(DEFAULT_PRIMARY_PROFILE_ID)
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                VixFlixAppScreen(
+                    viewModel = viewModel,
+                    splashMinDurationMs = 0L,
+                    respectStartupProfileGate = false
+                )
+            }
+        }
+
+        val seriesItem = MediaItem(
+            id = 500,
+            mediaType = "tv",
+            title = "The Last Frontier",
+            overview = "Serie sci-fi con due stagioni.",
+            posterPath = "/series500.jpg",
+            backdropPath = "/series500_bg.jpg",
+            voteAverage = 8.9,
+            releaseYear = "2024"
+        )
+
+        // All'inizio la serie NON è in Continua a guardare
+        assertTrue(viewModel.continueWatching.value.isEmpty())
+
+        viewModel.openDetails(seriesItem)
+        composeRule.waitUntil(timeoutMillis = 6_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.detailState.value?.episodes?.size == 3
+        }
+
+        // Scorri agli episodi
+        composeRule.onNodeWithTag("detail_play_button", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_season_chip_1", useUnmergedTree = true)
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        composeRule.waitUntil(timeoutMillis = 4_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("episode_card_1_1", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // 1. Segna Episodio 1 come visto -> aggiunge la serie in Continua a guardare con S1:E2
+        composeRule.onNodeWithTag("episode_card_1_1", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.OnLongClick)
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("tv_episode_ctx_mark_episode", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("tv_episode_ctx_mark_episode", useUnmergedTree = true).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 4_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            val cw = viewModel.continueWatching.value
+            cw.size == 1 && cw.first().seasonNumber == 1 && cw.first().episodeNumber == 2
+        }
+        val cwAfterEp1 = viewModel.continueWatching.value
+        assertEquals(1, cwAfterEp1.size)
+        assertEquals("tv_500", cwAfterEp1.first().id)
+        assertEquals(500, cwAfterEp1.first().tmdbId)
+        assertEquals(1, cwAfterEp1.first().seasonNumber)
+        assertEquals(2, cwAfterEp1.first().episodeNumber)
+        assertTrue(1 !in viewModel.detailState.value?.completedSeasonNumbers.orEmpty())
+
+        // 2. Segna Episodio 2 come visto -> aggiorna la STESSA scheda a S1:E3 senza duplicati
+        composeRule.onNodeWithTag("episode_card_1_2", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.OnLongClick)
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("tv_episode_ctx_mark_episode", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("tv_episode_ctx_mark_episode", useUnmergedTree = true).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 4_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            val cw = viewModel.continueWatching.value
+            cw.size == 1 && cw.first().seasonNumber == 1 && cw.first().episodeNumber == 3
+        }
+        assertEquals(1, viewModel.continueWatching.value.size)
+
+        // 3. Segna Episodio 3 come visto -> Stagione 1 completata -> badge completamento + Continua a guardare passa a S2:E1
+        composeRule.onNodeWithTag("media_detail_lazy_column", useUnmergedTree = true)
+            .performScrollToNode(hasTestTag("episode_card_1_3"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("episode_card_1_3", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.OnLongClick)
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithTag("tv_episode_ctx_mark_episode", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("tv_episode_ctx_mark_episode", useUnmergedTree = true).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            val cw = viewModel.continueWatching.value
+            1 in viewModel.detailState.value?.completedSeasonNumbers.orEmpty() &&
+                cw.size == 1 && cw.first().seasonNumber == 2 && cw.first().episodeNumber == 1
+        }
+        composeRule.onNodeWithTag("media_detail_lazy_column", useUnmergedTree = true)
+            .performScrollToNode(hasTestTag("detail_season_chip_1"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("detail_season_completed_badge_1", useUnmergedTree = true)
+            .assertIsDisplayed()
+
+        // 4. Annulla stato visto dell'episodio 3 -> evidenziazione completamento Stagione 1 scompare subito
+        composeRule.onNodeWithTag("media_detail_lazy_column", useUnmergedTree = true)
+            .performScrollToNode(hasTestTag("episode_card_1_3"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("episode_card_1_3", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.OnLongClick)
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithText("SEGNA EPISODIO COME NON VISTO", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("tv_episode_ctx_mark_episode", useUnmergedTree = true).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 4_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            1 !in viewModel.detailState.value?.completedSeasonNumbers.orEmpty() &&
+                composeRule.onAllNodesWithTag("detail_season_completed_badge_1", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty()
+        }
+
+        // 5. Segna intera Stagione 1 e poi intera Stagione 2 -> nessun episodio inesistente, rimossa da Continua a guardare
+        viewModel.markSeasonAsWatched(1, listOf(1, 2, 3))
+        composeRule.waitUntil(timeoutMillis = 4_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            1 in viewModel.detailState.value?.completedSeasonNumbers.orEmpty()
+        }
+        viewModel.markSeasonAsWatched(2, listOf(1, 2, 3))
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.continueWatching.value.isEmpty() &&
+                setOf(1, 2).all { it in viewModel.detailState.value?.completedSeasonNumbers.orEmpty() }
+        }
+        assertTrue(viewModel.continueWatching.value.isEmpty())
+
+        db.close()
+    }
+
+    @Test
+    fun `updates 3 and 4 - my list continue watching screen uses pure black and initial avatar shows letter cleanly`() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(app, VixFlixDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val repository = VixFlixRepository(
+            dao = db.vixFlixDao(),
+            tmdbBaseUrl = "http://127.0.0.1:${server.port}/3/"
+        )
+        repository.ensureDefaultPrimaryProfile()
+        val marco = repository.createProfile(
+            name = "Marco",
+            avatarId = INITIAL_AVATAR_ID,
+            accentColorHex = 0xFFE50914L
+        ).getOrThrow()
+
+        val seriesItem = MediaItem(
+            id = 500,
+            mediaType = "tv",
+            title = "The Last Frontier",
+            overview = "Serie sci-fi con due stagioni.",
+            posterPath = "/series500.jpg",
+            backdropPath = "/series500_bg.jpg",
+            voteAverage = 8.9,
+            releaseYear = "2024"
+        )
+        repository.markEpisodeAsWatched(
+            tmdbId = 500,
+            seasonNumber = 1,
+            episodeNumber = 1,
+            profileId = marco.id,
+            mediaItem = seriesItem
+        )
+
+        val viewModel = VixFlixViewModel(app, repository)
+        viewModel.selectProfile(marco.id)
+        viewModel.selectTab(NavTab.MY_LIST)
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                VixFlixAppScreen(
+                    viewModel = viewModel,
+                    splashMinDurationMs = 0L,
+                    respectStartupProfileGate = false
+                )
+            }
+        }
+
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            viewModel.profileUiState.value.activeProfile?.id == marco.id &&
+                composeRule.onAllNodesWithTag("my_list_screen", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("continue_watching_card_tv_500", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("my_list_screen", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("continue_watching_card_tv_500", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("cw_season_episode_badge_tv_500", useUnmergedTree = true)
+            .assertIsDisplayed()
+        composeRule.onNode(
+            hasTestTag("profile_avatar_initial_letter") and
+                hasAnyAncestor(hasTestTag("tv_rail_profile_button")),
+            useUnmergedTree = true
+        )
+            .assertIsDisplayed()
+            .assertTextEquals("M")
+        composeRule.onNodeWithTag("my_list_screen", useUnmergedTree = true)
+            .performScrollToIndex(0)
+        composeRule.waitForIdle()
+        composeRule.onNode(
+            hasTestTag("profile_avatar_initial_letter") and
+                hasAnyAncestor(hasTestTag("my_list_screen")),
+            useUnmergedTree = true
+        )
+            .assertIsDisplayed()
+            .assertTextEquals("M")
+
+        db.close()
+    }
+
     private class FakeTmdbSagaAndSeriesServer {
         private var serverSocket: ServerSocket? = null
         private val executor = Executors.newCachedThreadPool()
@@ -676,6 +920,18 @@ class VixFlixFeaturesUpdateTest {
                           "credits": {"cast": []},
                           "videos": {"results": []},
                           "similar": {"results": []}
+                        }
+                    """.trimIndent()
+                    path.contains("/tv/500/season/2") -> """
+                        {
+                          "id": 5002,
+                          "season_number": 2,
+                          "name": "Stagione 2",
+                          "episodes": [
+                            {"id": 4, "episode_number": 1, "season_number": 2, "name": "Nuova Alba", "overview": "S2 Ep 1", "runtime": 49, "vote_average": 8.7},
+                            {"id": 5, "episode_number": 2, "season_number": 2, "name": "Oltre il Confine", "overview": "S2 Ep 2", "runtime": 51, "vote_average": 8.8},
+                            {"id": 6, "episode_number": 3, "season_number": 2, "name": "Ultimo Segnale", "overview": "S2 Ep 3", "runtime": 55, "vote_average": 9.2}
+                          ]
                         }
                     """.trimIndent()
                     path.contains("/tv/500/season/1") -> """

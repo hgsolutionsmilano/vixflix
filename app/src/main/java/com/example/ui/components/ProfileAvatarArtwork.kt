@@ -92,38 +92,24 @@ fun ProfileAvatarArtwork(
         contentAlignment = Alignment.Center
     ) {
         if (useInitialAvatar) {
-            // Avatar con iniziale del nome: disco centrale circolare ad alto contrasto con lettera centrata
-            val circleSize = (size * 0.74f).coerceAtLeast(18.dp)
-            val fontSizeSp = (size.value * 0.44f).coerceIn(13f, 54f).sp
-            Box(
-                modifier = Modifier
-                    .size(circleSize)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                accentColor,
-                                darkenedAccent
-                            )
-                        )
+            // Avatar con iniziale del nome: lettera centrata direttamente sullo sfondo profilo senza cerchi o bordi attorno
+            val fontSizeSp = (size.value * 0.50f).coerceIn(14f, 60f).sp
+            Text(
+                text = initialLetter,
+                color = NetflixWhite,
+                fontSize = fontSizeSp,
+                fontWeight = FontWeight.ExtraBold,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                style = androidx.compose.ui.text.TextStyle(
+                    shadow = androidx.compose.ui.graphics.Shadow(
+                        color = Color.Black.copy(alpha = 0.45f),
+                        offset = Offset(0f, 1.5f),
+                        blurRadius = 4f
                     )
-                    .border(
-                        width = (size * 0.025f).coerceIn(1.dp, 2.5.dp),
-                        color = NetflixWhite.copy(alpha = 0.38f),
-                        shape = CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = initialLetter,
-                    color = NetflixWhite,
-                    fontSize = fontSizeSp,
-                    fontWeight = FontWeight.ExtraBold,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    modifier = Modifier.testTag("profile_avatar_initial_letter")
-                )
-            }
+                ),
+                modifier = Modifier.testTag("profile_avatar_initial_letter")
+            )
         } else {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 // Luce radiale superiore stile cinematografico

@@ -145,6 +145,7 @@ fun NetflixTopBar(
     brandLogoFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
     downToContentFocusRequester: FocusRequester? = null,
+    solidBackgroundColor: Color? = null,
     modifier: Modifier = Modifier
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -153,19 +154,25 @@ fun NetflixTopBar(
         return
     }
 
+    val topBarBgModifier = if (solidBackgroundColor != null) {
+        Modifier.background(solidBackgroundColor)
+    } else {
+        Modifier.background(
+            Brush.verticalGradient(
+                colors = listOf(
+                    NetflixBlack.copy(alpha = 0.96f),
+                    NetflixBlack.copy(alpha = 0.85f),
+                    Color.Transparent
+                )
+            )
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .focusGroup()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        NetflixBlack.copy(alpha = 0.96f),
-                        NetflixBlack.copy(alpha = 0.85f),
-                        Color.Transparent
-                    )
-                )
-            )
+            .then(topBarBgModifier)
             .statusBarsPadding()
             .padding(horizontal = if (isTvLayout) 28.dp else 16.dp, vertical = 8.dp)
     ) {

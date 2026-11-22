@@ -157,6 +157,7 @@ fun MediaDetailScreen(
     onSelectSimilarWithScroll: ((MediaItem, Int, Int) -> Unit)? = null,
     onSelectSagaWithScroll: ((MediaItem, Int, Int) -> Unit)? = null,
     onMarkEpisodeWatched: (seasonNumber: Int, episodeNumber: Int) -> Unit = { _, _ -> },
+    onUnmarkEpisodeWatched: (seasonNumber: Int, episodeNumber: Int) -> Unit = { _, _ -> },
     onMarkSeasonWatched: (seasonNumber: Int, episodeNumbers: List<Int>) -> Unit = { _, _ -> },
     onSelectActor: (TmdbCastMemberDto, Int, Int) -> Unit = { _, _, _ -> }
 ) {
@@ -1610,12 +1611,24 @@ fun MediaDetailScreen(
                                     ) {
                                         seasons.forEachIndexed { sIndex, season ->
                                             val isSelected = currentState.selectedSeason == season.seasonNumber
-                                            val seasonBg = if (isSelected) NetflixRed else NetflixCardSurface
-                                            val seasonBorder = if (isSelected) NetflixRed else NetflixElevatedSurface
+                                            val isSeasonCompleted = season.seasonNumber in currentState.completedSeasonNumbers
+                                            val seasonBg = when {
+                                                isSelected -> NetflixRed
+                                                isSeasonCompleted -> NetflixMatchGreen.copy(alpha = 0.22f)
+                                                else -> NetflixCardSurface
+                                            }
+                                            val seasonBorder = when {
+                                                isSeasonCompleted -> NetflixMatchGreen
+                                                isSelected -> NetflixRed
+                                                else -> NetflixElevatedSurface
+                                            }
                                             Surface(
                                                 color = seasonBg,
                                                 shape = RoundedCornerShape(8.dp),
-                                                border = BorderStroke(1.dp, seasonBorder),
+                                                border = BorderStroke(
+                                                    width = if (isSeasonCompleted) 1.5.dp else 1.dp,
+                                                    color = seasonBorder
+                                                ),
                                                 modifier = Modifier
                                                     .testTag("detail_season_chip_${season.seasonNumber}")
                                                     .then(
@@ -1676,12 +1689,28 @@ fun MediaDetailScreen(
                                                         onClick = { onSelectSeason(season.seasonNumber) }
                                                     )
                                             ) {
-                                                Text(
-                                                    text = "Stagione ${season.seasonNumber} (${season.episodeCount})",
-                                                    style = MaterialTheme.typography.labelLarge,
-                                                    color = NetflixWhite,
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                                                )
+                                                ) {
+                                                    if (isSeasonCompleted) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Check,
+                                                            contentDescription = "Stagione ${season.seasonNumber} completata",
+                                                            tint = if (isSelected) NetflixWhite else NetflixMatchGreen,
+                                                            modifier = Modifier
+                                                                .size(15.dp)
+                                                                .testTag("detail_season_completed_badge_${season.seasonNumber}")
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = "Stagione ${season.seasonNumber} (${season.episodeCount})",
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                        fontWeight = if (isSeasonCompleted) FontWeight.Bold else FontWeight.Medium,
+                                                        color = NetflixWhite
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -2159,12 +2188,22 @@ fun MediaDetailScreen(
                     .map { it.episodeNumber }
                     .ifEmpty { listOf(activeContextEpisode.episodeNumber) }
             }
+            val isContextEpisodeWatched = activeContextEpisode.seasonNumber == state.selectedSeason &&
+                activeContextEpisode.episodeNumber in state.watchedEpisodeNumbers
             TvEpisodeWatchedContextDialog(
                 episode = activeContextEpisode,
                 seasonEpisodeCount = allSeasonNums.size,
+                isEpisodeWatched = isContextEpisodeWatched,
                 onMarkEpisodeWatched = {
                     contextMenuEpisode = null
                     onMarkEpisodeWatched(
+                        activeContextEpisode.seasonNumber,
+                        activeContextEpisode.episodeNumber
+                    )
+                },
+                onUnmarkEpisodeWatched = {
+                    contextMenuEpisode = null
+                    onUnmarkEpisodeWatched(
                         activeContextEpisode.seasonNumber,
                         activeContextEpisode.episodeNumber
                     )

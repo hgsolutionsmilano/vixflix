@@ -394,10 +394,12 @@ fun VixFlixAppScreen(
         continueWatching.associateBy { it.id }
     }
 
+    val isContinueWatchingPureBlack = selectedTab == NavTab.MY_LIST && !isSearchBarVisible
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(NetflixBlack)
+            .background(if (isContinueWatchingPureBlack) Color.Black else NetflixBlack)
     ) {
         val useTvNavigationRail = isTvDevice || maxWidth >= 600.dp || maxWidth > maxHeight
 
@@ -503,7 +505,9 @@ fun VixFlixAppScreen(
                         if (target.safeRequestFocus()) break
                     }
                     delay(60L)
-                    target.safeRequestFocus()
+                    if (!isProfileSelectorVisible && isCatalogInteractive) {
+                        target.safeRequestFocus()
+                    }
                 }
             }
             wasProfileSelectorVisible = isProfileSelectorVisible
@@ -582,7 +586,7 @@ fun VixFlixAppScreen(
             }
         ) {
         Scaffold(
-            containerColor = NetflixBlack,
+            containerColor = if (isContinueWatchingPureBlack) Color.Black else NetflixBlack,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             modifier = Modifier
                 .fillMaxSize()
@@ -672,7 +676,7 @@ fun VixFlixAppScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(NetflixBlack)
+                    .background(if (isContinueWatchingPureBlack) Color.Black else NetflixBlack)
             ) {
                 val activeTopBarFocusRequester = if (useTvNavigationRail) {
                     if (isSearchBarVisible) searchInputFocusRequester else null
@@ -683,7 +687,7 @@ fun VixFlixAppScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(start = if (useTvNavigationRail) 72.dp else 0.dp)
-                        .background(NetflixBlack)
+                        .background(if (isContinueWatchingPureBlack) Color.Black else NetflixBlack)
                 ) {
                     val topBarOffset = when {
                         !useTvNavigationRail -> 122.dp
@@ -1023,6 +1027,7 @@ fun VixFlixAppScreen(
                             selectedTab == NavTab.HOME && platformState.selectedProvider != null && catalogState is CatalogUiState.Success -> platformStripFocusRequester
                             else -> activeContentEntryFocusRequester
                         },
+                        solidBackgroundColor = if (isContinueWatchingPureBlack) Color.Black else null,
                         modifier = Modifier.align(Alignment.TopCenter)
                     )
                 }
@@ -1251,6 +1256,7 @@ fun VixFlixAppScreen(
                     onSelectSimilarWithScroll = viewModel::openDetailsFromSimilar,
                     onSelectSagaWithScroll = viewModel::openDetailsFromSaga,
                     onMarkEpisodeWatched = viewModel::markEpisodeAsWatched,
+                    onUnmarkEpisodeWatched = viewModel::unmarkEpisodeAsWatched,
                     onMarkSeasonWatched = viewModel::markSeasonAsWatched,
                     onSelectActor = viewModel::openActorDetails
                 )
@@ -1328,6 +1334,7 @@ fun VixFlixAppScreen(
             ProfileSelectionScreen(
                 state = profileUiState,
                 isTvLayout = useTvNavigationRail,
+                isSelectorVisible = isProfileSelectorVisible,
                 onSelectProfile = viewModel::selectProfile,
                 onToggleManageMode = viewModel::setProfileManageMode,
                 onCreateProfile = { name, avatarId, accentHex, prefLang, audioLang, subsEnabled, subLang, onDone ->
@@ -3773,6 +3780,7 @@ private fun MyListScreen(
         state = myListState,
         modifier = Modifier
             .fillMaxSize()
+            .background(Color.Black)
             .testTag("my_list_screen"),
         contentPadding = contentPadding
     ) {

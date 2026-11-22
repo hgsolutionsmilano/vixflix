@@ -628,7 +628,9 @@ internal fun VixFlixExitConfirmationDialog(
 internal fun TvEpisodeWatchedContextDialog(
     episode: TmdbEpisodeDto,
     seasonEpisodeCount: Int = 0,
+    isEpisodeWatched: Boolean = false,
     onMarkEpisodeWatched: () -> Unit,
+    onUnmarkEpisodeWatched: () -> Unit = {},
     onMarkSeasonWatched: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -699,8 +701,14 @@ internal fun TvEpisodeWatchedContextDialog(
 
                     Spacer(modifier = Modifier.height(4.dp))
 
+                    val toggleEpisodeAction = if (isEpisodeWatched) {
+                        onUnmarkEpisodeWatched
+                    } else {
+                        onMarkEpisodeWatched
+                    }
+
                     Button(
-                        onClick = onMarkEpisodeWatched,
+                        onClick = toggleEpisodeAction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = NetflixWhite,
                             contentColor = NetflixBlack
@@ -726,14 +734,22 @@ internal fun TvEpisodeWatchedContextDialog(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedScale = 1.03f,
                                 focusedBorderColor = NetflixRed,
-                                focusTag = "tv_episode_ctx_mark_episode"
+                                focusTag = "tv_episode_ctx_mark_episode",
+                                onClick = toggleEpisodeAction
                             )
                             .testTag("tv_episode_ctx_mark_episode")
                     ) {
-                        Icon(imageVector = Icons.Default.Check, contentDescription = null)
+                        Icon(
+                            imageVector = if (isEpisodeWatched) Icons.Default.Close else Icons.Default.Check,
+                            contentDescription = null
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "SEGNA EPISODIO COME VISTO",
+                            text = if (isEpisodeWatched) {
+                                "SEGNA EPISODIO COME NON VISTO"
+                            } else {
+                                "SEGNA EPISODIO COME VISTO"
+                            },
                             fontWeight = FontWeight.Bold
                         )
                     }

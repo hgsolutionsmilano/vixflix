@@ -38,6 +38,7 @@ import com.example.data.remote.TmdbCastMemberDto
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
+import com.example.data.remote.TmdbSeasonSummaryDto
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
 import com.example.data.remote.YouTubeTrailerCandidate
@@ -131,6 +132,8 @@ data class DetailUiState(
     val isLoadingEpisodes: Boolean = false,
     val episodeProgressMap: Map<Int, EpisodeProgressEntity> = emptyMap(),
     val watchedEpisodeNumbers: Set<Int> = emptySet(),
+    val watchedCountsBySeason: Map<Int, Int> = emptyMap(),
+    val completedSeasonNumbers: Set<Int> = emptySet(),
     val activeTrailer: TrailerPlaybackState? = null,
     val errorMessage: String? = null,
     val savedScrollIndex: Int = 0,
@@ -482,6 +485,9 @@ class VixFlixViewModel @JvmOverloads constructor(
     @Volatile
     private var explicitProfileSelectorStateSet = false
 
+    @Volatile
+    private var explicitActiveProfileSet = false
+
     private fun initUserProfiles() {
         viewModelScope.launch {
             val primary = repository.ensureDefaultPrimaryProfile()
@@ -491,14 +497,16 @@ class VixFlixViewModel @JvmOverloads constructor(
             val savedLastActiveId = preferences.activeProfileIdFlow.first()
             val hasSelectedOnce = preferences.hasSelectedProfileOnceFlow.first()
 
-            val resolvedId = when {
-                !savedDefaultId.isNullOrBlank() && allProfiles.any { it.id == savedDefaultId } -> savedDefaultId
-                allProfiles.any { it.id == savedLastActiveId } -> savedLastActiveId
-                else -> primary.id
-            }
-            _activeProfileId.value = resolvedId
-            allProfiles.firstOrNull { it.id == resolvedId }?.let { resolvedProfile ->
-                preferences.setStreamLanguage(resolvedProfile.preferredLanguage)
+            if (!explicitActiveProfileSet) {
+                val resolvedId = when {
+                    !savedDefaultId.isNullOrBlank() && allProfiles.any { it.id == savedDefaultId } -> savedDefaultId
+                    allProfiles.any { it.id == savedLastActiveId } -> savedLastActiveId
+                    else -> primary.id
+                }
+                _activeProfileId.value = resolvedId
+                allProfiles.firstOrNull { it.id == resolvedId }?.let { resolvedProfile ->
+                    preferences.setStreamLanguage(resolvedProfile.preferredLanguage)
+                }
             }
 
             if (!explicitProfileSelectorStateSet) {
@@ -547,6 +555,7 @@ class VixFlixViewModel @JvmOverloads constructor(
      * 8. Pulisce dalla memoria temporanea i dati personali del precedente profilo (dettagli/ricerca/player)
      */
     fun selectProfile(profileId: String) {
+        explicitActiveProfileSet = true
         viewModelScope.launch {
             val targetProfile = repository.getProfileById(profileId) ?: return@launch
             val previousProfileId = _activeProfileId.value
@@ -1092,6 +1101,13 @@ class VixFlixViewModel @JvmOverloads constructor(
                                 isLoading = false,
                                 details = details,
                                 selectedSeason = resolvedSeason,
+                                completedSeasonNumbers = computeCompletedSeasonNumbers(
+                                    seasons = details.seasons,
+                                    selectedSeason = resolvedSeason,
+                                    selectedSeasonEpisodes = top.episodes,
+                                    selectedSeasonWatched = top.watchedEpisodeNumbers,
+                                    watchedCountsBySeason = top.watchedCountsBySeason
+                                ),
                                 errorMessage = null
                             )
                         }
@@ -1492,21 +1508,69 @@ class VixFlixViewModel @JvmOverloads constructor(
         updateTopDetail { top -> top.copy(activeTrailer = null) }
     }
 
+    private fun computeCompletedSeasonNumbers(
+        seasons: List<TmdbSeasonSummaryDto>,
+        selectedSeason: Int,
+        selectedSeasonEpisodes: List<TmdbEpisodeDto>,
+        selectedSeasonWatched: Set<Int>,
+        watchedCountsBySeason: Map<Int, Int>
+    ): Set<Int> {
+        if (seasons.isEmpty() && selectedSeasonEpisodes.isEmpty()) return emptySet()
+        val completed = linkedSetOf<Int>()
+        val validSelectedEpNums = selectedSeasonEpisodes
+            .asSequence()
+            .filter { it.seasonNumber == selectedSeason && it.episodeNumber > 0 }
+            .map { it.episodeNumber }
+            .toSet()
+
+        seasons.forEach { season ->
+            if (season.seasonNumber == selectedSeason && validSelectedEpNums.isNotEmpty()) {
+                if (validSelectedEpNums.all { it in selectedSeasonWatched }) {
+                    completed.add(season.seasonNumber)
+                }
+            } else if (season.episodeCount > 0) {
+                val watchedCount = watchedCountsBySeason[season.seasonNumber] ?: 0
+                if (watchedCount >= season.episodeCount) {
+                    completed.add(season.seasonNumber)
+                }
+            }
+        }
+        if (seasons.none { it.seasonNumber == selectedSeason } && validSelectedEpNums.isNotEmpty()) {
+            if (validSelectedEpNums.all { it in selectedSeasonWatched }) {
+                completed.add(selectedSeason)
+            }
+        }
+        return completed
+    }
+
     private fun observeSeasonProgressForTop(tvId: Int, seasonNumber: Int) {
         seasonProgressJob?.cancel()
         val currentProfileId = _activeProfileId.value
         seasonProgressJob = viewModelScope.launch {
             combine(
                 repository.observeSeasonProgress(tvId, seasonNumber, currentProfileId),
-                repository.observeWatchedEpisodeNumbers(tvId, seasonNumber, currentProfileId)
-            ) { progressList, watchedList ->
-                progressList.associateBy { it.episodeNumber } to watchedList.toSet()
-            }.collect { (map, watchedSet) ->
+                repository.observeWatchedEpisodeNumbers(tvId, seasonNumber, currentProfileId),
+                repository.observeWatchedEpisodeCountsBySeason(tvId, currentProfileId)
+            ) { progressList, watchedList, countsBySeason ->
+                Triple(
+                    progressList.associateBy { it.episodeNumber },
+                    watchedList.toSet(),
+                    countsBySeason
+                )
+            }.collect { (map, watchedSet, countsBySeason) ->
                 if (_detailState.value?.mediaItem?.id == tvId) {
                     updateTopDetail { top ->
                         top.copy(
                             episodeProgressMap = map,
-                            watchedEpisodeNumbers = watchedSet
+                            watchedEpisodeNumbers = watchedSet,
+                            watchedCountsBySeason = countsBySeason,
+                            completedSeasonNumbers = computeCompletedSeasonNumbers(
+                                seasons = top.details?.seasons.orEmpty(),
+                                selectedSeason = top.selectedSeason,
+                                selectedSeasonEpisodes = top.episodes,
+                                selectedSeasonWatched = watchedSet,
+                                watchedCountsBySeason = countsBySeason
+                            )
                         )
                     }
                 }
@@ -1515,50 +1579,139 @@ class VixFlixViewModel @JvmOverloads constructor(
     }
 
     fun markEpisodeAsWatched(seasonNumber: Int, episodeNumber: Int) {
-        val currentMedia = _detailState.value?.mediaItem ?: return
+        val currentDetail = _detailState.value ?: return
+        val currentMedia = currentDetail.mediaItem
         if (!currentMedia.isSeries) return
         val profileId = _activeProfileId.value
+        val currentEpisodes = currentDetail.episodes.filter { it.seasonNumber == seasonNumber }
+        val knownSeasons = currentDetail.details?.seasons.orEmpty()
         updateTopDetail { top ->
-            if (top.selectedSeason == seasonNumber) {
-                top.copy(watchedEpisodeNumbers = top.watchedEpisodeNumbers + episodeNumber)
+            val updatedWatched = if (top.selectedSeason == seasonNumber) {
+                top.watchedEpisodeNumbers + episodeNumber
             } else {
-                top
+                top.watchedEpisodeNumbers
             }
+            val updatedCounts = top.watchedCountsBySeason.toMutableMap().apply {
+                this[seasonNumber] = if (top.selectedSeason == seasonNumber) {
+                    updatedWatched.size
+                } else {
+                    (this[seasonNumber] ?: 0) + 1
+                }
+            }
+            top.copy(
+                watchedEpisodeNumbers = updatedWatched,
+                watchedCountsBySeason = updatedCounts,
+                completedSeasonNumbers = computeCompletedSeasonNumbers(
+                    seasons = top.details?.seasons.orEmpty(),
+                    selectedSeason = top.selectedSeason,
+                    selectedSeasonEpisodes = top.episodes,
+                    selectedSeasonWatched = updatedWatched,
+                    watchedCountsBySeason = updatedCounts
+                )
+            )
         }
         viewModelScope.launch {
             repository.markEpisodeAsWatched(
                 tmdbId = currentMedia.id,
                 seasonNumber = seasonNumber,
                 episodeNumber = episodeNumber,
-                profileId = profileId
+                profileId = profileId,
+                mediaItem = currentMedia,
+                currentSeasonEpisodes = currentEpisodes,
+                knownSeasons = knownSeasons
+            )
+        }
+    }
+
+    fun unmarkEpisodeAsWatched(seasonNumber: Int, episodeNumber: Int) {
+        val currentDetail = _detailState.value ?: return
+        val currentMedia = currentDetail.mediaItem
+        if (!currentMedia.isSeries) return
+        val profileId = _activeProfileId.value
+        val currentEpisodes = currentDetail.episodes.filter { it.seasonNumber == seasonNumber }
+        updateTopDetail { top ->
+            val updatedWatched = if (top.selectedSeason == seasonNumber) {
+                top.watchedEpisodeNumbers - episodeNumber
+            } else {
+                top.watchedEpisodeNumbers
+            }
+            val updatedCounts = top.watchedCountsBySeason.toMutableMap().apply {
+                val nextCount = if (top.selectedSeason == seasonNumber) {
+                    updatedWatched.size
+                } else {
+                    ((this[seasonNumber] ?: 0) - 1).coerceAtLeast(0)
+                }
+                if (nextCount <= 0) remove(seasonNumber) else this[seasonNumber] = nextCount
+            }
+            top.copy(
+                watchedEpisodeNumbers = updatedWatched,
+                watchedCountsBySeason = updatedCounts,
+                completedSeasonNumbers = computeCompletedSeasonNumbers(
+                    seasons = top.details?.seasons.orEmpty(),
+                    selectedSeason = top.selectedSeason,
+                    selectedSeasonEpisodes = top.episodes,
+                    selectedSeasonWatched = updatedWatched,
+                    watchedCountsBySeason = updatedCounts
+                )
+            )
+        }
+        viewModelScope.launch {
+            repository.unmarkEpisodeAsWatched(
+                tmdbId = currentMedia.id,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                profileId = profileId,
+                mediaItem = currentMedia,
+                currentSeasonEpisodes = currentEpisodes
             )
         }
     }
 
     fun markSeasonAsWatched(seasonNumber: Int, episodeNumbers: List<Int>) {
-        val currentMedia = _detailState.value?.mediaItem ?: return
+        val currentDetail = _detailState.value ?: return
+        val currentMedia = currentDetail.mediaItem
         if (!currentMedia.isSeries) return
         val profileId = _activeProfileId.value
+        val currentEpisodes = currentDetail.episodes.filter { it.seasonNumber == seasonNumber }
+        val knownSeasons = currentDetail.details?.seasons.orEmpty()
         val resolvedNumbers = episodeNumbers.ifEmpty {
-            _detailState.value?.episodes
-                ?.filter { it.seasonNumber == seasonNumber }
-                ?.map { it.episodeNumber }
-                .orEmpty()
+            currentEpisodes.map { it.episodeNumber }
         }.filter { it > 0 }.distinct()
         if (resolvedNumbers.isEmpty()) return
         updateTopDetail { top ->
-            if (top.selectedSeason == seasonNumber) {
-                top.copy(watchedEpisodeNumbers = top.watchedEpisodeNumbers + resolvedNumbers)
+            val updatedWatched = if (top.selectedSeason == seasonNumber) {
+                top.watchedEpisodeNumbers + resolvedNumbers
             } else {
-                top
+                top.watchedEpisodeNumbers
             }
+            val updatedCounts = top.watchedCountsBySeason.toMutableMap().apply {
+                this[seasonNumber] = if (top.selectedSeason == seasonNumber) {
+                    updatedWatched.size
+                } else {
+                    maxOf(this[seasonNumber] ?: 0, resolvedNumbers.size)
+                }
+            }
+            top.copy(
+                watchedEpisodeNumbers = updatedWatched,
+                watchedCountsBySeason = updatedCounts,
+                completedSeasonNumbers = computeCompletedSeasonNumbers(
+                    seasons = top.details?.seasons.orEmpty(),
+                    selectedSeason = top.selectedSeason,
+                    selectedSeasonEpisodes = top.episodes,
+                    selectedSeasonWatched = updatedWatched,
+                    watchedCountsBySeason = updatedCounts
+                )
+            )
         }
         viewModelScope.launch {
             repository.markSeasonAsWatched(
                 tmdbId = currentMedia.id,
                 seasonNumber = seasonNumber,
                 episodeNumbers = resolvedNumbers,
-                profileId = profileId
+                profileId = profileId,
+                mediaItem = currentMedia,
+                currentSeasonEpisodes = currentEpisodes,
+                knownSeasons = knownSeasons
             )
         }
     }
@@ -1576,7 +1729,14 @@ class VixFlixViewModel @JvmOverloads constructor(
                         top.copy(
                             selectedSeason = seasonNumber,
                             episodes = cachedSeason.value,
-                            isLoadingEpisodes = false
+                            isLoadingEpisodes = false,
+                            completedSeasonNumbers = computeCompletedSeasonNumbers(
+                                seasons = top.details?.seasons.orEmpty(),
+                                selectedSeason = seasonNumber,
+                                selectedSeasonEpisodes = cachedSeason.value,
+                                selectedSeasonWatched = top.watchedEpisodeNumbers,
+                                watchedCountsBySeason = top.watchedCountsBySeason
+                            )
                         )
                     }
                     _detailState.value?.details?.let { d ->
@@ -1602,7 +1762,14 @@ class VixFlixViewModel @JvmOverloads constructor(
                         updateTopDetail { top ->
                             top.copy(
                                 episodes = episodes,
-                                isLoadingEpisodes = false
+                                isLoadingEpisodes = false,
+                                completedSeasonNumbers = computeCompletedSeasonNumbers(
+                                    seasons = top.details?.seasons.orEmpty(),
+                                    selectedSeason = seasonNumber,
+                                    selectedSeasonEpisodes = episodes,
+                                    selectedSeasonWatched = top.watchedEpisodeNumbers,
+                                    watchedCountsBySeason = top.watchedCountsBySeason
+                                )
                             )
                         }
                         currentTop.details?.let { d ->

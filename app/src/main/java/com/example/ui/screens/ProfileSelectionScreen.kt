@@ -124,7 +124,8 @@ fun ProfileSelectionScreen(
     onSetDefaultProfile: (String?) -> Unit,
     onClearError: () -> Unit,
     onClose: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isSelectorVisible: Boolean = true
 ) {
     var showCreateEditor by remember { mutableStateOf(false) }
     var editingProfileId by remember { mutableStateOf<String?>(null) }
@@ -147,17 +148,19 @@ fun ProfileSelectionScreen(
     }
 
     // Focus iniziale deterministico sul profilo attivo o ripristino alla chiusura dell'editor
-    LaunchedEffect(isEditorOpen, state.isManageMode, totalTiles) {
-        if (!isEditorOpen) {
+    LaunchedEffect(isSelectorVisible, isEditorOpen, state.isManageMode, totalTiles) {
+        if (isSelectorVisible && !isEditorOpen) {
             val targetIdx = if (lastFocusedTileIndex in 0 until totalTiles) {
                 lastFocusedTileIndex
             } else {
                 activeIdx.coerceIn(0, (totalTiles - 1).coerceAtLeast(0))
             }
             val targetRequester = tileRequesters.getOrNull(targetIdx) ?: manageActionFocusRequester
-            for (attempt in 1..6) {
-                withFrameNanos { }
-                if (targetRequester.safeRequestFocus()) break
+            if (!targetRequester.safeRequestFocus()) {
+                for (attempt in 1..6) {
+                    withFrameNanos { }
+                    if (targetRequester.safeRequestFocus()) break
+                }
             }
         }
     }

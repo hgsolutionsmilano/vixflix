@@ -243,6 +243,28 @@ interface VixFlixDao {
         profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     ): List<Int>
 
+    @Query(
+        "SELECT seasonNumber, COUNT(DISTINCT episodeNumber) AS watchedCount " +
+            "FROM completed_media " +
+            "WHERE profileId = :profileId AND tmdbId = :tmdbId AND mediaType = 'tv' " +
+            "AND seasonNumber IS NOT NULL AND episodeNumber IS NOT NULL " +
+            "GROUP BY seasonNumber"
+    )
+    fun observeWatchedCountsBySeason(
+        tmdbId: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<List<SeasonWatchedCount>>
+
+    @Query(
+        "SELECT seasonNumber, episodeNumber FROM completed_media " +
+            "WHERE profileId = :profileId AND tmdbId = :tmdbId AND mediaType = 'tv' " +
+            "AND seasonNumber IS NOT NULL AND episodeNumber IS NOT NULL"
+    )
+    suspend fun getCompletedEpisodesForSeries(
+        tmdbId: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): List<SeriesCompletedEpisodeTuple>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCompletedMedia(entity: CompletedMediaEntity)
 
@@ -255,3 +277,13 @@ interface VixFlixDao {
         profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     )
 }
+
+data class SeasonWatchedCount(
+    val seasonNumber: Int,
+    val watchedCount: Int
+)
+
+data class SeriesCompletedEpisodeTuple(
+    val seasonNumber: Int,
+    val episodeNumber: Int
+)

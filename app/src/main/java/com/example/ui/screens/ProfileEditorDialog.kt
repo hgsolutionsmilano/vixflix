@@ -309,7 +309,7 @@ fun ProfileEditorDialog(
             .fillMaxSize()
             .zIndex(95f)
             .background(NetflixBlack.copy(alpha = 0.88f))
-            .padding(horizontal = if (isTvLayout) 32.dp else 12.dp, vertical = 8.dp)
+            .padding(horizontal = if (isTvLayout) 32.dp else 12.dp, vertical = if (isTvLayout) 4.dp else 8.dp)
             .testTag("profile_editor_dialog"),
         contentAlignment = Alignment.Center
     ) {
@@ -324,7 +324,7 @@ fun ProfileEditorDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = if (isTvLayout) 20.dp else 16.dp, vertical = 12.dp)
+                    .padding(horizontal = if (isTvLayout) 20.dp else 16.dp, vertical = if (isTvLayout) 10.dp else 12.dp)
             ) {
                 // Header fisso
                 Row(
@@ -382,7 +382,7 @@ fun ProfileEditorDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(if (isTvLayout) 4.dp else 8.dp))
 
                 // Corpo centrale scorrevole
                 Column(
@@ -539,7 +539,7 @@ fun ProfileEditorDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(if (isTvLayout) 6.dp else 10.dp))
 
                 // Galleria Avatar: Avatar automatico con Iniziale + 12 Avatar Grafici Personalizzati
                 Text(
@@ -548,7 +548,7 @@ fun ProfileEditorDialog(
                     fontWeight = FontWeight.SemiBold,
                     color = NetflixWhite
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(if (isTvLayout) 4.dp else 6.dp))
                 LazyRow(
                     state = avatarListState,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -641,7 +641,7 @@ fun ProfileEditorDialog(
                                 ProfileAvatarArtwork(
                                     avatarId = optionAvatarId,
                                     accentColorHex = selectedAccentHex,
-                                    size = 50.dp,
+                                    size = if (isTvLayout) 44.dp else 50.dp,
                                     cornerRadius = 10.dp,
                                     profileName = previewDisplayName
                                 )
@@ -667,7 +667,7 @@ fun ProfileEditorDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(if (isTvLayout) 6.dp else 10.dp))
 
                 // Selettore Colore Identificativo
                 Text(
@@ -676,7 +676,7 @@ fun ProfileEditorDialog(
                     fontWeight = FontWeight.SemiBold,
                     color = NetflixWhite
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(if (isTvLayout) 4.dp else 6.dp))
                 LazyRow(
                     state = colorListState,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -691,7 +691,7 @@ fun ProfileEditorDialog(
                         val colorRequester = colorFocusRequesters[idx]
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(if (isTvLayout) 34.dp else 40.dp)
                                 .safeFocusRequester(colorRequester)
                                 .clip(CircleShape)
                                 .background(Color(option.colorHex))
@@ -779,7 +779,7 @@ fun ProfileEditorDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(if (isTvLayout) 6.dp else 10.dp))
 
                 // Preferenze personali (Lingua, Audio, Sottotitoli)
                 Surface(
@@ -789,8 +789,8 @@ fun ProfileEditorDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(if (isTvLayout) 6.dp else 8.dp),
+                        modifier = Modifier.padding(if (isTvLayout) 10.dp else 12.dp)
                     ) {
                         Text(
                             text = "Preferenze personali",
@@ -1267,7 +1267,7 @@ fun ProfileEditorDialog(
                 }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isTvLayout) 10.dp else 16.dp))
 
                 // Pulsanti finali sempre visibili (ANNULLA/Chiudi e SALVA/Fine/Crea profilo)
                 Row(

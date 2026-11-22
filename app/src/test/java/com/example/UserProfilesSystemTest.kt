@@ -474,8 +474,8 @@ class UserProfilesSystemTest {
             viewModel.profiles.value.any { it.id == marcoProfile.id && it.name == "Marco TV" }
         }
 
-        // Esce da modalità gestione
-        composeRule.onNodeWithTag("profile_manage_button", useUnmergedTree = true).performClick()
+        // Esce da modalità gestione ("Fatto")
+        composeRule.onNodeWithTag("profile_manage_done_button", useUnmergedTree = true).performClick()
         composeRule.waitForIdle()
 
         // 4. Selezione profilo "Marco TV" -> apre subito il catalogo con lingua EN e pulsante profilo attivo sul rail TV
@@ -538,6 +538,14 @@ class UserProfilesSystemTest {
             shadowOf(Looper.getMainLooper()).idle()
             composeRule.onAllNodesWithTag("profile_selection_screen", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitUntil(timeoutMillis = 3_000L) {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodes(
+                androidx.compose.ui.test.hasTestTag("profile_tile_$DEFAULT_PRIMARY_PROFILE_ID") and
+                    androidx.compose.ui.test.isFocused(),
+                useUnmergedTree = true
+            ).fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithTag("profile_tile_$DEFAULT_PRIMARY_PROFILE_ID", useUnmergedTree = true)
             .assertIsFocused()

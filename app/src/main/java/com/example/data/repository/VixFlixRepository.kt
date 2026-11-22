@@ -60,6 +60,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -1485,6 +1486,16 @@ class VixFlixRepository(
         profileId = profileId
     )
 
+    fun observeWatchedEpisodeCountsBySeason(
+        tmdbId: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): Flow<Map<Int, Int>> = dao.observeWatchedCountsBySeason(
+        tmdbId = tmdbId,
+        profileId = profileId
+    ).map { list ->
+        list.associate { it.seasonNumber to it.watchedCount }
+    }
+
     suspend fun getWatchedEpisodeNumbers(
         tmdbId: Int,
         seasonNumber: Int,
@@ -1497,15 +1508,175 @@ class VixFlixRepository(
         ).toSet()
     }
 
+    private suspend fun loadSeasonEpisodesPreferringLocal(
+        tmdbId: Int,
+        seasonNumber: Int,
+        providedEpisodes: List<TmdbEpisodeDto> = emptyList()
+    ): List<TmdbEpisodeDto> {
+        val local = providedEpisodes.filter { it.seasonNumber == seasonNumber && it.episodeNumber > 0 }
+        if (local.isNotEmpty()) return local.sortedBy { it.episodeNumber }
+        val cached = getCachedSeasonEpisodes(tmdbId, seasonNumber)?.value
+            ?.filter { it.episodeNumber > 0 }
+        if (!cached.isNullOrEmpty()) return cached.sortedBy { it.episodeNumber }
+        return fetchSeasonEpisodes(tmdbId, seasonNumber)
+            .getOrDefault(emptyList())
+            .filter { it.episodeNumber > 0 }
+            .sortedBy { it.episodeNumber }
+    }
+
+    /**
+     * Individua il successivo episodio non ancora visto della serie TV a partire da
+     * `(fromSeason, afterEpisode)`:
+     * 1) Cerca prima nella stessa stagione episodi successivi non visti.
+     * 2) Altrimenti scorre le stagioni successive reali fino al primo episodio non visto.
+     * 3) In assenza di episodi successivi non visti, verifica eventuali episodi regolari
+     *    precedenti ancora non completati (es. visione non in ordine).
+     * 4) Se tutti gli episodi disponibili risultano completati, restituisce `null` senza
+     *    inventare mai episodi inesistenti.
+     */
+    suspend fun resolveNextUnwatchedEpisode(
+        item: MediaItem,
+        fromSeason: Int,
+        afterEpisode: Int,
+        currentSeasonEpisodes: List<TmdbEpisodeDto> = emptyList(),
+        knownSeasons: List<TmdbSeasonSummaryDto> = emptyList(),
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    ): VerifiedNextEpisode? = withContext(Dispatchers.IO) {
+        if (!item.isSeries || fromSeason < 0) return@withContext null
+
+        val completedSet = dao.getCompletedEpisodesForSeries(item.id, profileId)
+            .asSequence()
+            .map { it.seasonNumber to it.episodeNumber }
+            .toHashSet()
+
+        fun toVerified(ep: TmdbEpisodeDto, isCrossSeason: Boolean): VerifiedNextEpisode = VerifiedNextEpisode(
+            seasonNumber = ep.seasonNumber,
+            episodeNumber = ep.episodeNumber,
+            title = ep.name?.takeIf { it.isNotBlank() },
+            stillUrl = ep.stillUrl,
+            overview = ep.overview?.takeIf { it.isNotBlank() },
+            runtimeMinutes = ep.runtime?.takeIf { it in 1..600 },
+            isCrossSeason = isCrossSeason
+        )
+
+        val sameSeasonEps = loadSeasonEpisodesPreferringLocal(item.id, fromSeason, currentSeasonEpisodes)
+        val sameSeasonNext = sameSeasonEps.firstOrNull { ep ->
+            ep.episodeNumber > afterEpisode && (fromSeason to ep.episodeNumber) !in completedSet
+        }
+        if (sameSeasonNext != null) {
+            return@withContext toVerified(sameSeasonNext, isCrossSeason = false)
+        }
+
+        val seasonsList = knownSeasons.ifEmpty {
+            getCachedMediaDetails(item)?.value?.seasons
+                ?: fetchMediaDetails(item).getOrNull()?.seasons.orEmpty()
+        }
+
+        val candidateNextSeasons = seasonsList
+            .filter { season ->
+                season.seasonNumber > fromSeason &&
+                    (fromSeason == 0 || season.seasonNumber > 0) &&
+                    season.episodeCount > 0
+            }
+            .sortedBy { it.seasonNumber }
+
+        for (candidate in candidateNextSeasons) {
+            val nextEps = loadSeasonEpisodesPreferringLocal(item.id, candidate.seasonNumber)
+            val firstUnwatched = nextEps.firstOrNull { ep ->
+                (candidate.seasonNumber to ep.episodeNumber) !in completedSet
+            }
+            if (firstUnwatched != null) {
+                return@withContext toVerified(firstUnwatched, isCrossSeason = true)
+            }
+        }
+
+        // Fallback ordinato per eventuali episodi ancora non visti in precedenza
+        val regularSeasons = seasonsList
+            .filter { season -> season.seasonNumber > 0 && season.episodeCount > 0 }
+            .sortedBy { it.seasonNumber }
+        for (candidate in regularSeasons) {
+            if (candidate.seasonNumber > fromSeason) continue
+            val seasonEps = if (candidate.seasonNumber == fromSeason) {
+                sameSeasonEps
+            } else {
+                loadSeasonEpisodesPreferringLocal(item.id, candidate.seasonNumber)
+            }
+            val anyUnwatched = seasonEps.firstOrNull { ep ->
+                (candidate.seasonNumber to ep.episodeNumber) !in completedSet
+            }
+            if (anyUnwatched != null) {
+                return@withContext toVerified(
+                    anyUnwatched,
+                    isCrossSeason = candidate.seasonNumber != fromSeason
+                )
+            }
+        }
+
+        null
+    }
+
+    private suspend fun syncSeriesContinueWatchingAfterMark(
+        item: MediaItem,
+        referenceSeason: Int,
+        afterEpisode: Int,
+        currentSeasonEpisodes: List<TmdbEpisodeDto>,
+        knownSeasons: List<TmdbSeasonSummaryDto>,
+        profileId: String
+    ) {
+        val nextUnwatched = resolveNextUnwatchedEpisode(
+            item = item,
+            fromSeason = referenceSeason,
+            afterEpisode = afterEpisode,
+            currentSeasonEpisodes = currentSeasonEpisodes,
+            knownSeasons = knownSeasons,
+            profileId = profileId
+        )
+        val mainId = "tv_${item.id}"
+        if (nextUnwatched != null) {
+            val nextEpKey = "tv_${item.id}_s${nextUnwatched.seasonNumber}_e${nextUnwatched.episodeNumber}"
+            val existingEpProgress = dao.getEpisodeProgress(nextEpKey, profileId)
+            val nextPosMs = existingEpProgress?.positionMs?.coerceAtLeast(0L) ?: 0L
+            val nextDurationMs = existingEpProgress?.durationMs?.takeIf { it > 0L }
+                ?: ((nextUnwatched.runtimeMinutes?.takeIf { it > 0 }?.toLong() ?: 0L) * 60_000L)
+            dao.upsertWatchProgress(
+                WatchProgressEntity(
+                    id = mainId,
+                    tmdbId = item.id,
+                    mediaType = "tv",
+                    title = item.title,
+                    overview = item.overview,
+                    posterPath = item.posterPath,
+                    backdropPath = item.backdropPath,
+                    voteAverage = item.voteAverage,
+                    releaseYear = item.releaseYear,
+                    seasonNumber = nextUnwatched.seasonNumber,
+                    episodeNumber = nextUnwatched.episodeNumber,
+                    episodeTitle = nextUnwatched.title,
+                    positionMs = nextPosMs,
+                    durationMs = nextDurationMs,
+                    updatedAt = System.currentTimeMillis(),
+                    profileId = profileId
+                )
+            )
+        } else {
+            dao.deleteWatchProgress(mainId, profileId)
+        }
+    }
+
     /**
      * Contrassegna un singolo episodio di una serie TV come visto per il profilo attivo,
-     * salvando lo stato in locale in modo isolato per `profileId`.
+     * salvando lo stato in locale in modo isolato per `profileId` e aggiornando automaticamente
+     * la sezione "Continua a guardare" all'episodio successivo non completato (o rimuovendola
+     * se tutti gli episodi disponibili risultano completati).
      */
     suspend fun markEpisodeAsWatched(
         tmdbId: Int,
         seasonNumber: Int,
         episodeNumber: Int,
-        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
+        mediaItem: MediaItem? = null,
+        currentSeasonEpisodes: List<TmdbEpisodeDto> = emptyList(),
+        knownSeasons: List<TmdbSeasonSummaryDto> = emptyList()
     ) = withContext(Dispatchers.IO) {
         if (tmdbId <= 0 || seasonNumber < 0 || episodeNumber <= 0) return@withContext
         val contentKey = PlayerSegmentKeys.completedMediaKey(
@@ -1531,7 +1702,28 @@ class VixFlixRepository(
         )
         val mainId = "tv_$tmdbId"
         val currentMainProgress = dao.getWatchProgress(mainId, profileId)
-        if (currentMainProgress != null &&
+        val resolvedItem = mediaItem ?: currentMainProgress?.let {
+            MediaItem(
+                id = it.tmdbId,
+                mediaType = it.mediaType,
+                title = it.title,
+                overview = it.overview,
+                posterPath = it.posterPath,
+                backdropPath = it.backdropPath,
+                voteAverage = it.voteAverage,
+                releaseYear = it.releaseYear
+            )
+        }
+        if (resolvedItem != null) {
+            syncSeriesContinueWatchingAfterMark(
+                item = resolvedItem,
+                referenceSeason = seasonNumber,
+                afterEpisode = episodeNumber,
+                currentSeasonEpisodes = currentSeasonEpisodes,
+                knownSeasons = knownSeasons,
+                profileId = profileId
+            )
+        } else if (currentMainProgress != null &&
             currentMainProgress.seasonNumber == seasonNumber &&
             currentMainProgress.episodeNumber == episodeNumber
         ) {
@@ -1540,14 +1732,79 @@ class VixFlixRepository(
     }
 
     /**
+     * Annulla lo stato "visto" di un singolo episodio di una serie TV per il profilo attivo,
+     * aggiornando immediatamente lo stato della stagione e di "Continua a guardare".
+     */
+    suspend fun unmarkEpisodeAsWatched(
+        tmdbId: Int,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
+        mediaItem: MediaItem? = null,
+        currentSeasonEpisodes: List<TmdbEpisodeDto> = emptyList()
+    ) = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0 || seasonNumber < 0 || episodeNumber <= 0) return@withContext
+        val contentKey = PlayerSegmentKeys.completedMediaKey(
+            tmdbId = tmdbId,
+            mediaType = "tv",
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber
+        )
+        dao.deleteCompletedMedia(contentKey = contentKey, profileId = profileId)
+
+        if (mediaItem != null) {
+            val mainId = "tv_${mediaItem.id}"
+            val currentMainProgress = dao.getWatchProgress(mainId, profileId)
+            val currentSeason = currentMainProgress?.seasonNumber ?: Int.MAX_VALUE
+            val currentEpisode = currentMainProgress?.episodeNumber ?: Int.MAX_VALUE
+            val shouldPointToUnmarked = currentMainProgress == null ||
+                (currentMainProgress.positionMs == 0L &&
+                    (currentSeason > seasonNumber ||
+                        (currentSeason == seasonNumber && currentEpisode > episodeNumber)))
+            if (shouldPointToUnmarked) {
+                val epDto = loadSeasonEpisodesPreferringLocal(
+                    tmdbId = tmdbId,
+                    seasonNumber = seasonNumber,
+                    providedEpisodes = currentSeasonEpisodes
+                ).firstOrNull { it.episodeNumber == episodeNumber }
+                val epDurationMs = (epDto?.runtime?.takeIf { it in 1..600 }?.toLong() ?: 0L) * 60_000L
+                dao.upsertWatchProgress(
+                    WatchProgressEntity(
+                        id = mainId,
+                        tmdbId = mediaItem.id,
+                        mediaType = "tv",
+                        title = mediaItem.title,
+                        overview = mediaItem.overview,
+                        posterPath = mediaItem.posterPath,
+                        backdropPath = mediaItem.backdropPath,
+                        voteAverage = mediaItem.voteAverage,
+                        releaseYear = mediaItem.releaseYear,
+                        seasonNumber = seasonNumber,
+                        episodeNumber = episodeNumber,
+                        episodeTitle = epDto?.name?.takeIf { it.isNotBlank() },
+                        positionMs = 0L,
+                        durationMs = epDurationMs,
+                        updatedAt = System.currentTimeMillis(),
+                        profileId = profileId
+                    )
+                )
+            }
+        }
+    }
+
+    /**
      * Contrassegna tutti gli episodi della stagione selezionata come visti per il profilo attivo,
-     * senza modificare gli episodi delle altre stagioni né i dati degli altri profili.
+     * senza modificare gli episodi delle altre stagioni né i dati degli altri profili, e aggiorna
+     * automaticamente "Continua a guardare" alla stagione/episodio successivo non completato.
      */
     suspend fun markSeasonAsWatched(
         tmdbId: Int,
         seasonNumber: Int,
         episodeNumbers: List<Int>,
-        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
+        mediaItem: MediaItem? = null,
+        currentSeasonEpisodes: List<TmdbEpisodeDto> = emptyList(),
+        knownSeasons: List<TmdbSeasonSummaryDto> = emptyList()
     ) = withContext(Dispatchers.IO) {
         if (tmdbId <= 0 || seasonNumber < 0) return@withContext
         val validEpisodeNumbers = episodeNumbers.filter { it > 0 }.distinct()
@@ -1578,7 +1835,28 @@ class VixFlixRepository(
         }
         val mainId = "tv_$tmdbId"
         val currentMainProgress = dao.getWatchProgress(mainId, profileId)
-        if (currentMainProgress != null &&
+        val resolvedItem = mediaItem ?: currentMainProgress?.let {
+            MediaItem(
+                id = it.tmdbId,
+                mediaType = it.mediaType,
+                title = it.title,
+                overview = it.overview,
+                posterPath = it.posterPath,
+                backdropPath = it.backdropPath,
+                voteAverage = it.voteAverage,
+                releaseYear = it.releaseYear
+            )
+        }
+        if (resolvedItem != null) {
+            syncSeriesContinueWatchingAfterMark(
+                item = resolvedItem,
+                referenceSeason = seasonNumber,
+                afterEpisode = validEpisodeNumbers.maxOrNull() ?: 0,
+                currentSeasonEpisodes = currentSeasonEpisodes,
+                knownSeasons = knownSeasons,
+                profileId = profileId
+            )
+        } else if (currentMainProgress != null &&
             currentMainProgress.seasonNumber == seasonNumber &&
             currentMainProgress.episodeNumber in validEpisodeNumbers
         ) {
