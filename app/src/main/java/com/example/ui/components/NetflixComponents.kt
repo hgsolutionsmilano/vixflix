@@ -1052,6 +1052,7 @@ fun ContinueWatchingSection(
     onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
+    upcomingDateBadges: Map<String, String> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
     val safeEntries = remember(entries) { entries.distinctBy { it.id } }
@@ -1126,6 +1127,7 @@ fun ContinueWatchingSection(
                     itemIndex = index,
                     listState = listState,
                     isTvLayout = isTvLayout,
+                    upcomingDateBadge = upcomingDateBadges[entry.id],
                     onResume = {
                         lastFocusedIndex = index
                         onItemFocused?.invoke(itemFocusRequester)
@@ -1195,6 +1197,7 @@ private fun ContinueWatchingCard(
     itemIndex: Int,
     listState: LazyListState,
     isTvLayout: Boolean,
+    upcomingDateBadge: String? = null,
     onResume: () -> Unit,
     onInfo: () -> Unit,
     onRemove: () -> Unit,
@@ -1317,6 +1320,31 @@ private fun ContinueWatchingCard(
                         tint = NetflixWhite,
                         modifier = Modifier.size(28.dp)
                     )
+                }
+
+                // Badge in basso a destra: data di uscita del prossimo episodio NON ancora trasmesso (solo Serie TV)
+                val normalizedUpcomingDate = upcomingDateBadge?.trim().takeIf { !it.isNullOrEmpty() }
+                if (hasValidSeriesEpisode && normalizedUpcomingDate != null) {
+                    Surface(
+                        color = NetflixBlack.copy(alpha = 0.84f),
+                        shape = RoundedCornerShape(4.dp),
+                        border = BorderStroke(0.75.dp, NetflixWhite.copy(alpha = 0.24f)),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 6.dp, bottom = 10.dp)
+                            .testTag("cw_upcoming_date_badge_${entry.id}")
+                    ) {
+                        Text(
+                            text = normalizedUpcomingDate,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
                 }
 
                 // Barra rossa progresso stile Netflix sul bordo inferiore dell'immagine

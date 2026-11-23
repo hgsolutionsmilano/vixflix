@@ -40,6 +40,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -209,6 +210,61 @@ fun isAndroidTvDevice(
 }
 
 /**
+ * Gestore atomico e privo di doppie attivazioni per i tasti BACK ed ESCAPE su Android TV / Fire TV / tastiera:
+ * - Consuma `KeyDown` registrando che la pressione è iniziata su questo contenitore (ignorando i repeat).
+ * - Esegue [onBack] su `KeyUp` SOLO se il corrispondente `KeyDown` è stato ricevuto su questo stesso nodo.
+ * - Consuma sempre `KeyUp` per impedire che eventi orfani o rilasci tardivi propaghino al `BackHandler`
+ *   o a schermate sottostanti (evitando doppie chiusure o popup di uscita involontari).
+ */
+fun Modifier.consumeBackAndEscapeKey(
+    enabled: Boolean = true,
+    onBack: () -> Unit
+): Modifier = composed {
+    val latestEnabled by rememberUpdatedState(enabled)
+    val latestOnBack by rememberUpdatedState(onBack)
+    var backKeyDownSeen by remember { mutableStateOf(false) }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            backKeyDownSeen = false
+        }
+    }
+
+    this
+        .onFocusChanged { state ->
+            if (!state.hasFocus) {
+                backKeyDownSeen = false
+            }
+        }
+        .onPreviewKeyEvent { keyEvent ->
+            if (!latestEnabled) {
+                backKeyDownSeen = false
+                return@onPreviewKeyEvent false
+            }
+            val isBackOrEscape = keyEvent.key == Key.Back || keyEvent.key == Key.Escape
+            if (!isBackOrEscape) return@onPreviewKeyEvent false
+
+            when (keyEvent.type) {
+                KeyEventType.KeyDown -> {
+                    if (keyEvent.nativeKeyEvent.repeatCount == 0) {
+                        backKeyDownSeen = true
+                    }
+                    true
+                }
+                KeyEventType.KeyUp -> {
+                    val shouldFire = backKeyDownSeen
+                    backKeyDownSeen = false
+                    if (shouldFire) {
+                        latestOnBack()
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
+}
+
+/**
  * Modificatore universale per pulsanti, chip e voci di menu compatibile con Telecomando Android TV / Google TV
  * (D-pad + Invio/OK + visualizzazione chiara dello stato di focus).
  */
@@ -295,12 +351,17 @@ fun Modifier.tvFocusableControl(
             if (onClick != null) {
                 Modifier
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown &&
-                            keyEvent.key == Key.Menu &&
-                            onLongClick != null
-                        ) {
-                            onLongClick()
-                            return@onPreviewKeyEvent true
+                        if (keyEvent.key == Key.Menu && onLongClick != null) {
+                            when (keyEvent.type) {
+                                KeyEventType.KeyDown -> {
+                                    if (keyEvent.nativeKeyEvent.repeatCount == 0) {
+                                        onLongClick()
+                                    }
+                                    return@onPreviewKeyEvent true
+                                }
+                                KeyEventType.KeyUp -> return@onPreviewKeyEvent true
+                                else -> return@onPreviewKeyEvent true
+                            }
                         }
                         val isCenterKey = keyEvent.key == Key.DirectionCenter ||
                             keyEvent.key == Key.Enter ||
@@ -334,11 +395,12 @@ fun Modifier.tvFocusableControl(
                                 true
                             }
                             KeyEventType.KeyUp -> {
+                                val wasHeld = centerKeyHeld
                                 val wasLong = longPressTriggered
                                 centerKeyHeld = false
                                 longPressTriggered = false
                                 longPressJob?.cancel()
-                                if (!wasLong) {
+                                if (wasHeld && !wasLong) {
                                     onClick()
                                 }
                                 true
@@ -363,7 +425,27 @@ fun Modifier.tvFocusableControl(
                         }
                     )
             } else {
-                Modifier.focusable(interactionSource = interactionSource)
+                // Il componente Material3 ospite (Button/OutlinedButton/TextButton/IconButton/Switch)
+                // fornisce già il proprio nodo clickable+focusable: evitiamo un doppio focus target
+                // e blocchiamo eventuali KeyUp orfani di OK/Invio che genererebbero click fantasma.
+                Modifier.onPreviewKeyEvent { keyEvent ->
+                    val isCenterKey = keyEvent.key == Key.DirectionCenter ||
+                        keyEvent.key == Key.Enter ||
+                        keyEvent.key == Key.NumPadEnter
+                    if (!isCenterKey) return@onPreviewKeyEvent false
+                    when (keyEvent.type) {
+                        KeyEventType.KeyDown -> {
+                            centerKeyHeld = true
+                            false
+                        }
+                        KeyEventType.KeyUp -> {
+                            val wasHeld = centerKeyHeld
+                            centerKeyHeld = false
+                            !wasHeld
+                        }
+                        else -> false
+                    }
+                }
             }
         )
 }
@@ -494,19 +576,31 @@ fun Modifier.animatedPosterShowcase(
             onFocusedChanged(state.isFocused)
         }
         .onPreviewKeyEvent { keyEvent ->
-            if (keyEvent.type == KeyEventType.KeyDown &&
-                (keyEvent.key == Key.MediaPlay || keyEvent.key == Key.MediaPlayPause) &&
+            if ((keyEvent.key == Key.MediaPlay || keyEvent.key == Key.MediaPlayPause) &&
                 onQuickPlay != null
             ) {
-                onQuickPlay()
-                return@onPreviewKeyEvent true
+                when (keyEvent.type) {
+                    KeyEventType.KeyDown -> {
+                        if (keyEvent.nativeKeyEvent.repeatCount == 0) {
+                            onQuickPlay()
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    KeyEventType.KeyUp -> return@onPreviewKeyEvent true
+                    else -> return@onPreviewKeyEvent true
+                }
             }
-            if (keyEvent.type == KeyEventType.KeyDown &&
-                keyEvent.key == Key.Menu &&
-                onLongClick != null
-            ) {
-                onLongClick()
-                return@onPreviewKeyEvent true
+            if (keyEvent.key == Key.Menu && onLongClick != null) {
+                when (keyEvent.type) {
+                    KeyEventType.KeyDown -> {
+                        if (keyEvent.nativeKeyEvent.repeatCount == 0) {
+                            onLongClick()
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    KeyEventType.KeyUp -> return@onPreviewKeyEvent true
+                    else -> return@onPreviewKeyEvent true
+                }
             }
 
             val isCenterKey = keyEvent.key == Key.DirectionCenter ||
@@ -537,11 +631,12 @@ fun Modifier.animatedPosterShowcase(
                     true
                 }
                 KeyEventType.KeyUp -> {
+                    val wasHeld = centerKeyHeld
                     val wasLong = longPressTriggered
                     centerKeyHeld = false
                     longPressTriggered = false
                     longPressJob?.cancel()
-                    if (!wasLong) {
+                    if (wasHeld && !wasLong) {
                         onClick()
                     }
                     true

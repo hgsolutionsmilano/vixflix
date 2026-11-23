@@ -83,6 +83,7 @@ import com.example.ui.components.ProfileAvatarArtwork
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
+import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -308,6 +309,13 @@ fun ProfileEditorDialog(
         modifier = Modifier
             .fillMaxSize()
             .zIndex(95f)
+            .consumeBackAndEscapeKey {
+                if (showDeleteConfirm) {
+                    showDeleteConfirm = false
+                } else {
+                    onDismiss()
+                }
+            }
             .background(NetflixBlack.copy(alpha = 0.88f))
             .padding(horizontal = if (isTvLayout) 32.dp else 12.dp, vertical = if (isTvLayout) 4.dp else 8.dp)
             .testTag("profile_editor_dialog"),
@@ -369,8 +377,7 @@ fun ProfileEditorDialog(
                             }
                             .tvFocusableControl(
                                 shape = CircleShape,
-                                focusTag = "profile_editor_close",
-                                onClick = onDismiss
+                                focusTag = "profile_editor_close"
                             )
                             .testTag("profile_editor_close_button")
                     ) {
@@ -1213,8 +1220,7 @@ fun ProfileEditorDialog(
                                             }
                                             .tvFocusableControl(
                                                 shape = RoundedCornerShape(8.dp),
-                                                focusTag = "profile_switch_before_delete_button",
-                                                onClick = onSwitchBeforeDelete
+                                                focusTag = "profile_switch_before_delete_button"
                                             )
                                             .testTag("profile_switch_before_delete_button")
                                     ) {
@@ -1253,8 +1259,7 @@ fun ProfileEditorDialog(
                                         shape = RoundedCornerShape(10.dp),
                                         focusedScale = 1.02f,
                                         focusedBorderColor = NetflixWhite,
-                                        focusTag = "profile_delete_button",
-                                        onClick = openDeleteConfirm
+                                        focusTag = "profile_delete_button"
                                     )
                                     .testTag("profile_delete_button")
                             ) {
@@ -1301,8 +1306,7 @@ fun ProfileEditorDialog(
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedScale = 1.02f,
-                                focusTag = "profile_editor_cancel",
-                                onClick = onDismiss
+                                focusTag = "profile_editor_cancel"
                             )
                             .testTag("profile_editor_cancel_button")
                     ) {
@@ -1339,8 +1343,7 @@ fun ProfileEditorDialog(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedScale = 1.03f,
                                 focusedBorderColor = NetflixWhite,
-                                focusTag = "profile_editor_save",
-                                onClick = handleSaveOrCreate
+                                focusTag = "profile_editor_save"
                             )
                             .testTag("profile_editor_save_button")
                     ) {
@@ -1417,8 +1420,7 @@ fun ProfileEditorDialog(
                                     }
                                     .tvFocusableControl(
                                         shape = RoundedCornerShape(10.dp),
-                                        focusTag = "profile_delete_cancel",
-                                        onClick = cancelDeleteAction
+                                        focusTag = "profile_delete_cancel"
                                     )
                                     .testTag("profile_delete_cancel_button")
                             ) {
@@ -1449,8 +1451,7 @@ fun ProfileEditorDialog(
                                     .tvFocusableControl(
                                         shape = RoundedCornerShape(10.dp),
                                         focusedBorderColor = NetflixWhite,
-                                        focusTag = "profile_delete_confirm",
-                                        onClick = confirmDeleteAction
+                                        focusTag = "profile_delete_confirm"
                                     )
                                     .testTag("profile_delete_confirm_button")
                             ) {

@@ -86,6 +86,7 @@ import com.example.ui.components.ProfileAvatarArtwork
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
+import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.BebasNeueFontFamily
 import com.example.ui.theme.NetflixBlack
@@ -183,6 +184,12 @@ fun ProfileSelectionScreen(
         modifier = modifier
             .fillMaxSize()
             .zIndex(90f)
+            .consumeBackAndEscapeKey(enabled = !isEditorOpen) {
+                when {
+                    state.isManageMode -> onToggleManageMode(false)
+                    !state.mustSelectBeforeClosing -> onClose()
+                }
+            }
             .background(
                 Brush.radialGradient(
                     colors = listOf(
@@ -748,7 +755,9 @@ private fun ProfileAvatarTile(
                 when (keyEvent.type) {
                     KeyEventType.KeyDown -> when {
                         isCenter -> {
-                            isPressed = true
+                            if (keyEvent.nativeKeyEvent.repeatCount == 0) {
+                                isPressed = true
+                            }
                             true
                         }
                         keyEvent.key == Key.DirectionLeft -> leftRequester?.safeRequestFocus() ?: true
@@ -759,8 +768,11 @@ private fun ProfileAvatarTile(
                     }
                     KeyEventType.KeyUp -> {
                         if (isCenter) {
+                            val wasPressed = isPressed
                             isPressed = false
-                            onClick()
+                            if (wasPressed) {
+                                onClick()
+                            }
                             true
                         } else {
                             false
@@ -937,7 +949,9 @@ private fun AddProfileTile(
                 when (keyEvent.type) {
                     KeyEventType.KeyDown -> when {
                         isCenter -> {
-                            isPressed = true
+                            if (keyEvent.nativeKeyEvent.repeatCount == 0) {
+                                isPressed = true
+                            }
                             true
                         }
                         keyEvent.key == Key.DirectionLeft -> leftRequester?.safeRequestFocus() ?: true
@@ -948,8 +962,11 @@ private fun AddProfileTile(
                     }
                     KeyEventType.KeyUp -> {
                         if (isCenter) {
+                            val wasPressed = isPressed
                             isPressed = false
-                            onClick()
+                            if (wasPressed) {
+                                onClick()
+                            }
                             true
                         } else {
                             false

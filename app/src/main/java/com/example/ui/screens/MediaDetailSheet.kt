@@ -109,6 +109,7 @@ import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
+import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -170,16 +171,6 @@ fun MediaDetailScreen(
     }
     var contextMenuSeasonEpisodeNumbers by remember(state.mediaItem.uniqueKey) {
         mutableStateOf<List<Int>>(emptyList())
-    }
-
-    BackHandler(enabled = isInteractive) {
-        if (contextMenuEpisode != null) {
-            contextMenuEpisode = null
-        } else if (state.activeTrailer != null) {
-            onCloseTrailer()
-        } else {
-            backAction()
-        }
     }
 
     val item = state.mediaItem
@@ -742,16 +733,24 @@ fun MediaDetailScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .consumeBackAndEscapeKey(
+                        enabled = isInteractive && isCurrentActive && !isTrailerOpen && contextMenuEpisode == null,
+                        onBack = handleDetailBack
+                    )
                     .onPreviewKeyEvent { keyEvent ->
-                        if (isInteractive && isCurrentActive && !isTrailerOpen && contextMenuEpisode == null && keyEvent.type == KeyEventType.KeyDown) {
+                        if (isInteractive && isCurrentActive && !isTrailerOpen && contextMenuEpisode == null) {
                             when (keyEvent.key) {
                                 Key.MediaPlay, Key.MediaPlayPause -> {
-                                    onPlayMain(false)
-                                    true
-                                }
-                                Key.Back, Key.Escape -> {
-                                    handleDetailBack()
-                                    true
+                                    when (keyEvent.type) {
+                                        KeyEventType.KeyDown -> {
+                                            if (keyEvent.nativeKeyEvent.repeatCount == 0) {
+                                                onPlayMain(false)
+                                            }
+                                            true
+                                        }
+                                        KeyEventType.KeyUp -> true
+                                        else -> true
+                                    }
                                 }
                                 else -> false
                             }

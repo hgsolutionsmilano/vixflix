@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -53,6 +55,7 @@ import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
+import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.formatSecondsToMmSs
 import com.example.ui.components.recoverFocusFromCandidates
 import com.example.ui.components.safeFocusRequester
@@ -110,18 +113,12 @@ internal fun TvContinueWatchingQuickDialog(
                 modifier = Modifier
                     .widthIn(max = 420.dp)
                     .fillMaxWidth()
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
-                            onDismiss()
-                            true
-                        } else {
-                            false
-                        }
-                    }
+                    .consumeBackAndEscapeKey(onBack = onDismiss)
                     .testTag("quick_cw_dialog")
             ) {
                 Column(
                     modifier = Modifier
+                        .verticalScroll(rememberScrollState())
                         .padding(20.dp)
                         .focusGroup(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -329,18 +326,12 @@ internal fun TvPosterQuickActionDialog(
                 modifier = Modifier
                     .widthIn(max = 400.dp)
                     .fillMaxWidth()
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
-                            onDismiss()
-                            true
-                        } else {
-                            false
-                        }
-                    }
+                    .consumeBackAndEscapeKey(onBack = onDismiss)
                     .testTag("quick_poster_dialog")
             ) {
                 Column(
                     modifier = Modifier
+                        .verticalScroll(rememberScrollState())
                         .padding(20.dp)
                         .focusGroup(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -510,21 +501,13 @@ internal fun VixFlixExitConfirmationDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 460.dp)
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown &&
-                            (keyEvent.key == Key.Back || keyEvent.key == Key.Escape)
-                        ) {
-                            onCancel()
-                            true
-                        } else {
-                            false
-                        }
-                    }
+                    .consumeBackAndEscapeKey(onBack = onCancel)
                     .testTag("vixflix_exit_confirmation_dialog")
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
+                        .verticalScroll(rememberScrollState())
                         .padding(horizontal = 24.dp, vertical = 26.dp)
                         .focusGroup()
                 ) {
@@ -665,20 +648,12 @@ internal fun TvEpisodeWatchedContextDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 460.dp)
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown &&
-                            (keyEvent.key == Key.Back || keyEvent.key == Key.Escape)
-                        ) {
-                            onDismiss()
-                            true
-                        } else {
-                            false
-                        }
-                    }
+                    .consumeBackAndEscapeKey(onBack = onDismiss)
                     .testTag("tv_episode_watched_context_dialog")
             ) {
                 Column(
                     modifier = Modifier
+                        .verticalScroll(rememberScrollState())
                         .padding(20.dp)
                         .focusGroup(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -734,8 +709,7 @@ internal fun TvEpisodeWatchedContextDialog(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedScale = 1.03f,
                                 focusedBorderColor = NetflixRed,
-                                focusTag = "tv_episode_ctx_mark_episode",
-                                onClick = toggleEpisodeAction
+                                focusTag = "tv_episode_ctx_mark_episode"
                             )
                             .testTag("tv_episode_ctx_mark_episode")
                     ) {

@@ -973,6 +973,7 @@ fun VixPlayerScreen(
         if (!showAutoNext) return@LaunchedEffect
         autoNextRemainingSecState.intValue = advancedSettings.sanitizedCountdownSec
         controlsVisible = false
+        rootFocusRequester.safeRequestFocus()
         autoNextPlayFocusRequester.safeRequestFocus()
         delay(60L)
         autoNextPlayFocusRequester.safeRequestFocus()
@@ -994,6 +995,7 @@ fun VixPlayerScreen(
     LaunchedEffect(showMovieEndedPopup) {
         if (!showMovieEndedPopup) return@LaunchedEffect
         controlsVisible = false
+        rootFocusRequester.safeRequestFocus()
         movieEndedFinishFocusRequester.safeRequestFocus()
         delay(60L)
         movieEndedFinishFocusRequester.safeRequestFocus()

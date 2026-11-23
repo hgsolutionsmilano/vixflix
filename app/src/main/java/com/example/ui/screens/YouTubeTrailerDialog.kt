@@ -120,6 +120,7 @@ import com.example.ui.components.rememberIsTvDevice
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
+import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -461,10 +462,6 @@ fun YouTubeTrailerDialog(
                         }
                     }
                     when (keyEvent.key) {
-                        Key.Escape, Key.Back -> {
-                            onClose()
-                            return@onPreviewKeyEvent true
-                        }
                         Key.MediaPlayPause -> {
                             togglePlayPause()
                             return@onPreviewKeyEvent true
@@ -490,6 +487,7 @@ fun YouTubeTrailerDialog(
                 }
                 false
             }
+            .consumeBackAndEscapeKey(onBack = onClose)
             .padding(horizontal = 12.dp, vertical = 12.dp)
             .testTag("in_app_trailer_overlay"),
         contentAlignment = Alignment.Center

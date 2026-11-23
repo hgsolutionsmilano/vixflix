@@ -47,6 +47,7 @@ import kotlinx.coroutines.withContext
 enum class SimklSyncTrigger {
     STARTUP,
     FOREGROUND,
+    PERIODIC,
     PROFILE_SWITCH,
     CONTINUE_WATCHING_OPEN,
     DETAIL_OPEN,
@@ -64,6 +65,7 @@ class SimklSyncManager(
     private val minPostIntervalMs: Long = SimklConfig.MIN_POST_INTERVAL_MS,
     private val authPollMinIntervalMs: Long = 1_000L,
     private val syncCooldownMs: Long = 20_000L,
+    private val periodicSyncIntervalMs: Long = DEFAULT_PERIODIC_SYNC_INTERVAL_MS,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
@@ -117,11 +119,21 @@ class SimklSyncManager(
     private val _resolvedActiveProfileRequests = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val resolvedActiveProfileRequests: SharedFlow<String> = _resolvedActiveProfileRequests.asSharedFlow()
 
+    private val _syncRevision = MutableStateFlow(0L)
+    val syncRevision: StateFlow<Long> = _syncRevision.asStateFlow()
+
     @Volatile
     private var pendingAuthorizedAccount: PendingAuthorizedAccount? = null
 
     @Volatile
     private var activePlaybackTarget: ActivePlaybackTarget? = null
+
+    private val periodicSyncLock = Any()
+    @Volatile
+    private var isAppInForeground: Boolean = false
+    @Volatile
+    private var periodicSyncProfileId: String? = null
+    private var periodicSyncJob: Job? = null
 
     private val profileTokenMutexes = ConcurrentHashMap<String, Mutex>()
     private val profileSyncMutexes = ConcurrentHashMap<String, Mutex>()
@@ -300,6 +312,139 @@ class SimklSyncManager(
             }
         }
         syncIfNeeded(newProfileId, SimklSyncTrigger.PROFILE_SWITCH)
+        retargetPeriodicLoopIfForeground(newProfileId, runImmediateCatchUp = false)
+    }
+
+    /**
+     * Avvia o riprende la sincronizzazione automatica periodica Simkl (ogni 5 minuti / 300s)
+     * finché VixFlix rimane in primo piano, indipendentemente dalla schermata corrente.
+     * - Evita timer duplicati se già attivo per lo stesso profilo.
+     * - Al ritorno dal background verifica gli aggiornamenti mancati ed esegue un catch-up immediato se necessario.
+     */
+    fun startForegroundPeriodicSync(profileId: String) {
+        if (profileId.isBlank()) return
+        synchronized(periodicSyncLock) {
+            val alreadyRunningForProfile = isAppInForeground &&
+                periodicSyncProfileId == profileId &&
+                periodicSyncJob?.isActive == true
+            if (alreadyRunningForProfile) {
+                return
+            }
+            isAppInForeground = true
+            periodicSyncProfileId = profileId
+            periodicSyncJob?.cancel()
+            periodicSyncJob = launchPeriodicSyncLoopLocked(
+                profileId = profileId,
+                runImmediateCatchUp = true
+            )
+        }
+    }
+
+    /**
+     * Aggiorna il profilo monitorato dal polling automatico solo se l'app è attualmente in primo piano,
+     * senza avviare timer in background o creare loop duplicati.
+     */
+    fun updatePeriodicSyncProfileIfForeground(profileId: String) {
+        if (profileId.isBlank()) return
+        retargetPeriodicLoopIfForeground(profileId, runImmediateCatchUp = true)
+    }
+
+    /**
+     * Sospende il polling periodico quando VixFlix passa in background.
+     */
+    fun pauseForegroundPeriodicSync() {
+        synchronized(periodicSyncLock) {
+            isAppInForeground = false
+            periodicSyncJob?.cancel()
+            periodicSyncJob = null
+        }
+    }
+
+    /**
+     * Arresta definitivamente il polling periodico (es. chiusura ViewModel).
+     */
+    fun stopPeriodicSync() {
+        synchronized(periodicSyncLock) {
+            isAppInForeground = false
+            periodicSyncProfileId = null
+            periodicSyncJob?.cancel()
+            periodicSyncJob = null
+        }
+    }
+
+    internal fun isPeriodicSyncActiveForTest(): Boolean = synchronized(periodicSyncLock) {
+        isAppInForeground && periodicSyncJob?.isActive == true
+    }
+
+    private fun retargetPeriodicLoopIfForeground(profileId: String, runImmediateCatchUp: Boolean) {
+        synchronized(periodicSyncLock) {
+            if (!isAppInForeground) return
+            if (periodicSyncProfileId == profileId && periodicSyncJob?.isActive == true) {
+                return
+            }
+            periodicSyncProfileId = profileId
+            periodicSyncJob?.cancel()
+            periodicSyncJob = launchPeriodicSyncLoopLocked(
+                profileId = profileId,
+                runImmediateCatchUp = runImmediateCatchUp
+            )
+        }
+    }
+
+    private fun launchPeriodicSyncLoopLocked(
+        profileId: String,
+        runImmediateCatchUp: Boolean
+    ): Job {
+        val intervalMs = periodicSyncIntervalMs.coerceAtLeast(100L)
+        return scope.launch {
+            if (runImmediateCatchUp) {
+                runPeriodicCycleSafe(profileId, SimklSyncTrigger.FOREGROUND, checkCatchUp = true)
+            }
+            while (isAppInForeground && periodicSyncProfileId == profileId) {
+                delay(intervalMs)
+                if (!isAppInForeground || periodicSyncProfileId != profileId) break
+                runPeriodicCycleSafe(profileId, SimklSyncTrigger.PERIODIC, checkCatchUp = false)
+            }
+        }
+    }
+
+    private suspend fun runPeriodicCycleSafe(
+        profileId: String,
+        trigger: SimklSyncTrigger,
+        checkCatchUp: Boolean
+    ) {
+        try {
+            if (!configProvider().isClientIdConfigured) return
+            if (!tokenStore.hasTokens(profileId)) return
+            // Evita sincronizzazioni concorrenti se è già in corso un sync per lo stesso profilo
+            if (activeSyncJobs[profileId]?.isActive == true) return
+
+            if (checkCatchUp) {
+                val now = clockMs()
+                val meta = dao.getSimklProfileMeta(profileId)
+                val lastAttempt = lastSyncAttemptAtMs[profileId] ?: 0L
+                val lastSynced = meta?.lastSyncAtMs ?: 0L
+                val needsInitialImport = meta == null || !meta.initialFullImportDone
+                val periodicOverdue = lastSynced <= 0L || (now - lastSynced) >= periodicSyncIntervalMs
+                val foregroundCooldownElapsed = (now - lastAttempt) >= minOf(syncCooldownMs, 5_000L)
+                if (!needsInitialImport && !periodicOverdue && !foregroundCooldownElapsed) {
+                    return
+                }
+            }
+
+            syncProfileNow(profileId, trigger)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordDiagnostic(
+                endpoint = "/sync/activities",
+                contentType = "periodic",
+                profileId = profileId,
+                triggerEvent = trigger.name,
+                outcome = "PERIODIC_ERROR_WILL_RETRY",
+                errorDetail = e.localizedMessage ?: e::class.java.simpleName
+            )
+        }
     }
 
     fun startDeviceAuthorization(
@@ -894,12 +1039,16 @@ class SimklSyncManager(
     }
 
     fun syncIfNeeded(profileId: String, trigger: SimklSyncTrigger) {
+        if (activeSyncJobs[profileId]?.isActive == true) {
+            return
+        }
         val now = clockMs()
         val lastAttempt = lastSyncAttemptAtMs[profileId] ?: 0L
         val effectiveCooldown = when (trigger) {
             SimklSyncTrigger.MANUAL,
             SimklSyncTrigger.POST_AUTH,
-            SimklSyncTrigger.PRE_PLAYBACK -> 0L
+            SimklSyncTrigger.PRE_PLAYBACK,
+            SimklSyncTrigger.PERIODIC -> 0L
             SimklSyncTrigger.DETAIL_OPEN,
             SimklSyncTrigger.CONTINUE_WATCHING_OPEN,
             SimklSyncTrigger.FOREGROUND -> minOf(syncCooldownMs, 5_000L)
@@ -1372,6 +1521,7 @@ class SimklSyncManager(
                         updatedAtMs = clockMs()
                     )
                 )
+                _syncRevision.update { it + 1L }
                 true
             } finally {
                 updateSyncProgress(profileId, null)
@@ -4463,5 +4613,9 @@ class SimklSyncManager(
             if (parsed != null) return parsed
         }
         return 0L
+    }
+
+    companion object {
+        const val DEFAULT_PERIODIC_SYNC_INTERVAL_MS: Long = 5L * 60L * 1_000L
     }
 }

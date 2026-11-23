@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.example.ui.GitHubUpdateUiState
 import com.example.ui.components.DpadFocusScope
 import com.example.ui.components.DpadFocusScopeProvider
+import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.recoverFocusFromCandidates
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
@@ -90,14 +91,7 @@ fun GitHubUpdateDialog(
             titleContentColor = NetflixWhite,
             textContentColor = NetflixLightGray,
             modifier = Modifier
-                .onPreviewKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
-                        onDismiss()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .consumeBackAndEscapeKey(onBack = onDismiss)
                 .testTag("github_update_dialog"),
             icon = {
                 Icon(

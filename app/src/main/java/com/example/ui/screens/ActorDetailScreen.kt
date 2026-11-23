@@ -81,6 +81,7 @@ import com.example.ui.components.rememberOptimizedImageRequest
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
+import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.tvFocusableControl
 import com.example.ui.theme.NetflixBlack
 import com.example.ui.theme.NetflixCardSurface
@@ -348,19 +349,10 @@ fun ActorDetailScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (isInteractive && keyEvent.type == KeyEventType.KeyDown) {
-                            when (keyEvent.key) {
-                                Key.Back, Key.Escape -> {
-                                    backAction()
-                                    true
-                                }
-                                else -> false
-                            }
-                        } else {
-                            false
-                        }
-                    }
+                    .consumeBackAndEscapeKey(
+                        enabled = isInteractive,
+                        onBack = backAction
+                    )
             ) {
                 LazyColumn(
                     state = listState,

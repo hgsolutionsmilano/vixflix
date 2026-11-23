@@ -141,16 +141,7 @@ fun SimklQrConnectDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.84f))
-                .onPreviewKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyDown &&
-                        (keyEvent.key == Key.Back || keyEvent.key == Key.Escape)
-                    ) {
-                        onDismiss()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .consumeBackAndEscapeKey(onBack = onDismiss)
                 .padding(horizontal = 24.dp, vertical = 12.dp)
         ) {
             Surface(

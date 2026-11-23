@@ -64,6 +64,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -327,6 +328,21 @@ class VixFlixViewModel @JvmOverloads constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
+    private val simklLibraryForProfile: StateFlow<List<SimklLibraryItemEntity>> = _activeProfileId
+        .flatMapLatest { profileId -> repository.localDao.observeSimklLibraryForProfile(profileId) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Mappa reattiva `WatchProgressEntity.id -> "GG MMM"` (o `"GG MMM YYYY"`) per i soli episodi
+     * futuri (non ancora trasmessi) delle serie TV in "Continua a guardare".
+     * Si aggiorna automaticamente al cambio episodio, al completamento di una serie o dopo
+     * qualsiasi sincronizzazione automatica/manuale Simkl o aggiornamento cache TMDB.
+     */
+    private val _continueWatchingUpcomingDateBadges = MutableStateFlow<Map<String, String>>(emptyMap())
+    val continueWatchingUpcomingDateBadges: StateFlow<Map<String, String>> =
+        _continueWatchingUpcomingDateBadges.asStateFlow()
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     val simklUiState: StateFlow<SimklProfileUiState> = _activeProfileId
         .flatMapLatest { profileId -> simklSyncManager.observeProfileUiState(profileId) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, SimklProfileUiState())
@@ -446,6 +462,7 @@ class VixFlixViewModel @JvmOverloads constructor(
         loadCatalog(forceRefresh = false)
         initGitHubUpdateChecker()
         initContinueWatchingDurationEnricher()
+        initContinueWatchingUpcomingEpisodeBadgeResolver()
         viewModelScope.launch {
             simklSyncManager.resolvedActiveProfileRequests.collect { resolvedProfileId ->
                 selectProfile(resolvedProfileId)
@@ -511,6 +528,68 @@ class VixFlixViewModel @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Risolve in modo reattivo e su `Dispatchers.IO` la data di uscita del prossimo episodio
+     * per tutte le serie TV presenti in "Continua a guardare", mostrando il badge SOLO se
+     * l'episodio reale in TMDB ha `airDate` strettamente futura (`airDate > today`).
+     */
+    private fun initContinueWatchingUpcomingEpisodeBadgeResolver() {
+        viewModelScope.launch(Dispatchers.IO) {
+            combine(
+                continueWatching,
+                simklLibraryForProfile,
+                simklSyncManager.syncRevision
+            ) { entries, libraryItems, _ ->
+                entries to libraryItems
+            }.collectLatest { (entries, libraryItems) ->
+                val tvEntries = entries.filter { entry ->
+                    entry.mediaType.equals("tv", ignoreCase = true) &&
+                        (entry.seasonNumber ?: 0) > 0 &&
+                        (entry.episodeNumber ?: 0) > 0
+                }
+                if (tvEntries.isEmpty()) {
+                    _continueWatchingUpcomingDateBadges.value = emptyMap()
+                    return@collectLatest
+                }
+
+                val completedShowTmdbIds = libraryItems
+                    .asSequence()
+                    .filter {
+                        it.tmdbMediaType.equals("tv", ignoreCase = true) &&
+                            it.status.equals("completed", ignoreCase = true)
+                    }
+                    .mapNotNull { it.tmdbId }
+                    .toSet()
+
+                val today = CalendarDate.today()
+                val resolved = LinkedHashMap<String, String>()
+                val seasonCache = HashMap<Pair<Int, Int>, List<TmdbEpisodeDto>>()
+
+                for (entry in tvEntries) {
+                    val seasonNum = entry.seasonNumber ?: continue
+                    val isCompleted = entry.tmdbId in completedShowTmdbIds
+                    if (isCompleted) continue
+
+                    val seasonKey = entry.tmdbId to seasonNum
+                    val episodes = seasonCache.getOrPut(seasonKey) {
+                        repository.getCachedSeasonEpisodes(entry.tmdbId, seasonNum)?.value
+                            ?: repository.fetchSeasonEpisodes(entry.tmdbId, seasonNum).getOrNull().orEmpty()
+                    }
+                    val badgeText = UpcomingEpisodeBadgeFormatter.resolveUpcomingEpisodeBadgeForEntry(
+                        entry = entry,
+                        seasonEpisodes = episodes,
+                        isSeriesCompleted = false,
+                        today = today
+                    )
+                    if (badgeText != null) {
+                        resolved[entry.id] = badgeText
+                    }
+                }
+                _continueWatchingUpcomingDateBadges.value = resolved
+            }
+        }
+    }
+
     @Volatile
     private var explicitProfileSelectorStateSet = false
 
@@ -546,6 +625,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             }
             _profilesInitialized.value = true
             simklSyncManager.syncIfNeeded(_activeProfileId.value, SimklSyncTrigger.STARTUP)
+            simklSyncManager.updatePeriodicSyncProfileIfForeground(_activeProfileId.value)
         }
     }
 
@@ -730,7 +810,11 @@ class VixFlixViewModel @JvmOverloads constructor(
     }
 
     fun onAppForeground() {
-        simklSyncManager.syncIfNeeded(_activeProfileId.value, SimklSyncTrigger.FOREGROUND)
+        simklSyncManager.startForegroundPeriodicSync(_activeProfileId.value)
+    }
+
+    fun onAppBackground() {
+        simklSyncManager.pauseForegroundPeriodicSync()
     }
 
     fun openSimklConnectDialog() {
@@ -2930,5 +3014,10 @@ class VixFlixViewModel @JvmOverloads constructor(
         } else {
             repository.gitHubUpdateService.triggerInAppUpdate(context, release)
         }
+    }
+
+    override fun onCleared() {
+        simklSyncManager.stopPeriodicSync()
+        super.onCleared()
     }
 }
