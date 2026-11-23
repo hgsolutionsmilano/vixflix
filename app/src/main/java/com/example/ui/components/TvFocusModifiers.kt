@@ -16,6 +16,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -67,6 +68,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -1043,3 +1045,67 @@ fun TvSeekTimeBar(
         }
     }
 }
+
+/**
+ * BringIntoViewSpec orizzontale con margini di sicurezza start/end per Amazon Fire TV Stick e Android TV.
+ * Impedisce al focus D-Pad di allineare la prima card a ridosso del menu laterale (offset 0)
+ * o l'ultima card contro il bordo destro dello schermo (tagliandone scala/alone di focus).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+internal class SafeEdgeHorizontalBringIntoViewSpec(
+    private val startMarginPx: Float,
+    private val endMarginPx: Float
+) : BringIntoViewSpec {
+    override fun calculateScrollDistance(
+        offset: Float,
+        size: Float,
+        containerSize: Float
+    ): Float {
+        if (containerSize <= 0f || size <= 0f) return 0f
+        val safeStartRaw = startMarginPx.coerceAtLeast(0f)
+        val safeEndRaw = endMarginPx.coerceAtLeast(0f)
+        val totalMargin = safeStartRaw + safeEndRaw
+        val maxAllowedMargin = (containerSize - size).coerceAtLeast(0f)
+
+        val effectiveStart: Float
+        val effectiveEnd: Float
+        if (totalMargin <= maxAllowedMargin) {
+            effectiveStart = safeStartRaw
+            effectiveEnd = safeEndRaw
+        } else if (totalMargin > 0f) {
+            val scale = maxAllowedMargin / totalMargin
+            effectiveStart = safeStartRaw * scale
+            effectiveEnd = safeEndRaw * scale
+        } else {
+            effectiveStart = 0f
+            effectiveEnd = 0f
+        }
+
+        val trailingEdge = offset + size
+        val safeTrailingLimit = containerSize - effectiveEnd
+        return when {
+            offset < effectiveStart -> offset - effectiveStart
+            trailingEdge > safeTrailingLimit -> trailingEdge - safeTrailingLimit
+            else -> 0f
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun rememberTvHorizontalBringIntoViewSpec(
+    startMargin: Dp,
+    endMargin: Dp,
+    trailingScaleAllowance: Dp = 16.dp
+): BringIntoViewSpec {
+    val density = LocalDensity.current
+    val startPx = with(density) { startMargin.toPx() }
+    val endPx = with(density) { (endMargin + trailingScaleAllowance).toPx() }
+    return remember(startPx, endPx) {
+        SafeEdgeHorizontalBringIntoViewSpec(
+            startMarginPx = startPx,
+            endMarginPx = endPx
+        )
+    }
+}
+

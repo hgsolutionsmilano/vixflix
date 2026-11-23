@@ -1,12 +1,15 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -211,6 +214,31 @@ internal fun extractActiveVideoDimensions(exoPlayer: ExoPlayer): Pair<Int, Int> 
     return 0 to 0
 }
 
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/**
+ * Politica nativa Android / Fire TV Stick per impedire lo screensaver esclusivamente
+ * durante una riproduzione video attiva (incluso buffering temporaneo con playWhenReady = true).
+ * Viene sempre disattivata su pausa, fine contenuto, errore o app in background.
+ */
+internal fun shouldKeepScreenOnDuringPlayback(
+    isPlaying: Boolean,
+    isBuffering: Boolean,
+    playWhenReady: Boolean,
+    isResolvingStream: Boolean,
+    playbackEnded: Boolean,
+    hasError: Boolean,
+    isAppInBackground: Boolean
+): Boolean {
+    if (isAppInBackground || hasError || playbackEnded) return false
+    if (isPlaying) return true
+    return playWhenReady && (isBuffering || isResolvingStream)
+}
+
 @OptIn(UnstableApi::class)
 @Composable
 fun VixPlayerScreen(
@@ -254,11 +282,18 @@ fun VixPlayerScreen(
 
     // Stato persistente unico lungo tutto il ciclo di vita di VixPlayerScreen (MAI ricreato con remember(episodeKey)):
     // elimina definitivamente qualsiasi closure orfana nei listener di ExoPlayer quando si cambia episodio.
-    var isPlaying by remember { mutableStateOf(true) }
-    var isBuffering by remember(initialReadyForTest) { mutableStateOf(!initialReadyForTest) }
+    var isPlaying by remember { mutableStateOf(session.errorMessage == null) }
+    var playWhenReadyState by remember { mutableStateOf(session.errorMessage == null) }
+    var isBuffering by remember(initialReadyForTest) { mutableStateOf(!initialReadyForTest && session.errorMessage == null) }
+    var isAppInBackground by remember { mutableStateOf(false) }
     var playerErrorMessage by remember { mutableStateOf(session.errorMessage) }
     LaunchedEffect(session.errorMessage) {
         playerErrorMessage = session.errorMessage
+        if (session.errorMessage != null) {
+            isPlaying = false
+            isBuffering = false
+            playWhenReadyState = false
+        }
     }
 
     val currentPositionMsState = remember {
@@ -338,6 +373,31 @@ fun VixPlayerScreen(
     val verifiedNextEpisode = session.verifiedNextEpisode
     val hasVerifiedNextEpisode = session.mediaItem.isSeries && verifiedNextEpisode != null
     val currentError = playerErrorMessage ?: session.errorMessage
+    val hasActivePlaybackError = currentError != null && !session.isResolvingStream
+    val keepScreenOnActive = shouldKeepScreenOnDuringPlayback(
+        isPlaying = isPlaying,
+        isBuffering = isBuffering,
+        playWhenReady = playWhenReadyState,
+        isResolvingStream = session.isResolvingStream,
+        playbackEnded = playbackEnded,
+        hasError = hasActivePlaybackError,
+        isAppInBackground = isAppInBackground
+    )
+
+    // Meccanismo nativo Android / Fire TV Stick per prevenire lo screensaver esclusivamente durante
+    // la riproduzione attiva (e buffering temporaneo con playWhenReady = true), rimuovendo sempre
+    // il flag su pausa, errore, fine riproduzione, background e uscita dal player.
+    val hostWindow = remember(context) { context.findActivity()?.window }
+    DisposableEffect(hostWindow, keepScreenOnActive) {
+        if (keepScreenOnActive) {
+            hostWindow?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            hostWindow?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            hostWindow?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     // Sopprime gli indicatori grafici di loading durante la ricerca manuale sulla barra temporale
     // senza alterare la gestione tecnica di isBuffering, sync o errori reali del player.
@@ -502,7 +562,9 @@ fun VixPlayerScreen(
         scrobbleStartedForEpisode = false
         scrobblePausedSinceStart = false
         scrobbleStoppedForEpisode = false
-        isPlaying = true
+        val hasSessionError = session.errorMessage != null
+        isPlaying = !hasSessionError
+        playWhenReadyState = !hasSessionError
         videoWidthState.intValue = 0
         videoHeightState.intValue = 0
         autoNextRemainingSecState.intValue = advancedSettings.sanitizedCountdownSec
@@ -518,7 +580,7 @@ fun VixPlayerScreen(
             if (!initialReadyForTest) {
                 exoPlayer.stop()
                 exoPlayer.clearMediaItems()
-                isBuffering = true
+                isBuffering = !hasSessionError
             } else {
                 isBuffering = false
             }
@@ -557,21 +619,30 @@ fun VixPlayerScreen(
     // Mette in pausa il decoder hardware e salva i progressi quando l'app va in background (tasto Home Fire TV)
     DisposableEffect(lifecycleOwner, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
-                if (exoPlayer.isPlaying) {
-                    exoPlayer.pause()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    isAppInBackground = false
                 }
-                val pos = exoPlayer.currentPosition.coerceAtLeast(currentPositionMsState.longValue)
-                val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L }
-                    ?: durationMsState.longValue.takeIf { it > 0L }
-                    ?: (latestSession.metadataDurationMs ?: 0L)
-                if (pos > 0L) {
-                    latestOnProgressUpdate(pos, dur)
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    isAppInBackground = true
+                    if (exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                    }
+                    playWhenReadyState = false
+                    isPlaying = false
+                    val pos = exoPlayer.currentPosition.coerceAtLeast(currentPositionMsState.longValue)
+                    val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L }
+                        ?: durationMsState.longValue.takeIf { it > 0L }
+                        ?: (latestSession.metadataDurationMs ?: 0L)
+                    if (pos > 0L) {
+                        latestOnProgressUpdate(pos, dur)
+                    }
+                    if ((pos > 0L || scrobbleStartedForEpisode) && !playbackEnded && !scrobblePausedSinceStart && !scrobbleStoppedForEpisode) {
+                        scrobblePausedSinceStart = true
+                        latestOnScrobblePause(pos, dur)
+                    }
                 }
-                if ((pos > 0L || scrobbleStartedForEpisode) && !playbackEnded && !scrobblePausedSinceStart && !scrobbleStoppedForEpisode) {
-                    scrobblePausedSinceStart = true
-                    latestOnScrobblePause(pos, dur)
-                }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -597,9 +668,12 @@ fun VixPlayerScreen(
         }
         if (currentlyPlaying) {
             exoPlayer.pause()
+            playWhenReadyState = false
             isPlaying = false
         } else {
             exoPlayer.play()
+            playWhenReadyState = true
+            playbackEnded = false
             isPlaying = true
         }
         interactionTick++
@@ -748,6 +822,7 @@ fun VixPlayerScreen(
         }
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
+        playWhenReadyState = true
     }
 
     // Listener eventi Player + salvataggio su Room + sincronizzazione affidabile durata/tracce audio e sottotitoli reali
@@ -886,6 +961,12 @@ fun VixPlayerScreen(
                 }
             }
 
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                val currentMediaId = exoPlayer.currentMediaItem?.mediaId
+                if (currentMediaId != null && currentMediaId != latestEpisodeKey) return
+                playWhenReadyState = playWhenReady
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 val currentMediaId = exoPlayer.currentMediaItem?.mediaId
                 if (currentMediaId != null && currentMediaId != latestEpisodeKey) return
@@ -898,6 +979,8 @@ fun VixPlayerScreen(
                     return
                 }
                 isBuffering = false
+                isPlaying = false
+                playWhenReadyState = false
                 playerErrorMessage = "Errore stream VixSrc: ${error.errorCodeName} (${error.localizedMessage ?: "connessione interrotta"})"
             }
         }
@@ -1250,11 +1333,14 @@ fun VixPlayerScreen(
                             }
                             Key.MediaPlay -> {
                                 exoPlayer.play()
+                                playWhenReadyState = true
+                                playbackEnded = false
                                 isPlaying = true
                                 return@onPreviewKeyEvent true
                             }
                             Key.MediaPause -> {
                                 exoPlayer.pause()
+                                playWhenReadyState = false
                                 isPlaying = false
                                 controlsVisible = true
                                 return@onPreviewKeyEvent true
@@ -1374,6 +1460,7 @@ fun VixPlayerScreen(
                     PlayerView(ctx).apply {
                         player = exoPlayer
                         useController = false
+                        keepScreenOn = keepScreenOnActive
                         setKeepContentOnPlayerReset(true)
                         isFocusable = false
                         isFocusableInTouchMode = false
@@ -1388,8 +1475,12 @@ fun VixPlayerScreen(
                     if (view.player !== exoPlayer) {
                         view.player = exoPlayer
                     }
+                    if (view.keepScreenOn != keepScreenOnActive) {
+                        view.keepScreenOn = keepScreenOnActive
+                    }
                 },
                 onRelease = { view ->
+                    view.keepScreenOn = false
                     view.player = null
                 },
                 modifier = Modifier
@@ -1437,6 +1528,7 @@ fun VixPlayerScreen(
                         onClick = {
                             playerErrorMessage = null
                             isBuffering = true
+                            playWhenReadyState = true
                             retryNonce++
                             if (onInvalidateAndRetryStream != null) {
                                 onInvalidateAndRetryStream.invoke()

@@ -185,6 +185,9 @@ import com.example.ui.theme.NetflixWhite
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+internal val TV_NAV_RAIL_COLLAPSED_WIDTH = 72.dp
+internal val TV_NAV_RAIL_EXPANDED_WIDTH = 224.dp
+
 @Composable
 fun VixFlixAppScreen(
     viewModel: VixFlixViewModel,
@@ -746,7 +749,7 @@ fun VixFlixAppScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(start = if (useTvNavigationRail) 72.dp else 0.dp)
+                        .padding(start = if (useTvNavigationRail) TV_NAV_RAIL_COLLAPSED_WIDTH else 0.dp)
                         .clipToBounds()
                         .background(if (isContinueWatchingPureBlack) Color.Black else NetflixBlack)
                 ) {
@@ -1485,7 +1488,7 @@ private fun TvExpandableNavigationRail(
     modifier: Modifier = Modifier
 ) {
     val railWidth by animateDpAsState(
-        targetValue = if (isExpanded) 224.dp else 72.dp,
+        targetValue = if (isExpanded) TV_NAV_RAIL_EXPANDED_WIDTH else TV_NAV_RAIL_COLLAPSED_WIDTH,
         animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
         label = "tvExpandableRailWidth"
     )
@@ -2612,6 +2615,7 @@ internal fun CatalogFeedContent(
                         onDownKey = { if (next != null) navigateToTarget(next) else false },
                         navRailFocusRequester = navRailFocusRequester,
                         onItemFocused = onRememberContentFocus,
+                        isTvLayout = isTvLayout,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
@@ -2688,7 +2692,8 @@ internal fun CatalogFeedContent(
                             onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                             onDownKey = { if (next != null) navigateToTarget(next) else false },
                             navRailFocusRequester = navRailFocusRequester,
-                            onItemFocused = onRememberContentFocus
+                            onItemFocused = onRememberContentFocus,
+                            isTvLayout = isTvLayout
                         )
                     }
 
@@ -2857,7 +2862,8 @@ internal fun CatalogFeedContent(
                                             downFocusRequester = next?.requester,
                                             onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                                             onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                            navRailFocusRequester = navRailFocusRequester
+                                            navRailFocusRequester = navRailFocusRequester,
+                                            isTvLayout = isTvLayout
                                         )
                                     }
                                     item(key = "platform_${activePlatform.providerId}_series_row", contentType = "media_row") {
@@ -2876,7 +2882,8 @@ internal fun CatalogFeedContent(
                                             downFocusRequester = next?.requester,
                                             onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                                             onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                            navRailFocusRequester = navRailFocusRequester
+                                            navRailFocusRequester = navRailFocusRequester,
+                                            isTvLayout = isTvLayout
                                         )
                                     }
                                 }
@@ -3045,7 +3052,8 @@ internal fun CatalogFeedContent(
                                         downFocusRequester = next?.requester,
                                         onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                                         onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                        navRailFocusRequester = navRailFocusRequester
+                                        navRailFocusRequester = navRailFocusRequester,
+                                        isTvLayout = isTvLayout
                                     )
                                 } else {
                                     MediaCatalogRow(
@@ -3060,7 +3068,8 @@ internal fun CatalogFeedContent(
                                         downFocusRequester = next?.requester,
                                         onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                                         onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                        navRailFocusRequester = navRailFocusRequester
+                                        navRailFocusRequester = navRailFocusRequester,
+                                        isTvLayout = isTvLayout
                                     )
                                 }
                             }
@@ -3086,7 +3095,8 @@ internal fun CatalogFeedContent(
                                 downFocusRequester = next?.requester,
                                 onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                                 onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                navRailFocusRequester = navRailFocusRequester
+                                navRailFocusRequester = navRailFocusRequester,
+                                isTvLayout = isTvLayout
                             )
                         }
                     }
@@ -3458,7 +3468,8 @@ internal fun CatalogFeedContent(
                                     downFocusRequester = next?.requester,
                                     onUpKey = { if (prev != null) navigateToTarget(prev) else handleTopBoundaryUp() },
                                     onDownKey = { if (next != null) navigateToTarget(next) else false },
-                                    navRailFocusRequester = navRailFocusRequester
+                                    navRailFocusRequester = navRailFocusRequester,
+                                    isTvLayout = isTvLayout
                                 )
                             }
                         }
@@ -4134,7 +4145,8 @@ internal fun MyListScreen(
                             }
                         },
                         navRailFocusRequester = navRailFocusRequester,
-                        rowTestTag = "plan_to_watch_movies_row"
+                        rowTestTag = "plan_to_watch_movies_row",
+                        isTvLayout = isTvLayout
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
@@ -4166,7 +4178,8 @@ internal fun MyListScreen(
                             }
                         },
                         navRailFocusRequester = navRailFocusRequester,
-                        rowTestTag = "plan_to_watch_series_row"
+                        rowTestTag = "plan_to_watch_series_row",
+                        isTvLayout = isTvLayout
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
@@ -4198,7 +4211,8 @@ internal fun MyListScreen(
                             }
                         },
                         navRailFocusRequester = navRailFocusRequester,
-                        rowTestTag = "plan_to_watch_anime_row"
+                        rowTestTag = "plan_to_watch_anime_row",
+                        isTvLayout = isTvLayout
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
@@ -4231,7 +4245,8 @@ internal fun MyListScreen(
                                 false
                             }
                         },
-                        navRailFocusRequester = navRailFocusRequester
+                        navRailFocusRequester = navRailFocusRequester,
+                        isTvLayout = isTvLayout
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
@@ -4264,7 +4279,8 @@ internal fun MyListScreen(
                                 false
                             }
                         },
-                        navRailFocusRequester = navRailFocusRequester
+                        navRailFocusRequester = navRailFocusRequester,
+                        isTvLayout = isTvLayout
                     )
                 }
             }

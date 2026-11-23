@@ -7,9 +7,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -62,6 +64,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -1076,6 +1079,12 @@ fun ContinueWatchingSection(
         }
     }
 
+    val rowStartPadding = if (isTvLayout) 32.dp else 20.dp
+    val rowEndPadding = if (isTvLayout) 36.dp else 20.dp
+    val rowVerticalPadding = if (isTvLayout) 16.dp else 12.dp
+    val headerStartPadding = if (isTvLayout) 32.dp else 16.dp
+    val headerEndPadding = if (isTvLayout) 36.dp else 16.dp
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1085,7 +1094,7 @@ fun ContinueWatchingSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = if (isTvLayout) 24.dp else 16.dp, vertical = 4.dp),
+                .padding(start = headerStartPadding, end = headerEndPadding, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -1111,81 +1120,103 @@ fun ContinueWatchingSection(
             )
         }
 
-        LazyRow(
-            state = listState,
-            contentPadding = PaddingValues(horizontal = if (isTvLayout) 24.dp else 20.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            itemsIndexed(
-                items = safeEntries,
-                key = { _, it -> it.id },
-                contentType = { _, _ -> "continue_watching_card" }
-            ) { index, entry ->
-                val itemFocusRequester = remember(entry.id) { FocusRequester() }
-                ContinueWatchingCard(
-                    entry = entry,
-                    itemIndex = index,
-                    listState = listState,
-                    isTvLayout = isTvLayout,
-                    upcomingDateBadge = upcomingDateBadges[entry.id],
-                    onResume = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                        onResumeClick(entry)
-                    },
-                    onInfo = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                        onInfoClick(entry)
-                    },
-                    onRemove = { onRemoveClick(entry) },
-                    onLongPress = onTvLongPress?.let { handler ->
-                        {
+        @OptIn(ExperimentalFoundationApi::class)
+        val rowBringIntoViewSpec = if (isTvLayout) {
+            rememberTvHorizontalBringIntoViewSpec(
+                startMargin = rowStartPadding,
+                endMargin = rowEndPadding
+            )
+        } else {
+            LocalBringIntoViewSpec.current
+        }
+
+        @OptIn(ExperimentalFoundationApi::class)
+        CompositionLocalProvider(LocalBringIntoViewSpec provides rowBringIntoViewSpec) {
+            LazyRow(
+                state = listState,
+                contentPadding = PaddingValues(
+                    start = rowStartPadding,
+                    end = rowEndPadding,
+                    top = rowVerticalPadding,
+                    bottom = rowVerticalPadding
+                ),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+                    .testTag("continue_watching_row")
+            ) {
+                itemsIndexed(
+                    items = safeEntries,
+                    key = { _, it -> it.id },
+                    contentType = { _, _ -> "continue_watching_card" }
+                ) { index, entry ->
+                    val itemFocusRequester = remember(entry.id) { FocusRequester() }
+                    ContinueWatchingCard(
+                        entry = entry,
+                        itemIndex = index,
+                        listState = listState,
+                        isTvLayout = isTvLayout,
+                        upcomingDateBadge = upcomingDateBadges[entry.id],
+                        onResume = {
                             lastFocusedIndex = index
                             onItemFocused?.invoke(itemFocusRequester)
-                            handler(entry)
-                        }
-                    },
-                    onFocused = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                    },
-                    modifier = Modifier
-                        .safeFocusRequester(itemFocusRequester)
-                        .then(
-                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
-                                Modifier.safeFocusRequester(firstItemFocusRequester)
-                            } else {
-                                Modifier
+                            onResumeClick(entry)
+                        },
+                        onInfo = {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                            onInfoClick(entry)
+                        },
+                        onRemove = { onRemoveClick(entry) },
+                        onLongPress = onTvLongPress?.let { handler ->
+                            {
+                                lastFocusedIndex = index
+                                onItemFocused?.invoke(itemFocusRequester)
+                                handler(entry)
                             }
-                        )
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionDown -> {
-                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                        if (!moved && downFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionUp -> {
-                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                        if (!moved && upFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
-                                    Key.DirectionRight -> if (index == safeEntries.lastIndex) true else false
-                                    else -> false
+                        },
+                        onFocused = {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                        },
+                        modifier = Modifier
+                            .safeFocusRequester(itemFocusRequester)
+                            .then(
+                                if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                    Modifier.safeFocusRequester(firstItemFocusRequester)
+                                } else {
+                                    Modifier
                                 }
-                            } else {
-                                false
+                            )
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown -> {
+                                            val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                            if (!moved && downFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionUp -> {
+                                            val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                            if (!moved && upFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                        Key.DirectionRight -> if (index == safeEntries.lastIndex) true else false
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
                             }
-                        }
-                        .focusProperties {
-                            if (index == 0) {
-                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            .focusProperties {
+                                if (index == 0) {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                }
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            upFocusRequester.takeIfAttached()?.let { up = it }
-                            downFocusRequester.takeIfAttached()?.let { down = it }
-                        }
-                )
+                    )
+                }
             }
         }
     }
@@ -1433,6 +1464,7 @@ fun Top10Section(
     onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
+    isTvLayout: Boolean = rememberIsTvDevice(),
     modifier: Modifier = Modifier
 ) {
     val safeItems = remember(items) { items.distinctBy { it.uniqueKey } }
@@ -1456,6 +1488,10 @@ fun Top10Section(
         }
     }
 
+    val rowStartPadding = if (isTvLayout) 32.dp else 24.dp
+    val rowEndPadding = if (isTvLayout) 36.dp else 24.dp
+    val rowVerticalPadding = if (isTvLayout) 16.dp else 14.dp
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1465,84 +1501,106 @@ fun Top10Section(
             text = title,
             style = MaterialTheme.typography.titleLarge,
             color = NetflixWhite,
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+            modifier = Modifier.padding(start = rowStartPadding, end = rowEndPadding, top = 4.dp, bottom = 4.dp)
         )
 
-        LazyRow(
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            itemsIndexed(
-                items = safeItems,
-                key = { _, item -> "top10_${item.uniqueKey}" },
-                contentType = { _, _ -> "top10_card" }
-            ) { index, item ->
-                val itemFocusRequester = remember(item.uniqueKey) { FocusRequester() }
-                Top10PosterCard(
-                    rank = index + 1,
-                    itemIndex = index,
-                    listState = listState,
-                    item = item,
-                    onClick = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                        onItemClick(item)
-                    },
-                    onQuickPlay = onItemQuickPlay?.let { handler ->
-                        {
+        @OptIn(ExperimentalFoundationApi::class)
+        val rowBringIntoViewSpec = if (isTvLayout) {
+            rememberTvHorizontalBringIntoViewSpec(
+                startMargin = rowStartPadding,
+                endMargin = rowEndPadding
+            )
+        } else {
+            LocalBringIntoViewSpec.current
+        }
+
+        @OptIn(ExperimentalFoundationApi::class)
+        CompositionLocalProvider(LocalBringIntoViewSpec provides rowBringIntoViewSpec) {
+            LazyRow(
+                state = listState,
+                contentPadding = PaddingValues(
+                    start = rowStartPadding,
+                    end = rowEndPadding,
+                    top = rowVerticalPadding,
+                    bottom = rowVerticalPadding
+                ),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+                    .testTag("top10_row")
+            ) {
+                itemsIndexed(
+                    items = safeItems,
+                    key = { _, item -> "top10_${item.uniqueKey}" },
+                    contentType = { _, _ -> "top10_card" }
+                ) { index, item ->
+                    val itemFocusRequester = remember(item.uniqueKey) { FocusRequester() }
+                    Top10PosterCard(
+                        rank = index + 1,
+                        itemIndex = index,
+                        listState = listState,
+                        item = item,
+                        onClick = {
                             lastFocusedIndex = index
                             onItemFocused?.invoke(itemFocusRequester)
-                            handler(item)
-                        }
-                    },
-                    onLongClick = onItemLongClick?.let { handler ->
-                        {
-                            lastFocusedIndex = index
-                            onItemFocused?.invoke(itemFocusRequester)
-                            handler(item)
-                        }
-                    },
-                    onFocused = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                    },
-                    modifier = Modifier
-                        .safeFocusRequester(itemFocusRequester)
-                        .then(
-                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
-                                Modifier.safeFocusRequester(firstItemFocusRequester)
-                            } else {
-                                Modifier
+                            onItemClick(item)
+                        },
+                        onQuickPlay = onItemQuickPlay?.let { handler ->
+                            {
+                                lastFocusedIndex = index
+                                onItemFocused?.invoke(itemFocusRequester)
+                                handler(item)
                             }
-                        )
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionDown -> {
-                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                        if (!moved && downFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionUp -> {
-                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                        if (!moved && upFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
-                                    Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
-                                    else -> false
+                        },
+                        onLongClick = onItemLongClick?.let { handler ->
+                            {
+                                lastFocusedIndex = index
+                                onItemFocused?.invoke(itemFocusRequester)
+                                handler(item)
+                            }
+                        },
+                        onFocused = {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                        },
+                        modifier = Modifier
+                            .safeFocusRequester(itemFocusRequester)
+                            .then(
+                                if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                    Modifier.safeFocusRequester(firstItemFocusRequester)
+                                } else {
+                                    Modifier
                                 }
-                            } else {
-                                false
+                            )
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown -> {
+                                            val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                            if (!moved && downFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionUp -> {
+                                            val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                            if (!moved && upFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                        Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
                             }
-                        }
-                        .focusProperties {
-                            if (index == 0) {
-                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            .focusProperties {
+                                if (index == 0) {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                }
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            upFocusRequester.takeIfAttached()?.let { up = it }
-                            downFocusRequester.takeIfAttached()?.let { down = it }
-                        }
-                )
+                    )
+                }
             }
         }
     }
@@ -1664,6 +1722,7 @@ fun MediaCatalogRow(
     onUpKey: (() -> Boolean)? = null,
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
+    isTvLayout: Boolean = rememberIsTvDevice(),
     modifier: Modifier = Modifier
 ) {
     val safeItems = remember(items) { items.distinctBy { it.uniqueKey } }
@@ -1687,6 +1746,10 @@ fun MediaCatalogRow(
         }
     }
 
+    val rowStartPadding = if (isTvLayout) 32.dp else 24.dp
+    val rowEndPadding = if (isTvLayout) 36.dp else 24.dp
+    val rowVerticalPadding = if (isTvLayout) 16.dp else 14.dp
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1696,83 +1759,104 @@ fun MediaCatalogRow(
             text = title,
             style = MaterialTheme.typography.titleLarge,
             color = NetflixWhite,
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+            modifier = Modifier.padding(start = rowStartPadding, end = rowEndPadding, top = 4.dp, bottom = 4.dp)
         )
 
-        LazyRow(
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            itemsIndexed(
-                items = safeItems,
-                key = { _, item -> "${title}_${item.uniqueKey}" },
-                contentType = { _, _ -> "poster_card" }
-            ) { index, item ->
-                val itemFocusRequester = remember("${title}_${item.uniqueKey}") { FocusRequester() }
-                MediaPosterCard(
-                    item = item,
-                    itemIndex = index,
-                    listState = listState,
-                    onClick = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                        onItemClick(item)
-                    },
-                    onQuickPlay = onItemQuickPlay?.let { handler ->
-                        {
+        @OptIn(ExperimentalFoundationApi::class)
+        val rowBringIntoViewSpec = if (isTvLayout) {
+            rememberTvHorizontalBringIntoViewSpec(
+                startMargin = rowStartPadding,
+                endMargin = rowEndPadding
+            )
+        } else {
+            LocalBringIntoViewSpec.current
+        }
+
+        @OptIn(ExperimentalFoundationApi::class)
+        CompositionLocalProvider(LocalBringIntoViewSpec provides rowBringIntoViewSpec) {
+            LazyRow(
+                state = listState,
+                contentPadding = PaddingValues(
+                    start = rowStartPadding,
+                    end = rowEndPadding,
+                    top = rowVerticalPadding,
+                    bottom = rowVerticalPadding
+                ),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+            ) {
+                itemsIndexed(
+                    items = safeItems,
+                    key = { _, item -> "${title}_${item.uniqueKey}" },
+                    contentType = { _, _ -> "poster_card" }
+                ) { index, item ->
+                    val itemFocusRequester = remember("${title}_${item.uniqueKey}") { FocusRequester() }
+                    MediaPosterCard(
+                        item = item,
+                        itemIndex = index,
+                        listState = listState,
+                        onClick = {
                             lastFocusedIndex = index
                             onItemFocused?.invoke(itemFocusRequester)
-                            handler(item)
-                        }
-                    },
-                    onLongClick = onItemLongClick?.let { handler ->
-                        {
-                            lastFocusedIndex = index
-                            onItemFocused?.invoke(itemFocusRequester)
-                            handler(item)
-                        }
-                    },
-                    onFocused = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                    },
-                    modifier = Modifier
-                        .safeFocusRequester(itemFocusRequester)
-                        .then(
-                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
-                                Modifier.safeFocusRequester(firstItemFocusRequester)
-                            } else {
-                                Modifier
+                            onItemClick(item)
+                        },
+                        onQuickPlay = onItemQuickPlay?.let { handler ->
+                            {
+                                lastFocusedIndex = index
+                                onItemFocused?.invoke(itemFocusRequester)
+                                handler(item)
                             }
-                        )
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionDown -> {
-                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                        if (!moved && downFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionUp -> {
-                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                        if (!moved && upFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
-                                    Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
-                                    else -> false
+                        },
+                        onLongClick = onItemLongClick?.let { handler ->
+                            {
+                                lastFocusedIndex = index
+                                onItemFocused?.invoke(itemFocusRequester)
+                                handler(item)
+                            }
+                        },
+                        onFocused = {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                        },
+                        modifier = Modifier
+                            .safeFocusRequester(itemFocusRequester)
+                            .then(
+                                if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                    Modifier.safeFocusRequester(firstItemFocusRequester)
+                                } else {
+                                    Modifier
                                 }
-                            } else {
-                                false
+                            )
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown -> {
+                                            val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                            if (!moved && downFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionUp -> {
+                                            val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                            if (!moved && upFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                        Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
                             }
-                        }
-                        .focusProperties {
-                            if (index == 0) {
-                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            .focusProperties {
+                                if (index == 0) {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                }
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            upFocusRequester.takeIfAttached()?.let { up = it }
-                            downFocusRequester.takeIfAttached()?.let { down = it }
-                        }
-                )
+                    )
+                }
             }
         }
     }
@@ -1885,6 +1969,7 @@ fun SimklPlanToWatchRow(
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     rowTestTag: String = "simkl_plan_to_watch_row",
+    isTvLayout: Boolean = rememberIsTvDevice(),
     modifier: Modifier = Modifier
 ) {
     val safeItems = remember(items) { items.distinctBy { it.stableKey } }
@@ -1908,6 +1993,10 @@ fun SimklPlanToWatchRow(
         }
     }
 
+    val rowStartPadding = if (isTvLayout) 32.dp else 24.dp
+    val rowEndPadding = if (isTvLayout) 36.dp else 24.dp
+    val rowVerticalPadding = if (isTvLayout) 16.dp else 14.dp
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1918,69 +2007,90 @@ fun SimklPlanToWatchRow(
             text = title,
             style = MaterialTheme.typography.titleLarge,
             color = NetflixWhite,
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+            modifier = Modifier.padding(start = rowStartPadding, end = rowEndPadding, top = 4.dp, bottom = 4.dp)
         )
 
-        LazyRow(
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            itemsIndexed(
-                items = safeItems,
-                key = { _, item -> "${rowTestTag}_${item.stableKey}" },
-                contentType = { _, _ -> "plan_to_watch_poster_card" }
-            ) { index, item ->
-                val itemFocusRequester = remember("${rowTestTag}_${item.stableKey}") { FocusRequester() }
-                SimklPlanToWatchPosterCard(
-                    item = item,
-                    itemIndex = index,
-                    listState = listState,
-                    onClick = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                        onItemClick(item)
-                    },
-                    onFocused = {
-                        lastFocusedIndex = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                    },
-                    modifier = Modifier
-                        .safeFocusRequester(itemFocusRequester)
-                        .then(
-                            if (index == targetFocusIdx && firstItemFocusRequester != null) {
-                                Modifier.safeFocusRequester(firstItemFocusRequester)
-                            } else {
-                                Modifier
-                            }
-                        )
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionDown -> {
-                                        val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
-                                        if (!moved && downFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionUp -> {
-                                        val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                        if (!moved && upFocusRequester == null) true else moved
-                                    }
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
-                                    Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
-                                    else -> false
+        @OptIn(ExperimentalFoundationApi::class)
+        val rowBringIntoViewSpec = if (isTvLayout) {
+            rememberTvHorizontalBringIntoViewSpec(
+                startMargin = rowStartPadding,
+                endMargin = rowEndPadding
+            )
+        } else {
+            LocalBringIntoViewSpec.current
+        }
+
+        @OptIn(ExperimentalFoundationApi::class)
+        CompositionLocalProvider(LocalBringIntoViewSpec provides rowBringIntoViewSpec) {
+            LazyRow(
+                state = listState,
+                contentPadding = PaddingValues(
+                    start = rowStartPadding,
+                    end = rowEndPadding,
+                    top = rowVerticalPadding,
+                    bottom = rowVerticalPadding
+                ),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+            ) {
+                itemsIndexed(
+                    items = safeItems,
+                    key = { _, item -> "${rowTestTag}_${item.stableKey}" },
+                    contentType = { _, _ -> "plan_to_watch_poster_card" }
+                ) { index, item ->
+                    val itemFocusRequester = remember("${rowTestTag}_${item.stableKey}") { FocusRequester() }
+                    SimklPlanToWatchPosterCard(
+                        item = item,
+                        itemIndex = index,
+                        listState = listState,
+                        onClick = {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                            onItemClick(item)
+                        },
+                        onFocused = {
+                            lastFocusedIndex = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                        },
+                        modifier = Modifier
+                            .safeFocusRequester(itemFocusRequester)
+                            .then(
+                                if (index == targetFocusIdx && firstItemFocusRequester != null) {
+                                    Modifier.safeFocusRequester(firstItemFocusRequester)
+                                } else {
+                                    Modifier
                                 }
-                            } else {
-                                false
+                            )
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown -> {
+                                            val moved = (onDownKey?.invoke() == true) || downFocusRequester.safeRequestFocus()
+                                            if (!moved && downFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionUp -> {
+                                            val moved = (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
+                                            if (!moved && upFocusRequester == null) true else moved
+                                        }
+                                        Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                        Key.DirectionRight -> if (index == safeItems.lastIndex) true else false
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
                             }
-                        }
-                        .focusProperties {
-                            if (index == 0) {
-                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            .focusProperties {
+                                if (index == 0) {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                }
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
                             }
-                            upFocusRequester.takeIfAttached()?.let { up = it }
-                            downFocusRequester.takeIfAttached()?.let { down = it }
-                        }
-                )
+                    )
+                }
             }
         }
     }
@@ -2205,6 +2315,7 @@ fun MovieGenreChipBar(
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     onItemFocused: ((FocusRequester) -> Unit)? = null,
+    isTvLayout: Boolean = rememberIsTvDevice(),
     modifier: Modifier = Modifier
 ) {
     val safeGenres = remember(genres) { genres.distinctBy { it.id } }
@@ -2266,85 +2377,101 @@ fun MovieGenreChipBar(
         }
     }
 
-    LazyRow(
-        state = listState,
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
-            .fillMaxWidth()
-            .focusGroup()
-            .testTag("movie_genre_chip_bar")
-    ) {
-        item(key = "genre_all", contentType = "genre_chip") {
-            val isSelected = selectedGenre == null
-            val chipRequester = if (focusTargetChipIdx == 0 && firstChipFocusRequester != null) {
-                firstChipFocusRequester
-            } else {
-                allChipDedicatedRequester
-            }
-            GenreFilterChipItem(
-                label = "Tutti",
-                isSelected = isSelected,
-                onFocused = { onItemFocused?.invoke(chipRequester) },
-                onClick = { onSelectGenre(null) },
-                modifier = Modifier
-                    .safeFocusRequester(chipRequester)
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown) {
-                            when (keyEvent.key) {
-                                Key.DirectionLeft -> navRailFocusRequester?.safeRequestFocus() ?: true
-                                Key.DirectionRight -> if (safeGenres.isEmpty()) true else false
-                                else -> handleGenreVerticalKey(keyEvent)
-                            }
-                        } else {
-                            false
-                        }
-                    }
-                    .focusProperties {
-                        navRailFocusRequester.takeIfAttached()?.let { left = it }
-                        upFocusRequester.takeIfAttached()?.let { up = it }
-                        downFocusRequester.takeIfAttached()?.let { down = it }
-                    }
-                    .testTag("genre_chip_all")
-            )
-        }
+    val chipStartPadding = if (isTvLayout) 32.dp else 24.dp
+    val chipEndPadding = if (isTvLayout) 36.dp else 24.dp
 
-        itemsIndexed(
-            items = safeGenres,
-            key = { _, genre -> "genre_${genre.id}" },
-            contentType = { _, _ -> "genre_chip" }
-        ) { idx, genre ->
-            val isSelected = selectedGenre?.id == genre.id
-            val chipLazyIndex = idx + 1
-            val chipRequester = if (focusTargetChipIdx == chipLazyIndex && firstChipFocusRequester != null) {
-                firstChipFocusRequester
-            } else {
-                genreDedicatedRequesters[genre.id] ?: remember { FocusRequester() }
-            }
-            GenreFilterChipItem(
-                label = genre.name,
-                isSelected = isSelected,
-                onFocused = { onItemFocused?.invoke(chipRequester) },
-                onClick = { onSelectGenre(genre) },
-                modifier = Modifier
-                    .safeFocusRequester(chipRequester)
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown &&
-                            keyEvent.key == Key.DirectionRight &&
-                            idx == safeGenres.lastIndex
-                        ) {
-                            true
-                        } else {
-                            handleGenreVerticalKey(keyEvent)
+    @OptIn(ExperimentalFoundationApi::class)
+    val chipBringIntoViewSpec = if (isTvLayout) {
+        rememberTvHorizontalBringIntoViewSpec(
+            startMargin = chipStartPadding,
+            endMargin = chipEndPadding
+        )
+    } else {
+        LocalBringIntoViewSpec.current
+    }
+
+    @OptIn(ExperimentalFoundationApi::class)
+    CompositionLocalProvider(LocalBringIntoViewSpec provides chipBringIntoViewSpec) {
+        LazyRow(
+            state = listState,
+            contentPadding = PaddingValues(start = chipStartPadding, end = chipEndPadding, top = 4.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = modifier
+                .fillMaxWidth()
+                .focusGroup()
+                .testTag("movie_genre_chip_bar")
+        ) {
+            item(key = "genre_all", contentType = "genre_chip") {
+                val isSelected = selectedGenre == null
+                val chipRequester = if (focusTargetChipIdx == 0 && firstChipFocusRequester != null) {
+                    firstChipFocusRequester
+                } else {
+                    allChipDedicatedRequester
+                }
+                GenreFilterChipItem(
+                    label = "Tutti",
+                    isSelected = isSelected,
+                    onFocused = { onItemFocused?.invoke(chipRequester) },
+                    onClick = { onSelectGenre(null) },
+                    modifier = Modifier
+                        .safeFocusRequester(chipRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.DirectionLeft -> navRailFocusRequester?.safeRequestFocus() ?: true
+                                    Key.DirectionRight -> if (safeGenres.isEmpty()) true else false
+                                    else -> handleGenreVerticalKey(keyEvent)
+                                }
+                            } else {
+                                false
+                            }
                         }
-                    }
-                    .focusProperties {
-                        upFocusRequester.takeIfAttached()?.let { up = it }
-                        downFocusRequester.takeIfAttached()?.let { down = it }
-                    }
-                    .testTag("genre_chip_${genre.id}")
-            )
+                        .focusProperties {
+                            navRailFocusRequester.takeIfAttached()?.let { left = it }
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
+                        }
+                        .testTag("genre_chip_all")
+                )
+            }
+
+            itemsIndexed(
+                items = safeGenres,
+                key = { _, genre -> "genre_${genre.id}" },
+                contentType = { _, _ -> "genre_chip" }
+            ) { idx, genre ->
+                val isSelected = selectedGenre?.id == genre.id
+                val chipLazyIndex = idx + 1
+                val chipRequester = if (focusTargetChipIdx == chipLazyIndex && firstChipFocusRequester != null) {
+                    firstChipFocusRequester
+                } else {
+                    genreDedicatedRequesters[genre.id] ?: remember { FocusRequester() }
+                }
+                GenreFilterChipItem(
+                    label = genre.name,
+                    isSelected = isSelected,
+                    onFocused = { onItemFocused?.invoke(chipRequester) },
+                    onClick = { onSelectGenre(genre) },
+                    modifier = Modifier
+                        .safeFocusRequester(chipRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown &&
+                                keyEvent.key == Key.DirectionRight &&
+                                idx == safeGenres.lastIndex
+                            ) {
+                                true
+                            } else {
+                                handleGenreVerticalKey(keyEvent)
+                            }
+                        }
+                        .focusProperties {
+                            upFocusRequester.takeIfAttached()?.let { up = it }
+                            downFocusRequester.takeIfAttached()?.let { down = it }
+                        }
+                        .testTag("genre_chip_${genre.id}")
+                )
+            }
         }
     }
 }
@@ -2440,6 +2567,7 @@ fun StreamingPlatformsStrip(
     onDownKey: (() -> Boolean)? = null,
     navRailFocusRequester: FocusRequester? = null,
     onItemFocused: ((FocusRequester) -> Unit)? = null,
+    isTvLayout: Boolean = rememberIsTvDevice(),
     modifier: Modifier = Modifier
 ) {
     val safeProviders = remember(providers) { providers.distinctBy { it.providerId } }
@@ -2508,6 +2636,10 @@ fun StreamingPlatformsStrip(
         }
     }
 
+    val rowStartPadding = if (isTvLayout) 32.dp else 24.dp
+    val rowEndPadding = if (isTvLayout) 36.dp else 24.dp
+    val rowVerticalPadding = if (isTvLayout) 12.dp else 10.dp
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -2519,7 +2651,7 @@ fun StreamingPlatformsStrip(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 2.dp)
+                    .padding(start = rowStartPadding, end = rowEndPadding, top = 2.dp, bottom = 2.dp)
             ) {
                 Column {
                     Text(
@@ -2596,63 +2728,81 @@ fun StreamingPlatformsStrip(
             }
         }
 
-        LazyRow(
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup()
-                .testTag("streaming_platforms_strip")
-        ) {
-            itemsIndexed(
-                items = safeProviders,
-                key = { _, provider -> "platform_${provider.providerId}" },
-                contentType = { _, _ -> "platform_card" }
-            ) { index, provider ->
-                val isSelected = selectedProvider?.providerId == provider.providerId
-                val itemFocusRequester = if (index == focusTargetProviderIdx && firstItemFocusRequester != null) {
-                    firstItemFocusRequester
-                } else {
-                    remember(provider.providerId) { FocusRequester() }
-                }
-                StreamingPlatformCard(
-                    provider = provider,
-                    isSelected = isSelected,
-                    onClick = {
-                        if (isSelected) {
-                            onSelectProvider(null)
-                        } else {
-                            onSelectProvider(provider)
-                        }
-                    },
-                    onFocused = {
-                        lastFocusedProviderIdx = index
-                        onItemFocused?.invoke(itemFocusRequester)
-                    },
-                    modifier = Modifier
-                        .safeFocusRequester(itemFocusRequester)
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown) {
-                                when (keyEvent.key) {
-                                    Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
-                                    Key.DirectionRight -> if (index == safeProviders.lastIndex) true else false
-                                    else -> handlePlatformVerticalKey(keyEvent)
-                                }
+        @OptIn(ExperimentalFoundationApi::class)
+        val rowBringIntoViewSpec = if (isTvLayout) {
+            rememberTvHorizontalBringIntoViewSpec(
+                startMargin = rowStartPadding,
+                endMargin = rowEndPadding
+            )
+        } else {
+            LocalBringIntoViewSpec.current
+        }
+
+        @OptIn(ExperimentalFoundationApi::class)
+        CompositionLocalProvider(LocalBringIntoViewSpec provides rowBringIntoViewSpec) {
+            LazyRow(
+                state = listState,
+                contentPadding = PaddingValues(
+                    start = rowStartPadding,
+                    end = rowEndPadding,
+                    top = rowVerticalPadding,
+                    bottom = rowVerticalPadding
+                ),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+                    .testTag("streaming_platforms_strip")
+            ) {
+                itemsIndexed(
+                    items = safeProviders,
+                    key = { _, provider -> "platform_${provider.providerId}" },
+                    contentType = { _, _ -> "platform_card" }
+                ) { index, provider ->
+                    val isSelected = selectedProvider?.providerId == provider.providerId
+                    val itemFocusRequester = if (index == focusTargetProviderIdx && firstItemFocusRequester != null) {
+                        firstItemFocusRequester
+                    } else {
+                        remember(provider.providerId) { FocusRequester() }
+                    }
+                    StreamingPlatformCard(
+                        provider = provider,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (isSelected) {
+                                onSelectProvider(null)
                             } else {
-                                false
+                                onSelectProvider(provider)
                             }
-                        }
-                        .focusProperties {
-                            if (index == 0) {
-                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                        },
+                        onFocused = {
+                            lastFocusedProviderIdx = index
+                            onItemFocused?.invoke(itemFocusRequester)
+                        },
+                        modifier = Modifier
+                            .safeFocusRequester(itemFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionLeft -> if (index == 0) navRailFocusRequester?.safeRequestFocus() ?: true else false
+                                        Key.DirectionRight -> if (index == safeProviders.lastIndex) true else false
+                                        else -> handlePlatformVerticalKey(keyEvent)
+                                    }
+                                } else {
+                                    false
+                                }
                             }
-                            upFocusRequester.takeIfAttached()?.let { up = it }
-                            downFocusRequester.takeIfAttached()?.let { down = it }
-                        }
-                        .testTag("platform_card_${provider.providerId}")
-                )
+                            .focusProperties {
+                                if (index == 0) {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                }
+                                upFocusRequester.takeIfAttached()?.let { up = it }
+                                downFocusRequester.takeIfAttached()?.let { down = it }
+                            }
+                            .testTag("platform_card_${provider.providerId}")
+                    )
+                }
             }
         }
     }
