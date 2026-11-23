@@ -70,7 +70,8 @@ data class VerifiedNextEpisode(
     val stillUrl: String? = null,
     val overview: String? = null,
     val runtimeMinutes: Int? = null,
-    val isCrossSeason: Boolean = false
+    val isCrossSeason: Boolean = false,
+    val airDate: String? = null
 )
 
 /**

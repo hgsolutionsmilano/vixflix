@@ -7,44 +7,80 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onChild
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.local.CompletedMediaEntity
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
+import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.UserProfileEntity
+import com.example.data.local.UserProfileUiState
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
+import com.example.data.local.WatchlistEntity
+import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.local.simkl.SimklSecureTokenStore
 import com.example.data.local.simkl.SimklTokenBundle
 import com.example.data.local.simkl.SoftwareAesGcmSimklCipherEngine
+import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbEpisodeDto
+import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.simkl.SimklConfig
 import com.example.data.remote.simkl.SimklSyncManager
+import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
 import com.example.ui.CalendarDate
+import com.example.ui.GitHubUpdateUiState
+import com.example.ui.MovieGenreFilterUiState
+import com.example.ui.NavTab
+import com.example.ui.StreamingPlatformUiState
 import com.example.ui.UpcomingEpisodeBadgeFormatter
 import com.example.ui.components.ContinueWatchingSection
 import com.example.ui.components.consumeBackAndEscapeKey
 import com.example.ui.components.tvFocusableControl
+import com.example.ui.screens.CatalogFeedContent
+import com.example.ui.screens.SettingsCategory
+import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.VixFlixExitConfirmationDialog
 import com.example.ui.theme.MyApplicationTheme
+import com.example.data.local.StreamingBufferPreset
+import kotlin.math.abs
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -582,11 +618,12 @@ class VixFlixAutoSyncDpadBadgeTest {
     fun upcomingEpisodeBadgeFormatter_formatsItalianDatesAndAppliesStrictVisibilityRules() {
         val today = CalendarDate(year = 2026, month = 6, day = 10)
 
-        // Stesso anno -> "GG MMM"
-        assertEquals("23 NOV", UpcomingEpisodeBadgeFormatter.formatUpcomingEpisodeAirDate("2026-11-23", today))
-        assertEquals("05 LUG", UpcomingEpisodeBadgeFormatter.formatUpcomingEpisodeAirDate("2026-07-05", today))
+        // Anno sempre incluso -> "GG MMM YYYY"
+        assertEquals("23 NOV 2026", UpcomingEpisodeBadgeFormatter.formatUpcomingEpisodeAirDate("2026-11-23", today))
+        assertEquals("26 NOV 2026", UpcomingEpisodeBadgeFormatter.formatUpcomingEpisodeAirDate("2026-11-26", today))
+        assertEquals("05 LUG 2026", UpcomingEpisodeBadgeFormatter.formatUpcomingEpisodeAirDate("2026-07-05", today))
 
-        // Anno diverso -> "GG MMM YYYY"
+        // Anno successivo -> "GG MMM YYYY"
         assertEquals("08 GEN 2027", UpcomingEpisodeBadgeFormatter.formatUpcomingEpisodeAirDate("2027-01-08", today))
         assertEquals("14 FEB 2027", UpcomingEpisodeBadgeFormatter.formatUpcomingEpisodeAirDate("2027-02-14", today))
 
@@ -647,10 +684,10 @@ class VixFlixAutoSyncDpadBadgeTest {
             )
         )
 
-        // Avanzando a Ep 2 (non ancora trasmesso, stesso anno) -> "23 NOV"
+        // Avanzando a Ep 2 (non ancora trasmesso, anno corrente) -> "23 NOV 2026"
         val tvEntryEp2 = tvEntryEp1.copy(episodeNumber = 2)
         assertEquals(
-            "23 NOV",
+            "23 NOV 2026",
             UpcomingEpisodeBadgeFormatter.resolveUpcomingEpisodeBadgeForEntry(
                 entry = tvEntryEp2,
                 seasonEpisodes = episodes,
@@ -739,7 +776,7 @@ class VixFlixAutoSyncDpadBadgeTest {
             durationMs = 6_000_000L
         )
 
-        var badgesMap by mutableStateOf(mapOf("tv_701" to "23 NOV", "movie_703" to "23 NOV"))
+        var badgesMap by mutableStateOf(mapOf("tv_701" to "26 NOV 2026", "movie_703" to "26 NOV 2026"))
 
         composeRule.setContent {
             MyApplicationTheme {
@@ -755,12 +792,12 @@ class VixFlixAutoSyncDpadBadgeTest {
         }
         composeRule.waitForIdle()
 
-        // Visibile per la serie TV con episodio futuro
+        // Visibile per la serie TV con episodio futuro (anno incluso)
         composeRule.onNodeWithTag("cw_season_episode_badge_tv_701", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithTag("cw_upcoming_date_badge_tv_701", useUnmergedTree = true)
             .assertIsDisplayed()
             .onChild()
-            .assertTextEquals("23 NOV")
+            .assertTextEquals("26 NOV 2026")
 
         // Assente per serie già uscita e per film (anche se erroneamente presente nella mappa)
         assertTrue(composeRule.onAllNodesWithTag("cw_upcoming_date_badge_tv_702", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
@@ -778,6 +815,508 @@ class VixFlixAutoSyncDpadBadgeTest {
         badgesMap = emptyMap()
         composeRule.waitForIdle()
         assertTrue(composeRule.onAllNodesWithTag("cw_upcoming_date_badge_tv_701", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. CORREZIONI GRAFICHE E FUNZIONALI: DIMENSIONI LOCANDINE FILM, PROGRESSO 0
+    //    SU EPISODI FUTURI E CONFERMA SVUOTAMENTO CONTINUA A GUARDARE
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun moviesCategoryGrid_postersKeepExactStandardDimensions_matchingRowsAcrossAllCategories() {
+        fun sampleMovie(id: Int, title: String) = MediaItem(
+            id = id,
+            mediaType = "movie",
+            title = title,
+            overview = "Descrizione $title",
+            posterPath = "/poster_$id.jpg",
+            backdropPath = "/backdrop_$id.jpg",
+            voteAverage = 7.8,
+            releaseYear = "2025"
+        )
+
+        val homeMovies = (1..6).map { sampleMovie(it, "Home Film $it") }
+        val actionMovies = (101..106).map { sampleMovie(it, "Azione $it") }
+        val comedyMovies = (201..206).map { sampleMovie(it, "Commedia $it") }
+        val sciFiMovies = (301..306).map { sampleMovie(it, "SciFi $it") }
+
+        val feed = CatalogFeed(
+            heroBanner = homeMovies.first(),
+            top10Today = homeMovies,
+            trendingMovies = homeMovies,
+            trendingTv = emptyList(),
+            popularMovies = homeMovies,
+            popularTv = emptyList(),
+            nowPlayingMovies = homeMovies,
+            topRatedMovies = homeMovies,
+            actionMovies = actionMovies,
+            sciFiMovies = sciFiMovies
+        )
+
+        val genres = listOf(
+            TmdbGenreDto(28, "Azione"),
+            TmdbGenreDto(35, "Commedia"),
+            TmdbGenreDto(878, "Fantascienza")
+        )
+
+        var selectedTab by mutableStateOf(NavTab.MOVIES)
+        var genreState by mutableStateOf(MovieGenreFilterUiState(genres = genres, selectedGenre = null, movies = emptyList()))
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                CatalogFeedContent(
+                    feed = feed,
+                    selectedTab = selectedTab,
+                    continueWatching = emptyList(),
+                    watchlist = emptyList(),
+                    movieGenreState = genreState,
+                    platformState = StreamingPlatformUiState(),
+                    isTvLayout = true,
+                    heroPlayFocusRequester = remember { FocusRequester() },
+                    movieGenreBarFocusRequester = remember { FocusRequester() },
+                    platformStripFocusRequester = remember { FocusRequester() },
+                    firstRowFocusRequester = remember { FocusRequester() },
+                    navRailFocusRequester = remember { FocusRequester() },
+                    topBarFocusRequester = null,
+                    onSelectMovieGenre = {},
+                    onRetryMovieGenre = {},
+                    onSelectStreamingPlatform = {},
+                    onSelectPlatformMediaTypeFilter = {},
+                    onRetryStreamingPlatform = {},
+                    onPlayItem = {},
+                    onOpenDetails = {},
+                    onToggleWatchlist = {},
+                    onResumeContinueWatching = {},
+                    onInfoContinueWatching = {},
+                    onRemoveContinueWatching = {},
+                    bottomPadding = 24.dp
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Riferimento standard da riga normale (Film -> "Tutti"): scorre oltre Hero e chip bar
+        composeRule.onNodeWithTag("catalog_lazy_column").performScrollToIndex(2)
+        composeRule.waitForIdle()
+        val refBounds = composeRule.onNodeWithTag("poster_card_movie_1", useUnmergedTree = true)
+            .getUnclippedBoundsInRoot()
+        assertTrue("Larghezza standard deve essere 130.dp (effettiva ${refBounds.width})", abs(refBounds.width.value - 130f) <= 1.5f)
+        assertTrue("Altezza standard deve rispettare 0.67f (effettiva ${refBounds.height})", abs(refBounds.height.value - (130f / 0.67f)) <= 2.5f)
+
+        // Verifica tutte le categorie selezionabili in Film: le locandine devono mantenere identiche dimensioni e proporzioni
+        val categoryCases = listOf(
+            genres[0] to actionMovies,
+            genres[1] to comedyMovies,
+            genres[2] to sciFiMovies
+        )
+        for ((genre, movies) in categoryCases) {
+            genreState = MovieGenreFilterUiState(
+                genres = genres,
+                selectedGenre = genre,
+                movies = movies
+            )
+            composeRule.waitForIdle()
+            val catBounds = composeRule.onNodeWithTag("poster_card_movie_${movies.first().id}", useUnmergedTree = true)
+                .getUnclippedBoundsInRoot()
+            assertEquals(
+                "Larghezza locandina in categoria '${genre.name}' deve essere uguale alle altre sezioni",
+                refBounds.width.value,
+                catBounds.width.value,
+                1.5f
+            )
+            assertEquals(
+                "Altezza locandina in categoria '${genre.name}' deve essere uguale alle altre sezioni",
+                refBounds.height.value,
+                catBounds.height.value,
+                2.0f
+            )
+        }
+    }
+
+    @Test
+    fun futureEpisodeInContinueWatching_hasEmptyZeroProgressBar_noMinutes_redBorderYearBadge_andPreservesRealProgressElsewhere() = runBlocking {
+        // 1. Verifica entità WatchProgressEntity: positionMs=0 -> progressFraction 0f e completionPercent 0
+        val docFutureEntity = WatchProgressEntity(
+            id = "tv_9801",
+            tmdbId = 9801,
+            mediaType = "tv",
+            title = "DOC - Nelle tue mani",
+            overview = "Serie TV",
+            posterPath = null,
+            backdropPath = null,
+            voteAverage = 8.4,
+            releaseYear = "2020",
+            seasonNumber = 4,
+            episodeNumber = 15,
+            episodeTitle = "Episodio Futuro",
+            positionMs = 0L,
+            durationMs = 52 * 60_000L
+        )
+        assertEquals(0f, docFutureEntity.progressFraction, 0.0001f)
+        assertEquals(0, docFutureEntity.completionPercent)
+        assertEquals(0f, docFutureEntity.copy(durationMs = 0L).progressFraction, 0.0001f)
+
+        // Anche se una riga sporca avesse positionMs > 0 su un episodio futuro, ContinueWatchingCard
+        // forza la barra a 0f, nasconde MIN RIMANENTI e mantiene visibile il badge data anno incluso anche con focus
+        val docFutureStale = docFutureEntity.copy(positionMs = 10 * 60_000L)
+        val docAiredReal = WatchProgressEntity(
+            id = "tv_9802",
+            tmdbId = 9802,
+            mediaType = "tv",
+            title = "Serie In Corso",
+            overview = "",
+            posterPath = null,
+            backdropPath = null,
+            voteAverage = 8.1,
+            releaseYear = "2024",
+            seasonNumber = 2,
+            episodeNumber = 4,
+            positionMs = 15 * 60_000L,
+            durationMs = 50 * 60_000L
+        )
+        val movieReal = WatchProgressEntity(
+            id = "movie_9803",
+            tmdbId = 9803,
+            mediaType = "movie",
+            title = "Film In Corso",
+            overview = "",
+            posterPath = null,
+            backdropPath = null,
+            voteAverage = 7.9,
+            releaseYear = "2025",
+            positionMs = 90 * 60_000L,
+            durationMs = 102 * 60_000L
+        )
+
+        val futureBadge = UpcomingEpisodeBadgeFormatter.resolveUpcomingEpisodeBadgeForEntry(
+            entry = docFutureEntity,
+            seasonEpisodes = listOf(
+                TmdbEpisodeDto(id = 414, episodeNumber = 14, seasonNumber = 4, name = "Ep 14", airDate = "2026-05-01"),
+                TmdbEpisodeDto(id = 415, episodeNumber = 15, seasonNumber = 4, name = "Ep 15", airDate = "2026-11-26", runtime = 52)
+            ),
+            isSeriesCompleted = false,
+            today = CalendarDate(2026, 6, 10)
+        )
+        assertEquals("26 NOV 2026", futureBadge)
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                ContinueWatchingSection(
+                    entries = listOf(docFutureStale, docAiredReal, movieReal),
+                    onResumeClick = {},
+                    onInfoClick = {},
+                    onRemoveClick = {},
+                    isTvLayout = true,
+                    upcomingDateBadges = mapOf("tv_9801" to futureBadge!!)
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Badge data anno completo visibile sia non focalizzato che focalizzato con D-Pad
+        composeRule.onNodeWithTag("cw_upcoming_date_badge_tv_9801", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .onChild()
+            .assertTextEquals("26 NOV 2026")
+
+        composeRule.onNodeWithTag("continue_watching_card_tv_9801")
+            .requestFocus()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("continue_watching_card_tv_9801").assertIsFocused()
+        composeRule.onNodeWithTag("cw_upcoming_date_badge_tv_9801", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .onChild()
+            .assertTextEquals("26 NOV 2026")
+
+        // Barra progresso episodio futuro rigorosamente vuota (0f) e NESSUN "MIN RIMANENTI"
+        composeRule.onNodeWithTag("cw_progress_bar_tv_9801", useUnmergedTree = true)
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(0f, 0f..1f)))
+        assertTrue(
+            "Episodio non ancora trasmesso non deve mostrare minuti rimanenti",
+            composeRule.onAllNodesWithTag("cw_remaining_minutes_badge_tv_9801", useUnmergedTree = true).fetchSemanticsNodes().isEmpty()
+        )
+
+        // Episodio già trasmesso e film mantengono normalmente barra avanzamento reale (> 0f) e MIN RIMANENTI
+        composeRule.onNodeWithTag("cw_progress_bar_tv_9802", useUnmergedTree = true)
+            .assert(SemanticsMatcher("progress > 0f") { node ->
+                node.config[SemanticsProperties.ProgressBarRangeInfo].current > 0.25f
+            })
+        composeRule.onNodeWithText("35 MIN RIMANENTI").assertIsDisplayed()
+        composeRule.onNodeWithTag("cw_progress_bar_movie_9803", useUnmergedTree = true)
+            .assert(SemanticsMatcher("movie progress > 0.8f") { node ->
+                node.config[SemanticsProperties.ProgressBarRangeInfo].current > 0.8f
+            })
+        composeRule.onNodeWithText("12 MIN RIMANENTI").assertIsDisplayed()
+
+        // Verifica isolamento DB per (serie, stagione, episodio): segnare S4 E14 come visto
+        // NON deve copiare progressi di S4 E14 o altri episodi su S4 E15 (2099 futuro -> positionMs = 0L)
+        val dao = db.vixFlixDao()
+        val seriesItem = MediaItem(
+            id = 9804,
+            mediaType = "tv",
+            title = "DOC Future Isolation",
+            overview = "",
+            posterPath = null,
+            backdropPath = null,
+            voteAverage = 8.5,
+            releaseYear = "2020"
+        )
+        dao.upsertEpisodeProgress(
+            EpisodeProgressEntity(
+                episodeKey = "tv_9804_s4_e13",
+                tmdbId = 9804,
+                seasonNumber = 4,
+                episodeNumber = 13,
+                positionMs = 1_500_000L,
+                durationMs = 3_000_000L,
+                profileId = DEFAULT_PRIMARY_PROFILE_ID
+            )
+        )
+        repo.markEpisodeAsWatched(
+            tmdbId = 9804,
+            seasonNumber = 4,
+            episodeNumber = 14,
+            profileId = DEFAULT_PRIMARY_PROFILE_ID,
+            mediaItem = seriesItem,
+            currentSeasonEpisodes = listOf(
+                TmdbEpisodeDto(id = 13, episodeNumber = 13, seasonNumber = 4, name = "Ep 13", airDate = "2026-04-01", runtime = 50),
+                TmdbEpisodeDto(id = 14, episodeNumber = 14, seasonNumber = 4, name = "Ep 14", airDate = "2026-05-01", runtime = 50),
+                TmdbEpisodeDto(id = 15, episodeNumber = 15, seasonNumber = 4, name = "Ep 15", airDate = "2099-11-26", runtime = 52)
+            )
+        )
+        val cwAfterMark = dao.getWatchProgress("tv_9804", DEFAULT_PRIMARY_PROFILE_ID)
+        assertEquals(4, cwAfterMark?.seasonNumber)
+        assertEquals(15, cwAfterMark?.episodeNumber)
+        assertEquals(0L, cwAfterMark?.positionMs)
+        assertEquals(0f, cwAfterMark?.progressFraction ?: -1f, 0.0001f)
+        // Il progresso reale di E13 resta intatto senza essere alterato né cancellato
+        val ep13StillIntact = dao.getEpisodeProgress("tv_9804_s4_e13", DEFAULT_PRIMARY_PROFILE_ID)
+        assertEquals(1_500_000L, ep13StillIntact?.positionMs)
+    }
+
+    @Test
+    fun settingsClearContinueWatching_showsDpadConfirmationDialog_cancelsSafely_andClearsOnlyActiveContinueWatchingOnConfirm() = runBlocking {
+        val dao = db.vixFlixDao()
+        val secondaryProfileId = "profile_secondary"
+        dao.upsertProfile(
+            UserProfileEntity(
+                id = DEFAULT_PRIMARY_PROFILE_ID,
+                name = "Utente 1",
+                avatarId = "avatar_1",
+                accentColorHex = 0xFFE50914L,
+                isPrimary = true
+            )
+        )
+        dao.upsertProfile(
+            UserProfileEntity(
+                id = secondaryProfileId,
+                name = "Utente 2",
+                avatarId = "avatar_2",
+                accentColorHex = 0xFF00A8E8L,
+                isPrimary = false
+            )
+        )
+
+        // Dati profilo attivo: 2 voci in Continua a guardare + Preferiti + Simkl + Completati + Progresso episodio
+        dao.upsertWatchProgress(
+            WatchProgressEntity(
+                id = "movie_101",
+                tmdbId = 101,
+                mediaType = "movie",
+                title = "Film Da Rimuovere",
+                overview = "",
+                posterPath = null,
+                backdropPath = null,
+                voteAverage = 7.5,
+                releaseYear = "2025",
+                positionMs = 1_200_000L,
+                durationMs = 5_400_000L,
+                profileId = DEFAULT_PRIMARY_PROFILE_ID
+            )
+        )
+        dao.upsertWatchProgress(
+            WatchProgressEntity(
+                id = "movie_202",
+                tmdbId = 202,
+                mediaType = "movie",
+                title = "Film Profilo 2",
+                overview = "",
+                posterPath = null,
+                backdropPath = null,
+                voteAverage = 8.0,
+                releaseYear = "2024",
+                positionMs = 600_000L,
+                durationMs = 5_000_000L,
+                profileId = secondaryProfileId
+            )
+        )
+        dao.addToWatchlist(
+            WatchlistEntity(
+                id = "movie_303",
+                tmdbId = 303,
+                mediaType = "movie",
+                title = "Film Preferito Intatto",
+                overview = "",
+                posterPath = null,
+                backdropPath = null,
+                voteAverage = 8.8,
+                releaseYear = "2023",
+                profileId = DEFAULT_PRIMARY_PROFILE_ID
+            )
+        )
+        dao.upsertSimklLibraryItem(
+            SimklLibraryItemEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                stableKey = "simkl_shows_40400",
+                simklId = 40400L,
+                mediaCategory = "shows",
+                tmdbMediaType = "tv",
+                tmdbId = 404,
+                title = "Serie Simkl Watchlist",
+                status = "plantowatch"
+            )
+        )
+        dao.upsertCompletedMedia(
+            CompletedMediaEntity(
+                profileId = DEFAULT_PRIMARY_PROFILE_ID,
+                contentKey = "tv_404_s1_e1",
+                tmdbId = 404,
+                mediaType = "tv",
+                seasonNumber = 1,
+                episodeNumber = 1,
+                completedAtMs = 1_000L
+            )
+        )
+        dao.upsertEpisodeProgress(
+            EpisodeProgressEntity(
+                episodeKey = "tv_404_s1_e2",
+                tmdbId = 404,
+                seasonNumber = 1,
+                episodeNumber = 2,
+                positionMs = 450_000L,
+                durationMs = 2_700_000L,
+                profileId = DEFAULT_PRIMARY_PROFILE_ID
+            )
+        )
+
+        var cwCountState by mutableIntStateOf(1)
+        var clearCallbacks by mutableIntStateOf(0)
+        val primaryProfile = UserProfileEntity(
+            id = DEFAULT_PRIMARY_PROFILE_ID,
+            name = "Utente 1",
+            avatarId = "avatar_1",
+            accentColorHex = 0xFFE50914L,
+            isPrimary = true
+        )
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                SettingsScreen(
+                    gitHubState = GitHubUpdateUiState(),
+                    streamLang = "it",
+                    preferWebPlayer = false,
+                    bufferPreset = StreamingBufferPreset.BALANCED,
+                    autoCheckUpdates = true,
+                    continueWatchingCount = cwCountState,
+                    watchlistCount = 1,
+                    isTvLayout = true,
+                    requestedCategory = SettingsCategory.SYSTEM,
+                    requestedCategoryNonce = 1,
+                    profileUiState = UserProfileUiState(
+                        profiles = listOf(primaryProfile),
+                        activeProfile = primaryProfile
+                    ),
+                    onSelectStreamLang = {},
+                    onSetPreferWebPlayer = {},
+                    onSelectBufferPreset = {},
+                    onSetAutoCheckUpdates = {},
+                    onRefreshCatalog = {},
+                    onClearContinueWatching = {
+                        clearCallbacks++
+                        runBlocking {
+                            repo.clearAllContinueWatching(DEFAULT_PRIMARY_PROFILE_ID)
+                        }
+                        cwCountState = 0
+                    },
+                    onRepoSlugChange = {},
+                    onCheckUpdates = {},
+                    onTriggerUpdate = {},
+                    onUpdateTmdbKey = {},
+                    onResetTmdbKey = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Scorre fino al pulsante "Svuota Continua a Guardare" e lo preme: NON deve svuotare subito
+        val clearBtn = composeRule.onNodeWithTag("settings_clear_history_button")
+        clearBtn.performScrollTo()
+        composeRule.waitForIdle()
+        clearBtn.requestFocus()
+        composeRule.waitForIdle()
+        clearBtn.performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(120L)
+        composeRule.waitForIdle()
+
+        assertEquals("Premere Svuota non deve svuotare immediatamente", 0, clearCallbacks)
+        composeRule.onNodeWithTag("clear_continue_watching_confirm_dialog").assertIsDisplayed()
+        composeRule.onNodeWithText("SVUOTARE CONTINUA A GUARDARE?").assertIsDisplayed()
+        composeRule.onNodeWithText("Vuoi davvero rimuovere tutti i contenuti dalla sezione Continua a guardare? Questa operazione non può essere annullata.")
+            .assertIsDisplayed()
+
+        // Focus iniziale obbligatoriamente su ANNULLA
+        composeRule.onNodeWithTag("clear_cw_cancel_button").assertIsFocused()
+
+        // Test navigazione D-Pad Destra -> CONFERMA, Sinistra -> ANNULLA, poi BACK -> annulla senza svuotare
+        composeRule.onNodeWithTag("clear_cw_cancel_button").performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("clear_cw_confirm_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("clear_cw_confirm_button").performKeyInput { pressKey(Key.DirectionLeft) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("clear_cw_cancel_button").assertIsFocused()
+
+        composeRule.onNodeWithTag("clear_cw_cancel_button").performKeyInput { pressKey(Key.Back) }
+        composeRule.waitForIdle()
+        assertTrue(composeRule.onAllNodesWithTag("clear_continue_watching_confirm_dialog").fetchSemanticsNodes().isEmpty())
+        assertEquals(0, clearCallbacks)
+        assertEquals(1, dao.observeContinueWatching(DEFAULT_PRIMARY_PROFILE_ID).first().size)
+
+        // Riapre e preme OK direttamente su ANNULLA -> nessuna modifica ai dati
+        clearBtn.performClick()
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(120L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("clear_cw_cancel_button").assertIsFocused()
+        composeRule.onNodeWithTag("clear_cw_cancel_button").performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitForIdle()
+        assertTrue(composeRule.onAllNodesWithTag("clear_continue_watching_confirm_dialog").fetchSemanticsNodes().isEmpty())
+        assertEquals(0, clearCallbacks)
+        assertEquals(1, dao.observeContinueWatching(DEFAULT_PRIMARY_PROFILE_ID).first().size)
+
+        // Riapre, si sposta su CONFERMA con freccia Destra e conferma -> svuota SOLO Continua a guardare attivo
+        clearBtn.performClick()
+        composeRule.waitForIdle()
+        composeRule.mainClock.advanceTimeBy(120L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("clear_cw_cancel_button").performKeyInput { pressKey(Key.DirectionRight) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("clear_cw_confirm_button").assertIsFocused()
+        composeRule.onNodeWithTag("clear_cw_confirm_button").performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.waitForIdle()
+
+        assertTrue(composeRule.onAllNodesWithTag("clear_continue_watching_confirm_dialog").fetchSemanticsNodes().isEmpty())
+        assertEquals(1, clearCallbacks)
+        assertEquals(0, cwCountState)
+        assertTrue(dao.observeContinueWatching(DEFAULT_PRIMARY_PROFILE_ID).first().isEmpty())
+
+        // Altri dati intatti: profilo secondario, La Mia Lista (preferiti), Simkl watchlist, completati ed episodi parziali
+        assertEquals(1, dao.observeContinueWatching(secondaryProfileId).first().size)
+        assertEquals(1, dao.observeWatchlist(DEFAULT_PRIMARY_PROFILE_ID).first().size)
+        assertEquals(1, dao.observeSimklLibraryForProfile(DEFAULT_PRIMARY_PROFILE_ID).first().size)
+        assertTrue(dao.getCompletedEpisodesForSeries(404, DEFAULT_PRIMARY_PROFILE_ID).isNotEmpty())
+        assertEquals(450_000L, dao.getEpisodeProgress("tv_404_s1_e2", DEFAULT_PRIMARY_PROFILE_ID)?.positionMs)
     }
 
     // -------------------------------------------------------------------------

@@ -58,14 +58,14 @@ data class WatchProgressEntity(
         get() = (startSeconds / 60L).toInt()
 
     val progressFraction: Float
-        get() = if (durationMs > 0L) {
-            (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0.02f, 0.99f)
-        } else {
-            0.1f
+        get() = when {
+            positionMs <= 0L -> 0f
+            durationMs > 0L -> (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0.02f, 0.99f)
+            else -> 0.1f
         }
 
     val completionPercent: Int
-        get() = (progressFraction * 100f).toInt().coerceIn(1, 99)
+        get() = if (positionMs <= 0L) 0 else (progressFraction * 100f).toInt().coerceIn(1, 99)
 
     val remainingMinutes: Int
         get() = if (durationMs > positionMs) {

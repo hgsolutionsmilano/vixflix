@@ -2853,6 +2853,14 @@ class SimklSyncManager(
         }
 
         if (remoteWins && remotePct > 0.0) {
+            val epDtoForAirDate = runCatching {
+                val eps = repository.getCachedSeasonEpisodes(mediaItem.id, seasonNumber)?.value
+                    ?: repository.fetchSeasonEpisodes(mediaItem.id, seasonNumber).getOrNull()
+                eps?.firstOrNull { it.episodeNumber == episodeNumber }
+            }.getOrNull()
+            if (com.example.ui.UpcomingEpisodeBadgeFormatter.isUpcomingAirDate(epDtoForAirDate?.airDate)) {
+                return
+            }
             val posMs = if (epDurationMs > 0L) {
                 ((epDurationMs * remotePct) / 100.0).roundToLong().coerceAtLeast(3_000L)
             } else {
@@ -2980,7 +2988,9 @@ class SimklSyncManager(
             return
         }
 
-        if (remoteWins && remotePct > 0.0) {
+        val isUpcomingEpisode = mediaItem.isSeries &&
+            com.example.ui.UpcomingEpisodeBadgeFormatter.isUpcomingAirDate(resolvedEpDto?.airDate)
+        if (remoteWins && remotePct > 0.0 && !isUpcomingEpisode) {
             val posMs = if (resolvedDurationMs > 0L) {
                 ((resolvedDurationMs * remotePct) / 100.0).roundToLong().coerceAtLeast(3_000L)
             } else {
@@ -4457,7 +4467,12 @@ class SimklSyncManager(
                     val savedNextEpProgress = dao.getEpisodeProgress(epKey, profileId)
                     val epDurationMs = savedNextEpProgress?.durationMs?.takeIf { it > 0L }
                         ?: ((epDto?.runtime?.takeIf { it in 1..600 }?.toLong() ?: 0L) * 60_000L)
-                    val preservedPositionMs = savedNextEpProgress?.positionMs?.coerceAtLeast(0L) ?: 0L
+                    val isUpcomingNextEp = com.example.ui.UpcomingEpisodeBadgeFormatter.isUpcomingAirDate(epDto?.airDate)
+                    val preservedPositionMs = if (isUpcomingNextEp) {
+                        0L
+                    } else {
+                        savedNextEpProgress?.positionMs?.coerceAtLeast(0L) ?: 0L
+                    }
                     val effectiveUpdatedAt = maxOf(
                         completedTimestamp,
                         if (existingMain != null && existingMainIsNowWatchedOnSimkl) existingMain.updatedAt + 1L else 0L

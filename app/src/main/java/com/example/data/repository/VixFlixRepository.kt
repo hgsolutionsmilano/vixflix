@@ -1619,7 +1619,8 @@ class VixFlixRepository(
             stillUrl = ep.stillUrl,
             overview = ep.overview?.takeIf { it.isNotBlank() },
             runtimeMinutes = ep.runtime?.takeIf { it in 1..600 },
-            isCrossSeason = isCrossSeason
+            isCrossSeason = isCrossSeason,
+            airDate = ep.airDate
         )
 
         val sameSeasonEps = loadSeasonEpisodesPreferringLocal(item.id, fromSeason, currentSeasonEpisodes)
@@ -1698,7 +1699,8 @@ class VixFlixRepository(
         if (nextUnwatched != null) {
             val nextEpKey = "tv_${item.id}_s${nextUnwatched.seasonNumber}_e${nextUnwatched.episodeNumber}"
             val existingEpProgress = dao.getEpisodeProgress(nextEpKey, profileId)
-            val nextPosMs = existingEpProgress?.positionMs?.coerceAtLeast(0L) ?: 0L
+            val isNextUpcoming = com.example.ui.UpcomingEpisodeBadgeFormatter.isUpcomingAirDate(nextUnwatched.airDate)
+            val nextPosMs = if (isNextUpcoming) 0L else (existingEpProgress?.positionMs?.coerceAtLeast(0L) ?: 0L)
             val nextDurationMs = existingEpProgress?.durationMs?.takeIf { it > 0L }
                 ?: ((nextUnwatched.runtimeMinutes?.takeIf { it > 0 }?.toLong() ?: 0L) * 60_000L)
             dao.upsertWatchProgress(

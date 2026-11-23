@@ -98,10 +98,12 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -111,6 +113,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.BuildConfig
 import com.example.data.local.CacheStatsSummary
@@ -123,7 +126,10 @@ import com.example.data.remote.simkl.SimklProfileUiState
 import com.example.ui.GitHubUpdateUiState
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
+import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.ProfileAvatarArtwork
+import com.example.ui.components.consumeBackAndEscapeKey
+import com.example.ui.components.recoverFocusFromCandidates
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
@@ -1639,6 +1645,8 @@ private fun SystemSettingsPanel(
 ) {
     var clearedFeedback by remember { mutableStateOf(false) }
     var showUnlinkSimklConfirm by remember(simklUiState.profileId) { mutableStateOf(false) }
+    var showClearContinueWatchingConfirm by remember(profileUiState.activeProfile?.id) { mutableStateOf(false) }
+    var wasClearCwDialogOpen by remember { mutableStateOf(false) }
     val switchProfileFocusRequester = firstControlFocusRequester ?: remember { FocusRequester() }
     val manageProfilesFocusRequester = remember { FocusRequester() }
     val autoLoginFocusRequester = remember { FocusRequester() }
@@ -1650,6 +1658,18 @@ private fun SystemSettingsPanel(
     val clearCacheFocusRequester = remember { FocusRequester() }
     val clearContinueWatchingFocusRequester = remember { FocusRequester() }
 
+    LaunchedEffect(showClearContinueWatchingConfirm, continueWatchingCount) {
+        if (wasClearCwDialogOpen && !showClearContinueWatchingConfirm) {
+            repeat(3) { withFrameNanos { } }
+            if (continueWatchingCount > 0) {
+                clearContinueWatchingFocusRequester.safeRequestFocus()
+            } else {
+                clearCacheFocusRequester.safeRequestFocus()
+            }
+        }
+        wasClearCwDialogOpen = showClearContinueWatchingConfirm
+    }
+
     if (showUnlinkSimklConfirm) {
         SimklUnlinkConfirmDialog(
             profileName = profileUiState.activeProfile?.name ?: "Profilo attivo",
@@ -1658,6 +1678,17 @@ private fun SystemSettingsPanel(
             onConfirmUnlink = {
                 showUnlinkSimklConfirm = false
                 onUnlinkSimkl()
+            }
+        )
+    }
+
+    if (showClearContinueWatchingConfirm) {
+        ClearContinueWatchingConfirmDialog(
+            onDismiss = { showClearContinueWatchingConfirm = false },
+            onConfirmClear = {
+                showClearContinueWatchingConfirm = false
+                onClearContinueWatching()
+                clearedFeedback = true
             }
         )
     }
@@ -2153,8 +2184,9 @@ private fun SystemSettingsPanel(
 
             OutlinedButton(
                 onClick = {
-                    onClearContinueWatching()
-                    clearedFeedback = true
+                    if (continueWatchingCount > 0) {
+                        showClearContinueWatchingConfirm = true
+                    }
                 },
                 enabled = continueWatchingCount > 0,
                 shape = RoundedCornerShape(10.dp),
@@ -2756,6 +2788,162 @@ private fun SimklUnlinkConfirmDialog(
                             .testTag("simkl_confirm_unlink_button")
                     ) {
                         Text("SCOLLEGA", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ClearContinueWatchingConfirmDialog(
+    onDismiss: () -> Unit,
+    onConfirmClear: () -> Unit
+) {
+    val cancelFocusRequester = remember { FocusRequester() }
+    val confirmFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        for (frame in 1..4) {
+            withFrameNanos { }
+            if (cancelFocusRequester.safeRequestFocus()) break
+        }
+        delay(50L)
+        cancelFocusRequester.safeRequestFocus()
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        BackHandler(onBack = onDismiss)
+        DpadFocusScopeProvider(
+            scope = DpadFocusScope.MODAL_QUICK_ACTION,
+            onRecoverFocus = {
+                recoverFocusFromCandidates(
+                    "clear_cw_cancel_button" to cancelFocusRequester,
+                    "clear_cw_confirm_button" to confirmFocusRequester
+                )
+            }
+        ) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
+                border = BorderStroke(1.5.dp, NetflixElevatedSurface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 480.dp)
+                    .consumeBackAndEscapeKey(onBack = onDismiss)
+                    .testTag("clear_continue_watching_confirm_dialog")
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp, vertical = 24.dp)
+                        .focusGroup()
+                ) {
+                    Text(
+                        text = "SVUOTARE CONTINUA A GUARDARE?",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = NetflixWhite,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = "Vuoi davvero rimuovere tutti i contenuti dalla sezione Continua a guardare? Questa operazione non può essere annullata.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = NetflixLightGray,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(22.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, NetflixElevatedSurface),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .safeFocusRequester(cancelFocusRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionRight -> confirmFocusRequester.safeRequestFocus()
+                                            Key.DirectionLeft, Key.DirectionUp, Key.DirectionDown -> true
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .focusProperties {
+                                    confirmFocusRequester.takeIfAttached()?.let { right = it }
+                                }
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedScale = 1.04f,
+                                    focusedBorderColor = NetflixWhite,
+                                    focusTag = "clear_cw_cancel_button"
+                                )
+                                .testTag("clear_cw_cancel_button")
+                        ) {
+                            Text(
+                                text = "ANNULLA",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Button(
+                            onClick = onConfirmClear,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NetflixRed,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .safeFocusRequester(confirmFocusRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionLeft -> cancelFocusRequester.safeRequestFocus()
+                                            Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> true
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .focusProperties {
+                                    cancelFocusRequester.takeIfAttached()?.let { left = it }
+                                }
+                                .tvFocusableControl(
+                                    shape = RoundedCornerShape(10.dp),
+                                    focusedScale = 1.04f,
+                                    focusedBorderColor = NetflixWhite,
+                                    focusTag = "clear_cw_confirm_button"
+                                )
+                                .testTag("clear_cw_confirm_button")
+                        ) {
+                            Text(
+                                text = "CONFERMA",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }

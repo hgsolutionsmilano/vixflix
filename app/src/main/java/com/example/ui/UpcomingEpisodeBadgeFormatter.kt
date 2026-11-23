@@ -43,9 +43,8 @@ data class CalendarDate(
  *   corrispondente al prossimo episodio (`seasonNumber`, `episodeNumber`).
  * - Mostra il badge SOLO se `airDate > today` (episodio non ancora trasmesso).
  * - Se l'episodio è già uscito (`airDate <= today`), la data manca o è invalida → `null`.
- * - Formato in italiano maiuscolo:
- *   - Stesso anno corrente: `GG MMM` (es. `23 NOV`, `05 MAG`)
- *   - Anno diverso: `GG MMM YYYY` (es. `23 NOV 2026`, `08 GEN 2027`)
+ * - Formato in italiano maiuscolo comprensivo di anno:
+ *   - `GG MMM YYYY` (es. `26 NOV 2026`, `08 GEN 2027`)
  */
 object UpcomingEpisodeBadgeFormatter {
 
@@ -77,9 +76,18 @@ object UpcomingEpisodeBadgeFormatter {
         else -> 0
     }
 
+    fun isUpcomingAirDate(
+        rawAirDate: String?,
+        today: CalendarDate = CalendarDate.today()
+    ): Boolean {
+        val parsed = parseIsoAirDate(rawAirDate) ?: return false
+        return parsed > today
+    }
+
     /**
      * Formatta una data ISO `YYYY-MM-DD` se e solo se è strettamente futura rispetto a [today].
      * Ritorna `null` se la data è assente, malformata, passata o uguale a [today].
+     * Include sempre l'anno esteso (`GG MMM YYYY`, es. `26 NOV 2026`).
      */
     fun formatUpcomingEpisodeAirDate(
         rawAirDate: String?,
@@ -89,11 +97,7 @@ object UpcomingEpisodeBadgeFormatter {
         if (parsed <= today) return null
         val dayFormatted = String.format(Locale.US, "%02d", parsed.day)
         val monthLabel = ITALIAN_MONTHS_SHORT[parsed.month - 1]
-        return if (parsed.year == today.year) {
-            "$dayFormatted $monthLabel"
-        } else {
-            "$dayFormatted $monthLabel ${parsed.year}"
-        }
+        return "$dayFormatted $monthLabel ${parsed.year}"
     }
 
     /**

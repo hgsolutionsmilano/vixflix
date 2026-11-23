@@ -1250,10 +1250,13 @@ private fun ContinueWatchingCard(
                         .background(NetflixBlack.copy(alpha = if (isFocused) 0.2f else 0.38f))
                 )
 
-                // Badge in alto a sinistra: SOLO per le Serie TV ("SX · EY")
                 val hasValidSeriesEpisode = entry.mediaType.equals("tv", ignoreCase = true) &&
                     (entry.seasonNumber ?: 0) > 0 &&
                     (entry.episodeNumber ?: 0) > 0
+                val normalizedUpcomingDate = upcomingDateBadge?.trim().takeIf { !it.isNullOrEmpty() }
+                val isUpcomingEpisode = hasValidSeriesEpisode && normalizedUpcomingDate != null
+
+                // Badge in alto a sinistra: SOLO per le Serie TV ("SX · EY")
                 if (hasValidSeriesEpisode) {
                     Surface(
                         color = NetflixBlack.copy(alpha = 0.82f),
@@ -1276,8 +1279,10 @@ private fun ContinueWatchingCard(
                     }
                 }
 
-                // Badge in alto a destra: Minuti rimanenti ("<N> MIN RIMANENTI"), mostrato solo se la durata reale è attendibile
-                val hasReliableRemainingDuration = entry.durationMs > 0L && entry.durationMs > entry.positionMs
+                // Badge in alto a destra: Minuti rimanenti ("<N> MIN RIMANENTI"), mai mostrato su episodi non ancora trasmessi
+                val hasReliableRemainingDuration = !isUpcomingEpisode &&
+                    entry.durationMs > 0L &&
+                    entry.durationMs > entry.positionMs
                 if (hasReliableRemainingDuration) {
                     val remainingMinutes = (((entry.durationMs - entry.positionMs).coerceAtLeast(0L)) / 60_000L)
                         .toInt()
@@ -1322,20 +1327,19 @@ private fun ContinueWatchingCard(
                     )
                 }
 
-                // Badge in basso a destra: data di uscita del prossimo episodio NON ancora trasmesso (solo Serie TV)
-                val normalizedUpcomingDate = upcomingDateBadge?.trim().takeIf { !it.isNullOrEmpty() }
-                if (hasValidSeriesEpisode && normalizedUpcomingDate != null) {
+                // Badge in basso a destra: data di uscita prevista con bordo rosso visibile (solo Serie TV con episodio futuro)
+                if (isUpcomingEpisode) {
                     Surface(
-                        color = NetflixBlack.copy(alpha = 0.84f),
+                        color = NetflixBlack.copy(alpha = 0.90f),
                         shape = RoundedCornerShape(4.dp),
-                        border = BorderStroke(0.75.dp, NetflixWhite.copy(alpha = 0.24f)),
+                        border = BorderStroke(1.5.dp, NetflixRed),
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(end = 6.dp, bottom = 10.dp)
                             .testTag("cw_upcoming_date_badge_${entry.id}")
                     ) {
                         Text(
-                            text = normalizedUpcomingDate,
+                            text = normalizedUpcomingDate!!,
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.Bold,
@@ -1347,15 +1351,17 @@ private fun ContinueWatchingCard(
                     }
                 }
 
-                // Barra rossa progresso stile Netflix sul bordo inferiore dell'immagine
+                // Barra rossa progresso stile Netflix sul bordo inferiore dell'immagine (vuota 0f per episodi non ancora trasmessi)
+                val displayedProgressFraction = if (isUpcomingEpisode) 0f else entry.progressFraction
                 LinearProgressIndicator(
-                    progress = { entry.progressFraction },
+                    progress = { displayedProgressFraction },
                     color = NetflixRed,
                     trackColor = NetflixElevatedSurface,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(4.dp)
                         .align(Alignment.BottomCenter)
+                        .testTag("cw_progress_bar_${entry.id}")
                 )
             }
 
