@@ -33,6 +33,7 @@ import com.example.data.local.UserProfileUiState
 import com.example.data.local.VixFlixDatabase
 import com.example.data.local.WatchProgressEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.local.simkl.SimklEpisodeStateEntity
 import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.local.simkl.SimklPlaybackBaselineEntity
 import com.example.data.local.simkl.SimklProfileSyncMetaEntity
@@ -75,8 +76,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -133,7 +136,9 @@ class SimklSyncSystemTest {
 
     @After
     fun tearDown() {
-        testScope.cancel()
+        runBlocking {
+            testScope.coroutineContext[Job]?.cancelAndJoin()
+        }
         db.close()
         server.stop()
         vaultDir.deleteRecursively()
@@ -170,6 +175,18 @@ class SimklSyncSystemTest {
             delay(25L)
         }
         assertTrue("Timeout waiting for condition", predicate())
+    }
+
+    private suspend fun watchedEpisodesForSeason(
+        tmdbId: Int,
+        season: Int,
+        profileId: String
+    ): Set<Int> {
+        return db.vixFlixDao()
+            .getCompletedEpisodesForSeries(tmdbId, profileId)
+            .filter { it.seasonNumber == season }
+            .map { it.episodeNumber }
+            .toSet()
     }
 
     // 1. Device flow QR & code generation
@@ -428,7 +445,8 @@ class SimklSyncSystemTest {
                 VixFlixDatabase.MIGRATION_4_5,
                 VixFlixDatabase.MIGRATION_5_6,
                 VixFlixDatabase.MIGRATION_6_7,
-                VixFlixDatabase.MIGRATION_7_8
+                VixFlixDatabase.MIGRATION_7_8,
+                VixFlixDatabase.MIGRATION_8_9
             )
             .allowMainThreadQueries()
             .build()
@@ -452,10 +470,31 @@ class SimklSyncSystemTest {
                     overview = "Descrizione migrata"
                 )
             )
+            mDao.upsertSimklEpisodeStates(
+                listOf(
+                    SimklEpisodeStateEntity(
+                        profileId = "profile_primary",
+                        seriesStableKey = "simkl_shows_99",
+                        simklSeriesId = 99L,
+                        tmdbSeriesId = 1396,
+                        seasonNumber = 1,
+                        episodeNumber = 1,
+                        simklEpisodeId = 9901L,
+                        watched = true,
+                        watchedAt = "2026-10-01T12:00:00Z",
+                        watchedAtMs = 1790856000000L,
+                        updatedAtMs = 1790856000000L
+                    )
+                )
+            )
             val lib = mDao.getSimklLibraryForProfile("profile_primary")
             assertEquals(1, lib.size)
             assertEquals("/migrated.jpg", lib.first().posterPath)
             assertEquals("Descrizione migrata", lib.first().overview)
+            val epStates = mDao.getSimklEpisodeStatesByTmdb("profile_primary", 1396)
+            assertEquals(1, epStates.size)
+            assertEquals(9901L, epStates.first().simklEpisodeId)
+            assertTrue(epStates.first().watched)
         } finally {
             migrated.close()
             app.deleteDatabase(dbName)
@@ -710,7 +749,7 @@ class SimklSyncSystemTest {
         manager.onContinueWatchingRemoved(DEFAULT_PRIMARY_PROFILE_ID, 438631, "movie", null, null)
         waitUntil { server.recordedRequests.any { it.method == "DELETE" && it.path == "/sync/playback/9901" } }
 
-        // Test rimozione remota per un altro titolo già baselineato
+        // Test rimozione remota per un altro titolo completato su Simkl (stato completed pulisce la card obsoleta)
         server.playbackMoviesJson = """
             [{"id":9902,"progress":30.0,"paused_at":"2026-10-05T10:00:00Z","movie":{"title":"Arrival","year":2016,"ids":{"tmdb":329865}}}]
         """.trimIndent()
@@ -718,6 +757,10 @@ class SimklSyncSystemTest {
         manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.MANUAL)
         assertNotNull(repo.getWatchProgress("movie_329865", DEFAULT_PRIMARY_PROFILE_ID))
 
+        // Su Simkl il film viene completato -> sync rimuove la card obsoleta da Continua a guardare
+        server.activitiesJson = """{"all":"2026-10-06T12:00:00Z","movies":{"all":"2026-10-06T12:00:00Z","completed":"2026-10-06T12:00:00Z","playback":"2026-10-06T12:00:00Z"},"shows":{},"anime":{}}"""
+        server.allMoviesJson = """{"movies":[{"status":"completed","last_watched_at":"2026-10-06T12:00:00Z","movie":{"title":"Arrival","year":2016,"ids":{"simkl":51999,"tmdb":329865}}}]}"""
+        server.allItemsDeltaJson = server.allMoviesJson
         server.playbackMoviesJson = "[]"
         manager.syncProfileNow(DEFAULT_PRIMARY_PROFILE_ID, SimklSyncTrigger.MANUAL)
         assertNull(repo.getWatchProgress("movie_329865", DEFAULT_PRIMARY_PROFILE_ID))
@@ -2120,6 +2163,567 @@ class SimklSyncSystemTest {
         }
     }
 
+    // 41. Audit Bidirezionale Film (VixFlix -> Simkl): start, pause, resume, stop parziale, stop completato, stop durata=0, IDs arricchiti e transizione PTW->watching->completed
+    @Test
+    fun `41 bidirectional movie scrobble lifecycle enriches ids never drops zero duration stop and transitions status`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_m41", "ref_m41", nowMs() + 3_600_000L))
+        db.vixFlixDao().upsertSimklLibraryItem(
+            SimklLibraryItemEntity(
+                profileId = profileId,
+                stableKey = "simkl_movies_77701",
+                simklId = 77701L,
+                mediaCategory = "movies",
+                tmdbMediaType = "movie",
+                tmdbId = 603,
+                imdbId = "tt0133093",
+                slug = "the-matrix",
+                title = "The Matrix",
+                year = 1999,
+                status = "plantowatch"
+            )
+        )
+        val movie = MediaItem(
+            id = 603,
+            mediaType = "movie",
+            title = "The Matrix",
+            overview = "",
+            posterPath = null,
+            backdropPath = null,
+            voteAverage = 8.7,
+            releaseYear = "1999"
+        )
+        val mgr = buildManager(minPostIntervalMs = 5L)
+
+        // 1. Start (transizione plantowatch -> watching)
+        mgr.enqueueScrobbleStart(profileId, movie, null, null, 0L, 7_200_000L)
+        waitUntil { server.recordedRequests.any { it.path == "/scrobble/start" } }
+        val startReq = server.recordedRequests.first { it.path == "/scrobble/start" }
+        assertTrue("Richiesta start deve includere simkl ID", startReq.body.contains("\"simkl\":77701"))
+        assertTrue("Richiesta start deve includere tmdb ID", startReq.body.contains("\"tmdb\":603"))
+        assertTrue("Richiesta start deve includere imdb ID", startReq.body.contains("\"imdb\":\"tt0133093\""))
+        assertEquals("watching", db.vixFlixDao().getSimklLibraryByTmdb(profileId, 603, "movie").first().status)
+
+        // 2. Pause a metà
+        mgr.enqueueScrobblePause(profileId, movie, null, null, 1_800_000L, 7_200_000L)
+        waitUntil { server.recordedRequests.any { it.path == "/scrobble/pause" } }
+        val pauseReq = server.recordedRequests.first { it.path == "/scrobble/pause" }
+        assertTrue("Pause deve riportare progress=25", pauseReq.body.contains("25"))
+
+        // 3. Stop parziale con durationMs = 0 (non deve MAI essere scartato silenziosamente)
+        mgr.enqueueScrobbleStop(profileId, movie, null, null, 90_000L, 0L, isExplicitCompletion = false)
+        waitUntil { server.recordedRequests.any { it.path == "/scrobble/stop" && it.query.contains("min_progress=96") } }
+
+        // 4. Completamento esplicito -> stop 100% + min_progress=100 + transizione status -> completed
+        mgr.enqueueScrobbleStop(profileId, movie, null, null, 7_200_000L, 7_200_000L, isExplicitCompletion = true)
+        waitUntil { server.recordedRequests.any { it.path == "/scrobble/stop" && it.query.contains("min_progress=100") } }
+        waitUntil { db.vixFlixDao().getSimklLibraryByTmdb(profileId, 603, "movie").first().status == "completed" }
+    }
+
+    // 42. Audit Bug #1 Regressione Serie TV (VixFlix -> Simkl): scrobble episodio include show.ids (simkl/tmdb/imdb/tvdb) + episode.season/number/title/ids.simkl
+    @Test
+    fun `42 bidirectional tv episode scrobble sends enriched show ids and episode metadata`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_tv42", "ref_tv42", nowMs() + 3_600_000L))
+        db.vixFlixDao().upsertSimklLibraryItem(
+            SimklLibraryItemEntity(
+                profileId = profileId,
+                stableKey = "simkl_shows_88801",
+                simklId = 88801L,
+                mediaCategory = "shows",
+                tmdbMediaType = "tv",
+                tmdbId = 1396,
+                imdbId = "tt0903747",
+                tvdbId = 81189,
+                slug = "breaking-bad",
+                title = "Breaking Bad",
+                year = 2008,
+                status = "watching"
+            )
+        )
+        db.vixFlixDao().upsertSimklEpisodeStates(
+            listOf(
+                SimklEpisodeStateEntity(
+                    profileId = profileId,
+                    seriesStableKey = "simkl_shows_88801",
+                    simklSeriesId = 88801L,
+                    tmdbSeriesId = 1396,
+                    seasonNumber = 2,
+                    episodeNumber = 3,
+                    simklEpisodeId = 551234L,
+                    watched = false
+                )
+            )
+        )
+        val show = MediaItem(
+            id = 1396,
+            mediaType = "tv",
+            title = "Breaking Bad",
+            overview = "",
+            posterPath = null,
+            backdropPath = null,
+            voteAverage = 8.9,
+            releaseYear = "2008"
+        )
+        val mgr = buildManager(minPostIntervalMs = 5L)
+
+        mgr.enqueueScrobbleStart(
+            profileId = profileId,
+            item = show,
+            seasonNumber = 2,
+            episodeNumber = 3,
+            episodeTitle = "Bit by a Dead Bee",
+            positionMs = 120_000L,
+            durationMs = 2_820_000L
+        )
+        waitUntil { server.recordedRequests.any { it.path == "/scrobble/start" } }
+        val req = server.recordedRequests.first { it.path == "/scrobble/start" }
+        assertTrue("show.ids.simkl obbligatorio se noto", req.body.contains("\"simkl\":88801"))
+        assertTrue("show.ids.tmdb presente", req.body.contains("\"tmdb\":1396"))
+        assertTrue("show.ids.imdb presente", req.body.contains("\"imdb\":\"tt0903747\""))
+        assertTrue("show.ids.tvdb presente", req.body.contains("\"tvdb\":81189"))
+        assertTrue("episode.season=2", req.body.contains("\"season\":2"))
+        assertTrue("episode.number=3", req.body.contains("\"number\":3"))
+        assertTrue("episode.title presente", req.body.contains("Bit by a Dead Bee"))
+        assertTrue("episode.ids.simkl presente", req.body.contains("551234"))
+    }
+
+    // 43. Audit Bug #2 Regressione (Simkl -> VixFlix): modifica avanzamento episodi su Simkl aggiorna completed_media, simkl_episode_state E fa avanzare Continua a guardare esistente
+    @Test
+    fun `43 bidirectional simkl episode progress update advances existing continue watching and episode states`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_tv43", "ref_tv43", nowMs() + 3_600_000L))
+        server.tmdbTvJson[1399] = """{"id":1399,"name":"Game of Thrones","poster_path":"/got.jpg","backdrop_path":"/got_bg.jpg","vote_average":8.4,"first_air_date":"2011-04-17","seasons":[{"season_number":1,"episode_count":10}]}"""
+        server.tmdbSeasonJson["1399_1"] = """{"season_number":1,"episodes":[
+            {"episode_number":1,"season_number":1,"name":"Winter Is Coming","runtime":62},
+            {"episode_number":2,"season_number":1,"name":"The Kingsroad","runtime":56},
+            {"episode_number":3,"season_number":1,"name":"Lord Snow","runtime":58},
+            {"episode_number":4,"season_number":1,"name":"Cripples, Bastards, and Broken Things","runtime":56},
+            {"episode_number":5,"season_number":1,"name":"The Wolf and the Lion","runtime":55},
+            {"episode_number":6,"season_number":1,"name":"A Golden Crown","runtime":53}
+        ]}"""
+
+        // Primo import iniziale: utente su S01E01 visto -> Continua a guardare su S01E02
+        server.activitiesJson = """{"all":"2026-10-01T10:00:00Z","tv_shows":{"all":"2026-10-01T10:00:00Z","watched_at":"2026-10-01T10:00:00Z","playback":"2026-10-01T10:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "last_watched_at":"2026-10-01T10:00:00Z",
+                "watched_episodes_count":1,
+                "total_episodes_count":10,
+                "next_to_watch":"S01E02",
+                "show":{"title":"Game of Thrones","year":2011,"ids":{"simkl":17465,"tmdb":1399}},
+                "seasons":[{"number":1,"episodes":[{"number":1,"watched_at":"2026-10-01T10:00:00Z","ids":{"simkl":9001}}]}]
+            }]
+        }"""
+
+        val mgr = buildManager(syncCooldownMs = 0L)
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.POST_AUTH)
+
+        val cwAfterInitial = db.vixFlixDao().getWatchProgress("tv_1399", profileId)
+        assertNotNull("Continua a guardare deve esistere dopo import iniziale", cwAfterInitial)
+        assertEquals(1, cwAfterInitial!!.seasonNumber)
+        assertEquals(2, cwAfterInitial.episodeNumber)
+        assertEquals(setOf(1), watchedEpisodesForSeason(1399, 1, profileId))
+
+        // Ora l'utente guarda S01E02..S01E05 su Simkl: sync incrementale!
+        server.activitiesJson = """{"all":"2026-10-02T14:00:00Z","tv_shows":{"all":"2026-10-02T14:00:00Z","watched_at":"2026-10-02T14:00:00Z","playback":"2026-10-01T10:00:00Z"},"movies":{},"anime":{}}"""
+        server.allItemsDeltaJson = """{
+            "shows":[{
+                "status":"watching",
+                "last_watched_at":"2026-10-02T14:00:00Z",
+                "watched_episodes_count":5,
+                "total_episodes_count":10,
+                "next_to_watch":"S01E06",
+                "show":{"title":"Game of Thrones","year":2011,"ids":{"simkl":17465,"tmdb":1399}},
+                "seasons":[{"number":1,"episodes":[
+                    {"number":1,"watched_at":"2026-10-01T10:00:00Z","ids":{"simkl":9001}},
+                    {"number":2,"watched_at":"2026-10-02T11:00:00Z","ids":{"simkl":9002}},
+                    {"number":3,"watched_at":"2026-10-02T12:00:00Z","ids":{"simkl":9003}},
+                    {"number":4,"watched_at":"2026-10-02T13:00:00Z","ids":{"simkl":9004}},
+                    {"number":5,"watched_at":"2026-10-02T14:00:00Z","ids":{"simkl":9005}}
+                ]}]
+            }]
+        }"""
+
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.DETAIL_OPEN)
+
+        val watchedAfterDelta = watchedEpisodesForSeason(1399, 1, profileId)
+        assertEquals("Tutti gli episodi 1..5 devono risultare visti su VixFlix", setOf(1, 2, 3, 4, 5), watchedAfterDelta)
+        val epStates = db.vixFlixDao().getSimklEpisodeStatesByTmdb(profileId, 1399)
+        assertEquals(5, epStates.count { it.watched })
+
+        val cwAfterDelta = db.vixFlixDao().getWatchProgress("tv_1399", profileId)
+        assertNotNull("Continua a guardare deve restare presente", cwAfterDelta)
+        assertEquals("Continua a guardare deve avanzare a S01E06!", 1, cwAfterDelta!!.seasonNumber)
+        assertEquals("Continua a guardare deve avanzare all'episodio 6!", 6, cwAfterDelta.episodeNumber)
+        assertEquals("A Golden Crown", cwAfterDelta.episodeTitle)
+    }
+
+    // 44. Audit Delta Fallback Safety Net: se activities.shows cambia ma date_from restituisce {}, fa fallback su /sync/all-items/shows
+    @Test
+    fun `44 bidirectional incremental sync falls back to full category snapshot when date_from delta returns empty`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_fb44", "ref_fb44", nowMs() + 3_600_000L))
+        server.tmdbTvJson[94605] = """{"id":94605,"name":"Arcane","poster_path":"/arcane.jpg","first_air_date":"2021-11-06","seasons":[{"season_number":1,"episode_count":9}]}"""
+        server.tmdbSeasonJson["94605_1"] = """{"season_number":1,"episodes":[{"episode_number":1,"season_number":1,"name":"Ep1"},{"episode_number":2,"season_number":1,"name":"Ep2"},{"episode_number":3,"season_number":1,"name":"Ep3"}]}"""
+
+        server.activitiesJson = """{"all":"2026-10-01T08:00:00Z","shows":{"all":"2026-10-01T08:00:00Z","watched_at":"2026-10-01T08:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "watched_episodes_count":1,
+                "total_episodes_count":9,
+                "next_to_watch":"S01E02",
+                "show":{"title":"Arcane","year":2021,"ids":{"simkl":15551,"tmdb":94605}},
+                "seasons":[{"number":1,"episodes":[{"number":1,"watched_at":"2026-10-01T08:00:00Z"}]}]
+            }]
+        }"""
+
+        val mgr = buildManager(syncCooldownMs = 0L)
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.POST_AUTH)
+        assertEquals(setOf(1), watchedEpisodesForSeason(94605, 1, profileId))
+
+        // Simula Simkl: activities cambia ma GET /sync/all-items?date_from=... restituisce {} vuoto!
+        server.activitiesJson = """{"all":"2026-10-03T18:00:00Z","shows":{"all":"2026-10-03T18:00:00Z","watched_at":"2026-10-03T18:00:00Z"},"movies":{},"anime":{}}"""
+        server.allItemsDeltaJson = "{}"
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "watched_episodes_count":2,
+                "total_episodes_count":9,
+                "next_to_watch":"S01E03",
+                "show":{"title":"Arcane","year":2021,"ids":{"simkl":15551,"tmdb":94605}},
+                "seasons":[{"number":1,"episodes":[{"number":1,"watched_at":"2026-10-01T08:00:00Z"},{"number":2,"watched_at":"2026-10-03T18:00:00Z"}]}]
+            }]
+        }"""
+        server.recordedRequests.clear()
+
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.FOREGROUND)
+
+        assertTrue(
+            "Deve aver eseguito il fallback su /sync/all-items/shows",
+            server.recordedRequests.any { it.path == "/sync/all-items/shows" && it.query.contains("include_all_episodes=yes") }
+        )
+        assertEquals(setOf(1, 2), watchedEpisodesForSeason(94605, 1, profileId))
+        assertEquals(3, db.vixFlixDao().getWatchProgress("tv_94605", profileId)?.episodeNumber)
+    }
+
+    // 45. Audit Batch Stagione + Unwatch Bidirezionale (VixFlix -> Simkl & Simkl -> VixFlix)
+    @Test
+    fun `45 bidirectional batch season watched and unwatch both directions stay aligned`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_u45", "ref_u45", nowMs() + 3_600_000L))
+        server.tmdbTvJson[1402] = """{"id":1402,"name":"The Walking Dead","poster_path":"/twd.jpg","first_air_date":"2010-10-31","seasons":[{"season_number":1,"episode_count":6}]}"""
+        server.tmdbSeasonJson["1402_1"] = """{"season_number":1,"episodes":[
+            {"episode_number":1,"season_number":1,"name":"Days Gone Bye"},
+            {"episode_number":2,"season_number":1,"name":"Guts"},
+            {"episode_number":3,"season_number":1,"name":"Tell It to the Frogs"},
+            {"episode_number":4,"season_number":1,"name":"Vatos"},
+            {"episode_number":5,"season_number":1,"name":"Wildfire"},
+            {"episode_number":6,"season_number":1,"name":"TS-19"}
+        ]}"""
+        db.vixFlixDao().upsertSimklLibraryItem(
+            SimklLibraryItemEntity(
+                profileId = profileId,
+                stableKey = "simkl_shows_2090",
+                simklId = 2090L,
+                mediaCategory = "shows",
+                tmdbMediaType = "tv",
+                tmdbId = 1402,
+                title = "The Walking Dead",
+                year = 2010,
+                status = "watching"
+            )
+        )
+        val show = MediaItem(1402, "tv", "The Walking Dead", "", null, null, 8.1, "2010")
+        val mgr = buildManager(minPostIntervalMs = 5L, syncCooldownMs = 0L)
+
+        // 1. Batch intera stagione S01 (E01..E06) in UNA SOLA chiamata POST /sync/history
+        mgr.enqueueEpisodesWatched(profileId, show, 1, listOf(1, 2, 3, 4, 5, 6), triggerEvent = "manual_mark_season_watched")
+        waitUntil { server.recordedRequests.any { it.path == "/sync/history" } }
+        val histAddReqs = server.recordedRequests.filter { it.path == "/sync/history" }
+        assertEquals("L'intera stagione deve essere inviata in un'unica chiamata batch", 1, histAddReqs.size)
+        assertTrue(histAddReqs.first().body.contains("\"simkl\":2090"))
+        assertTrue(histAddReqs.first().body.contains("\"number\":6"))
+
+        // 2. Unwatch episodio S01E06 da VixFlix -> POST /sync/history/remove
+        mgr.enqueueEpisodesUnwatched(profileId, show, 1, listOf(6), triggerEvent = "manual_unmark_episode_watched")
+        waitUntil { server.recordedRequests.any { it.path == "/sync/history/remove" } }
+        val histRemoveReq = server.recordedRequests.first { it.path == "/sync/history/remove" }
+        assertTrue(histRemoveReq.body.contains("\"number\":6"))
+        assertFalse(db.vixFlixDao().getSimklEpisodeState(profileId, 1402, 1, 6)!!.watched)
+
+        // 3. Ora Simkl rimuove anche S01E05 (omissione nello snapshot con count sceso da 5 a 4) -> VixFlix rimuove S01E05 da completed_media e arretra Continua a guardare a S01E05!
+        repo.markSeasonAsWatched(1402, 1, listOf(1, 2, 3, 4, 5), profileId, show, emptyList(), emptyList())
+        server.activitiesJson = """{"all":"2026-10-05T10:00:00Z","shows":{"all":"2026-10-05T10:00:00Z","watched_at":"2026-10-05T10:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "watched_episodes_count":4,
+                "total_episodes_count":6,
+                "next_to_watch":"S01E05",
+                "show":{"title":"The Walking Dead","year":2010,"ids":{"simkl":2090,"tmdb":1402}},
+                "seasons":[{"number":1,"episodes":[
+                    {"number":1,"watched_at":"2026-10-01T10:00:00Z"},
+                    {"number":2,"watched_at":"2026-10-01T11:00:00Z"},
+                    {"number":3,"watched_at":"2026-10-01T12:00:00Z"},
+                    {"number":4,"watched_at":"2026-10-01T13:00:00Z"}
+                ]}]
+            }]
+        }"""
+
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.MANUAL)
+
+        val watchedAfterUnwatch = watchedEpisodesForSeason(1402, 1, profileId)
+        assertEquals("S01E05 rimosso su Simkl deve risultare non visto anche su VixFlix", setOf(1, 2, 3, 4), watchedAfterUnwatch)
+        assertEquals(5, db.vixFlixDao().getWatchProgress("tv_1402", profileId)?.episodeNumber)
+    }
+
+    // 46. Audit Plan to Watch bidirezionale + transizioni stato serie (watching -> completed / hold / dropped / plantowatch)
+    @Test
+    fun `46 bidirectional plan to watch sync and series status transitions clean up continue watching safely`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_ptw46", "ref_ptw46", nowMs() + 3_600_000L))
+        val movie = MediaItem(27205, "movie", "Inception", "", null, null, 8.4, "2010")
+        val showWatching = MediaItem(66732, "tv", "Stranger Things", "", null, null, 8.6, "2016")
+        db.vixFlixDao().upsertSimklLibraryItem(
+            SimklLibraryItemEntity(
+                profileId = profileId,
+                stableKey = "simkl_shows_55001",
+                simklId = 55001L,
+                mediaCategory = "shows",
+                tmdbMediaType = "tv",
+                tmdbId = 66732,
+                title = "Stranger Things",
+                year = 2016,
+                status = "watching"
+            )
+        )
+        val mgr = buildManager(minPostIntervalMs = 5L, syncCooldownMs = 0L)
+
+        // 1. Aggiunta a La mia lista -> POST /sync/add-to-list con to="plantowatch"
+        mgr.enqueueAddToList(profileId, movie, "plantowatch")
+        waitUntil { server.recordedRequests.any { it.path == "/sync/add-to-list" } }
+        val addReq = server.recordedRequests.first { it.path == "/sync/add-to-list" }
+        assertTrue(addReq.body.contains("\"to\":\"plantowatch\""))
+        assertTrue(addReq.body.contains("\"tmdb\":27205"))
+
+        // 2. Rimozione da La mia lista di una serie in stato watching NON deve cancellare la cronologia su Simkl!
+        server.recordedRequests.clear()
+        mgr.enqueueRemoveFromPlanToWatch(profileId, showWatching)
+        delay(120L)
+        assertTrue("Non deve chiamare /sync/history/remove su serie in stato watching", server.recordedRequests.none { it.path == "/sync/history/remove" })
+
+        // 3. Rimozione di un titolo in stato plantowatch -> POST /sync/history/remove
+        db.vixFlixDao().upsertSimklLibraryItem(
+            SimklLibraryItemEntity(
+                profileId = profileId,
+                stableKey = "simkl_movies_27205",
+                simklId = 27205L,
+                mediaCategory = "movies",
+                tmdbMediaType = "movie",
+                tmdbId = 27205,
+                title = "Inception",
+                year = 2010,
+                status = "plantowatch"
+            )
+        )
+        mgr.enqueueRemoveFromPlanToWatch(profileId, movie)
+        waitUntil { server.recordedRequests.any { it.path == "/sync/history/remove" } }
+
+        // 4. Transizione Simkl -> VixFlix da watching a completed/dropped/hold rimuove Continua a guardare obsoleto
+        repo.saveWatchProgress(showWatching, 1, 3, "Holly, Jolly", 900_000L, 3_000_000L, profileId)
+        assertNotNull(db.vixFlixDao().getWatchProgress("tv_66732", profileId))
+
+        server.activitiesJson = """{"all":"2026-10-06T12:00:00Z","shows":{"all":"2026-10-06T12:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"completed",
+                "watched_episodes_count":8,
+                "total_episodes_count":8,
+                "show":{"title":"Stranger Things","year":2016,"ids":{"simkl":55001,"tmdb":66732}},
+                "seasons":[{"number":1,"episodes":[{"number":1},{"number":2},{"number":3},{"number":4},{"number":5},{"number":6},{"number":7},{"number":8}]}]
+            }]
+        }"""
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.MANUAL)
+        assertNull("Serie completata su Simkl deve sparire da Continua a guardare", db.vixFlixDao().getWatchProgress("tv_66732", profileId))
+    }
+
+    // 47. Audit Episodi Speciali (S00), Multi-Stagione e Delta solo-stato (!hasSeasonsField) che preserva episodi già salvati
+    @Test
+    fun `47 special episodes multi season and status only delta preserve stored episode states`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_sp47", "ref_sp47", nowMs() + 3_600_000L))
+        server.tmdbTvJson[19885] = """{"id":19885,"name":"Sherlock","poster_path":"/sh.jpg","first_air_date":"2010-07-25","seasons":[{"season_number":0,"episode_count":2},{"season_number":1,"episode_count":3},{"season_number":2,"episode_count":3}]}"""
+        server.tmdbSeasonJson["19885_2"] = """{"season_number":2,"episodes":[{"episode_number":1,"season_number":2,"name":"A Scandal in Belgravia"},{"episode_number":2,"season_number":2,"name":"The Hounds of Baskerville"}]}"""
+
+        server.activitiesJson = """{"all":"2026-10-01T10:00:00Z","shows":{"all":"2026-10-01T10:00:00Z","watched_at":"2026-10-01T10:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "watched_episodes_count":5,
+                "total_episodes_count":8,
+                "next_to_watch":"S02E02",
+                "show":{"title":"Sherlock","year":2010,"ids":{"simkl":198850,"tmdb":19885}},
+                "seasons":[
+                    {"number":0,"episodes":[{"number":1,"watched_at":"2026-10-01T08:00:00Z"}]},
+                    {"number":1,"episodes":[{"number":1},{"number":2},{"number":3}]},
+                    {"number":2,"episodes":[{"number":1,"watched_at":"2026-10-01T10:00:00Z"}]}
+                ]
+            }]
+        }"""
+
+        val mgr = buildManager(syncCooldownMs = 0L)
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.POST_AUTH)
+
+        assertEquals(setOf(1), watchedEpisodesForSeason(19885, 0, profileId))
+        assertEquals(setOf(1, 2, 3), watchedEpisodesForSeason(19885, 1, profileId))
+        assertEquals(setOf(1), watchedEpisodesForSeason(19885, 2, profileId))
+        val cw = db.vixFlixDao().getWatchProgress("tv_19885", profileId)
+        assertEquals(2, cw?.seasonNumber)
+        assertEquals(2, cw?.episodeNumber)
+
+        // Delta successivo senza campo `seasons` (es. cambio stato o metadato): NON deve azzerare gli episodi salvati!
+        server.activitiesJson = """{"all":"2026-10-02T10:00:00Z","shows":{"all":"2026-10-02T10:00:00Z"},"movies":{},"anime":{}}"""
+        server.allItemsDeltaJson = """{
+            "shows":[{
+                "status":"watching",
+                "watched_episodes_count":5,
+                "total_episodes_count":8,
+                "next_to_watch":"S02E02",
+                "show":{"title":"Sherlock","year":2010,"ids":{"simkl":198850,"tmdb":19885}}
+            }]
+        }"""
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.FOREGROUND)
+
+        assertEquals(5, db.vixFlixDao().getSimklEpisodeStatesByTmdb(profileId, 19885).count { it.watched })
+        assertEquals(setOf(1), watchedEpisodesForSeason(19885, 0, profileId))
+    }
+
+    // 48. Audit Protezione Player Attivo & Preservazione Progresso Locale alla Scadenza Playback Remoto Simkl
+    @Test
+    fun `48 active playback is protected from background sync and expired remote playback never deletes local progress`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_p48", "ref_p48", nowMs() + 3_600_000L))
+        val movie = MediaItem(155, "movie", "The Dark Knight", "", null, null, 8.5, "2008")
+
+        // Progresso locale valido al minuto 40
+        repo.saveWatchProgress(movie, null, null, null, 2_400_000L, 9_120_000L, profileId)
+        db.vixFlixDao().upsertSimklBaseline(
+            SimklPlaybackBaselineEntity(
+                profileId = profileId,
+                contentKey = "movie_155",
+                tmdbId = 155,
+                mediaType = "movie",
+                simklPlaybackId = 7001L,
+                lastSyncedProgressPercent = 26.0,
+                lastRemotePausedAtMs = nowMs() - 60_000L,
+                lastLocalUpdatedAtMs = nowMs()
+            )
+        )
+
+        val mgr = buildManager(syncCooldownMs = 0L)
+
+        // 1. Player attivo sul film 155 -> sync background con progresso remoto diverso (90%) NON deve sovrascrivere!
+        mgr.setActivePlaybackTarget(profileId, "movie", 155, null, null)
+        server.activitiesJson = """{"all":"2026-10-02T10:00:00Z","movies":{"playback":"2026-10-02T10:00:00Z"},"shows":{},"anime":{}}"""
+        server.playbackMoviesJson = """[{"id":7001,"progress":88.0,"paused_at":"2026-10-02T10:00:00Z","type":"movie","movie":{"title":"The Dark Knight","year":2008,"ids":{"simkl":555,"tmdb":155}}}]"""
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.FOREGROUND)
+        assertEquals("Progresso locale durante player attivo non deve essere sovrascritto", 2_400_000L, db.vixFlixDao().getWatchProgress("movie_155", profileId)?.positionMs)
+
+        // 2. Player chiuso, ma Simkl ha fatto scadere il playback temporaneo (`[]`): il progresso locale DEVE rimanere intatto!
+        mgr.clearActivePlaybackTarget()
+        server.activitiesJson = """{"all":"2026-10-03T10:00:00Z","movies":{"playback":"2026-10-03T10:00:00Z"},"shows":{},"anime":{}}"""
+        server.playbackMoviesJson = "[]"
+        mgr.syncProfileNow(profileId, SimklSyncTrigger.FOREGROUND)
+        val preserved = db.vixFlixDao().getWatchProgress("movie_155", profileId)
+        assertNotNull("La scadenza del playback temporaneo Simkl non deve MAI cancellare Continua a guardare locale", preserved)
+        assertEquals(2_400_000L, preserved!!.positionMs)
+    }
+
+    // 49. Audit Errori HTTP (400/401+refresh/404/409/429/500/JSON malformato) + Diagnostica Sanitizzata senza Leak di Token
+    @Test
+    fun `49 http errors and malformed json are logged in sanitized diagnostics without leaking tokens or secrets`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        val secretAccessToken = "SUPER_SECRET_ACCESS_TOKEN_999"
+        val secretClientId = "SUPER_SECRET_CLIENT_ID_888"
+        tokenStore.saveTokens(profileId, SimklTokenBundle(secretAccessToken, "SUPER_SECRET_REFRESH_777", nowMs() + 3_600_000L))
+        val movie = MediaItem(9991, "movie", "Error Probe", "", null, null, 7.0, "2024")
+        val mgr = buildManager(minPostIntervalMs = 5L, syncCooldownMs = 0L, clientId = secretClientId)
+
+        // 409 Conflict su stop (già registrato su Simkl) -> trattato come successo senza loop infinito
+        server.scrobbleStopOverrideStatuses.add(409)
+        mgr.enqueueScrobbleStop(profileId, movie, null, null, 5_000_000L, 5_000_000L, isExplicitCompletion = true)
+        waitUntil { mgr.getRecentDiagnostics().any { it.httpCode == 409 && it.outcome == "CONFLICT_ALREADY_WATCHED" } }
+
+        // 400 Bad Request -> diagnostica CLIENT_ERROR_DROPPED, non blocca coda
+        server.scrobbleStartOverrideStatuses.add(400)
+        mgr.enqueueScrobbleStart(profileId, movie, null, null, 0L, 5_000_000L)
+        waitUntil { mgr.getRecentDiagnostics().any { it.httpCode == 400 && it.outcome == "CLIENT_ERROR_DROPPED" } }
+
+        // 401 -> refresh automatico token + retry riuscito
+        server.scrobbleStartOverrideStatuses.add(401)
+        server.tokenResponses.add(200 to """{"access_token":"REFRESHED_TOKEN_49","refresh_token":"REFRESHED_REF_49","expires_in":86400}""")
+        mgr.enqueueScrobbleStart(profileId, movie, null, null, 60_000L, 5_000_000L)
+        waitUntil { mgr.getRecentDiagnostics().any { it.endpoint == "POST /scrobble/start" && it.httpCode == 200 } }
+
+        // 429 -> retry e successo
+        server.scrobblePauseOverrideStatuses.add(429)
+        mgr.enqueueScrobblePause(profileId, movie, null, null, 120_000L, 5_000_000L)
+        waitUntil { mgr.getRecentDiagnostics().any { it.endpoint == "POST /scrobble/pause" && it.httpCode == 429 && it.outcome == "RETRY" } }
+        waitUntil { mgr.flushPendingQueueNow(profileId) }
+
+        // Verifica sanitizzazione: ZERO token o client_id esposti nei log diagnostici!
+        val allLogs = mgr.getRecentDiagnostics().joinToString("\n") {
+            "${it.endpoint}|${it.outcome}|${it.sanitizedResponse}|${it.errorDetail}"
+        }
+        assertFalse("Access token non deve mai comparire nella diagnostica", allLogs.contains(secretAccessToken))
+        assertFalse("Client ID non deve mai comparire nella diagnostica", allLogs.contains(secretClientId))
+        assertFalse("Refresh token non deve mai comparire nella diagnostica", allLogs.contains("SUPER_SECRET_REFRESH_777"))
+    }
+
+    // 50. Audit Isolamento Multi-Profilo & Cambio Profilo: job di A cancellati, coda pendente di A preservata con tag profileA, profilo B 100% isolato
+    @Test
+    fun `50 profile switch isolates simkl queues tokens library and episode states completely`() = runBlocking {
+        val profileA = DEFAULT_PRIMARY_PROFILE_ID
+        val profileB = repo.createProfile("Profilo B", "violet_glow", 0xFF8B5CF6L).getOrThrow().id
+        tokenStore.saveTokens(profileA, SimklTokenBundle("tok_prof_A", "ref_prof_A", nowMs() + 86_400_000L))
+        tokenStore.saveTokens(profileB, SimklTokenBundle("tok_prof_B", "ref_prof_B", nowMs() + 86_400_000L))
+
+        val mgr = buildManager(minPostIntervalMs = 5L, syncCooldownMs = 0L)
+        val movieA = MediaItem(401, "movie", "Film A", "", null, null, 7.5, "2020")
+
+        // Accoda scrobble fallito (500) per Profilo A -> attende completamento tentativo HTTP 500 (resta in coda pendente taggato profileA)
+        server.scrobbleStopOverrideStatuses.add(500)
+        mgr.enqueueScrobbleStop(profileA, movieA, null, null, 1_000_000L, 4_000_000L, isExplicitCompletion = false)
+        waitUntil { (db.vixFlixDao().getSimklPendingScrobbles(profileA).firstOrNull()?.attemptCount ?: 0) >= 1 }
+
+        // Cambio profilo attivo da A a B
+        mgr.onActiveProfileChanged(profileA, profileB)
+
+        // Profilo A mantiene la sua coda pendente; Profilo B non vede né tocca nulla di Profilo A
+        assertEquals(1, db.vixFlixDao().getSimklPendingScrobbles(profileA).size)
+        assertEquals(0, db.vixFlixDao().getSimklPendingScrobbles(profileB).size)
+
+        // Sync di Profilo B usa SOLO token di B e popola solo B (mai token di A)
+        server.recordedRequests.clear()
+        server.activitiesJson = """{"all":"2026-10-08T10:00:00Z","movies":{"all":"2026-10-08T10:00:00Z"},"shows":{},"anime":{}}"""
+        server.allMoviesJson = """{"movies":[{"status":"plantowatch","movie":{"title":"Film Solo B","year":2025,"ids":{"simkl":99502,"tmdb":502}}}]}"""
+        mgr.syncProfileNow(profileB, SimklSyncTrigger.POST_AUTH)
+
+        val simklRequests = server.recordedRequests.filter {
+            it.path.startsWith("/sync/") || it.path.startsWith("/scrobble/") || it.path.startsWith("/users/")
+        }
+        assertTrue("Devono essere state eseguite richieste Simkl per B", simklRequests.isNotEmpty())
+        assertTrue(
+            "Tutte le chiamate Simkl di B devono usare Bearer tok_prof_B, trovate: ${simklRequests.map { it.path to it.headers["authorization"] }}",
+            simklRequests.all { it.headers["authorization"] == "Bearer tok_prof_B" }
+        )
+        assertEquals(1, db.vixFlixDao().getSimklLibraryForProfile(profileB).size)
+        assertEquals(0, db.vixFlixDao().getSimklLibraryForProfile(profileA).size)
+    }
+
     private fun decodeAndVerifyIso18004Qr(matrix: SimklQrMatrix): String {
         val size = matrix.size
         assertTrue("Dimensione QR non valida: $size", size >= 21 && (size - 17) % 4 == 0)
@@ -2394,7 +2998,9 @@ class SimklSyncSystemTest {
 
         val recordedRequests = CopyOnWriteArrayList<RecordedHttpRequest>()
         val tokenResponses = java.util.concurrent.ConcurrentLinkedQueue<Pair<Int, String>>()
+        val scrobbleStartOverrideStatuses = java.util.concurrent.ConcurrentLinkedQueue<Int>()
         val scrobblePauseOverrideStatuses = java.util.concurrent.ConcurrentLinkedQueue<Int>()
+        val scrobbleStopOverrideStatuses = java.util.concurrent.ConcurrentLinkedQueue<Int>()
 
         @Volatile var deviceResponseJson: String = """{"device_code":"d1","user_code":"C1","verification_uri":"http://127.0.0.1/pin","expires_in":600,"interval":1}"""
         @Volatile var userSettingsJson: String = """{"user":{"name":"TestUser"},"account":{"id":1001}}"""
@@ -2412,6 +3018,9 @@ class SimklSyncSystemTest {
         @Volatile var playbackMoviesJson: String = "[]"
         @Volatile var playbackEpisodesJson: String = "[]"
         @Volatile var scrobbleStopStatusCode: Int = 200
+        @Volatile var historyAddStatusCode: Int = 200
+        @Volatile var historyRemoveStatusCode: Int = 200
+        @Volatile var addToListStatusCode: Int = 200
         val tmdbMovieJson = java.util.concurrent.ConcurrentHashMap<Int, String>()
         val tmdbTvJson = java.util.concurrent.ConcurrentHashMap<Int, String>()
         val tmdbSeasonJson = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -2515,13 +3124,24 @@ class SimklSyncSystemTest {
                 path == "/sync/playback/movies" -> 200 to playbackMoviesJson
                 path == "/sync/playback/episodes" -> 200 to playbackEpisodesJson
                 method == "DELETE" && path.startsWith("/sync/playback/") -> 204 to ""
-                path == "/scrobble/start" -> 200 to """{"id":5001,"action":"start"}"""
+                path == "/sync/history" -> historyAddStatusCode to """{"added":{"movies":1,"shows":1,"episodes":6}}"""
+                path == "/sync/history/remove" -> historyRemoveStatusCode to """{"deleted":{"movies":1,"shows":1,"episodes":1}}"""
+                path == "/sync/add-to-list" -> addToListStatusCode to """{"added":{"movies":1,"shows":1}}"""
+                path == "/scrobble/start" -> {
+                    val forced = scrobbleStartOverrideStatuses.poll()
+                    if (forced != null) forced to """{"error":"scrobble_start_$forced"}"""
+                    else 200 to """{"id":5001,"action":"start"}"""
+                }
                 path == "/scrobble/pause" -> {
                     val forced = scrobblePauseOverrideStatuses.poll()
                     if (forced != null) forced to """{"error":"rate_limited"}"""
                     else 200 to """{"id":5001,"action":"pause"}"""
                 }
-                path.startsWith("/scrobble/stop") -> scrobbleStopStatusCode to """{"id":5001,"action":"stop"}"""
+                path.startsWith("/scrobble/stop") -> {
+                    val forced = scrobbleStopOverrideStatuses.poll()
+                    val code = forced ?: scrobbleStopStatusCode
+                    code to """{"id":5001,"action":"stop"}"""
+                }
                 path.startsWith("/find/") -> {
                     val ext = path.removePrefix("/find/")
                     200 to (tmdbFindJson[ext] ?: """{"movie_results":[],"tv_results":[]}""")

@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.example.data.local.simkl.SimklEpisodeStateEntity
 import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.local.simkl.SimklPendingScrobbleEntity
 import com.example.data.local.simkl.SimklPlaybackBaselineEntity
@@ -56,6 +57,9 @@ interface VixFlixDao {
     @Query("DELETE FROM simkl_library_item WHERE profileId = :profileId")
     suspend fun deleteSimklLibraryForProfile(profileId: String)
 
+    @Query("DELETE FROM simkl_episode_state WHERE profileId = :profileId")
+    suspend fun deleteSimklEpisodeStatesForProfile(profileId: String)
+
     @Transaction
     suspend fun deleteProfileAndPersonalData(profileId: String) {
         deleteWatchProgressForProfile(profileId)
@@ -64,6 +68,7 @@ interface VixFlixDao {
         deleteCompletedMediaForProfile(profileId)
         deleteSimklPendingForProfile(profileId)
         deleteSimklBaselinesForProfile(profileId)
+        deleteSimklEpisodeStatesForProfile(profileId)
         deleteSimklLibraryForProfile(profileId)
         deleteSimklProfileMeta(profileId)
         deleteProfileById(profileId)
@@ -337,6 +342,33 @@ interface VixFlixDao {
     @Query("DELETE FROM simkl_pending_scrobble WHERE profileId = :profileId AND contentKey = :contentKey")
     suspend fun deleteSimklPendingScrobble(profileId: String, contentKey: String)
 
+    @Query(
+        "DELETE FROM simkl_pending_scrobble " +
+            "WHERE profileId = :profileId AND contentKey = :contentKey " +
+            "AND updatedAtMs = :expectedUpdatedAtMs AND action = :expectedAction"
+    )
+    suspend fun deleteSimklPendingScrobbleIfUnchanged(
+        profileId: String,
+        contentKey: String,
+        expectedUpdatedAtMs: Long,
+        expectedAction: String
+    ): Int
+
+    @Query(
+        "UPDATE simkl_pending_scrobble " +
+            "SET attemptCount = :newAttemptCount, nextRetryAtMs = :nextRetryAtMs " +
+            "WHERE profileId = :profileId AND contentKey = :contentKey " +
+            "AND updatedAtMs = :expectedUpdatedAtMs AND action = :expectedAction"
+    )
+    suspend fun updateSimklPendingScrobbleRetryIfUnchanged(
+        profileId: String,
+        contentKey: String,
+        expectedUpdatedAtMs: Long,
+        expectedAction: String,
+        newAttemptCount: Int,
+        nextRetryAtMs: Long
+    ): Int
+
     @Query("SELECT * FROM watch_progress WHERE profileId = :profileId ORDER BY updatedAt DESC")
     suspend fun getWatchProgressListForProfile(profileId: String): List<WatchProgressEntity>
 
@@ -367,6 +399,22 @@ interface VixFlixDao {
 
     @Query("DELETE FROM simkl_library_item WHERE profileId = :profileId AND stableKey IN (:stableKeys)")
     suspend fun deleteSimklLibraryItemsByKeys(profileId: String, stableKeys: List<String>)
+
+    // --- Simkl Per-Episode Watched State (Shows & Anime per profile) ---
+    @Query("SELECT * FROM simkl_episode_state WHERE profileId = :profileId AND seriesStableKey = :seriesStableKey ORDER BY seasonNumber ASC, episodeNumber ASC")
+    suspend fun getSimklEpisodeStatesForSeries(profileId: String, seriesStableKey: String): List<SimklEpisodeStateEntity>
+
+    @Query("SELECT * FROM simkl_episode_state WHERE profileId = :profileId AND tmdbSeriesId = :tmdbSeriesId ORDER BY seasonNumber ASC, episodeNumber ASC")
+    suspend fun getSimklEpisodeStatesByTmdb(profileId: String, tmdbSeriesId: Int): List<SimklEpisodeStateEntity>
+
+    @Query("SELECT * FROM simkl_episode_state WHERE profileId = :profileId AND tmdbSeriesId = :tmdbSeriesId AND seasonNumber = :seasonNumber AND episodeNumber = :episodeNumber LIMIT 1")
+    suspend fun getSimklEpisodeState(profileId: String, tmdbSeriesId: Int, seasonNumber: Int, episodeNumber: Int): SimklEpisodeStateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSimklEpisodeStates(entities: List<SimklEpisodeStateEntity>)
+
+    @Query("DELETE FROM simkl_episode_state WHERE profileId = :profileId AND seriesStableKey IN (:seriesStableKeys)")
+    suspend fun deleteSimklEpisodeStatesBySeriesKeys(profileId: String, seriesStableKeys: List<String>)
 }
 
 data class SeasonWatchedCount(

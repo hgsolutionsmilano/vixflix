@@ -791,6 +791,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             item = session.mediaItem,
             seasonNumber = session.seasonNumber,
             episodeNumber = session.episodeNumber,
+            episodeTitle = session.episodeTitle,
             positionMs = positionMs,
             durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L)
         )
@@ -803,6 +804,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             item = session.mediaItem,
             seasonNumber = session.seasonNumber,
             episodeNumber = session.episodeNumber,
+            episodeTitle = session.episodeTitle,
             positionMs = positionMs,
             durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L)
         )
@@ -815,6 +817,7 @@ class VixFlixViewModel @JvmOverloads constructor(
             item = session.mediaItem,
             seasonNumber = session.seasonNumber,
             episodeNumber = session.episodeNumber,
+            episodeTitle = session.episodeTitle,
             positionMs = positionMs,
             durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L),
             isExplicitCompletion = isCompleted
@@ -1158,6 +1161,7 @@ class VixFlixViewModel @JvmOverloads constructor(
 
         detailLoadJob = viewModelScope.launch {
             launch { repository.vixSrcResolver.prewarmConnection() }
+            simklSyncManager.syncIfNeeded(_activeProfileId.value, SimklSyncTrigger.DETAIL_OPEN)
             // Controlla se abbiamo una stagione salvata in "Continua a guardare" per il profilo attivo
             val savedProgress = repository.getWatchProgress(item.uniqueKey, _activeProfileId.value)
             val initialSeason = savedProgress?.seasonNumber ?: 1
@@ -1749,14 +1753,12 @@ class VixFlixViewModel @JvmOverloads constructor(
                 currentSeasonEpisodes = currentEpisodes,
                 knownSeasons = knownSeasons
             )
-            simklSyncManager.enqueueScrobbleStop(
+            simklSyncManager.enqueueEpisodesWatched(
                 profileId = profileId,
                 item = currentMedia,
                 seasonNumber = seasonNumber,
-                episodeNumber = episodeNumber,
-                positionMs = 60_000L,
-                durationMs = 60_000L,
-                isExplicitCompletion = true
+                episodeNumbers = listOf(episodeNumber),
+                triggerEvent = "manual_mark_episode_watched"
             )
         }
     }
@@ -1801,6 +1803,13 @@ class VixFlixViewModel @JvmOverloads constructor(
                 profileId = profileId,
                 mediaItem = currentMedia,
                 currentSeasonEpisodes = currentEpisodes
+            )
+            simklSyncManager.enqueueEpisodesUnwatched(
+                profileId = profileId,
+                item = currentMedia,
+                seasonNumber = seasonNumber,
+                episodeNumbers = listOf(episodeNumber),
+                triggerEvent = "manual_unmark_episode_watched"
             )
         }
     }
@@ -1851,17 +1860,13 @@ class VixFlixViewModel @JvmOverloads constructor(
                 currentSeasonEpisodes = currentEpisodes,
                 knownSeasons = knownSeasons
             )
-            resolvedNumbers.forEach { epNum ->
-                simklSyncManager.enqueueScrobbleStop(
-                    profileId = profileId,
-                    item = currentMedia,
-                    seasonNumber = seasonNumber,
-                    episodeNumber = epNum,
-                    positionMs = 60_000L,
-                    durationMs = 60_000L,
-                    isExplicitCompletion = true
-                )
-            }
+            simklSyncManager.enqueueEpisodesWatched(
+                profileId = profileId,
+                item = currentMedia,
+                seasonNumber = seasonNumber,
+                episodeNumbers = resolvedNumbers,
+                triggerEvent = "manual_mark_season_watched"
+            )
         }
     }
 
@@ -2110,6 +2115,13 @@ class VixFlixViewModel @JvmOverloads constructor(
                     isDirectHls = false
                 ),
                 metadataDurationMs = updatedMetaDurationMs
+            )
+            simklSyncManager.setActivePlaybackTarget(
+                profileId = playbackProfileId,
+                mediaType = item.mediaType,
+                tmdbId = item.id,
+                seasonNumber = targetSeason,
+                episodeNumber = targetEpisode
             )
 
             // Salva subito l'ingresso in "Continua a guardare" per il profilo attivo se parte da un punto salvato
@@ -2388,8 +2400,9 @@ class VixFlixViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Passa all'episodio successivo reale (stessa stagione o stagione successiva) e aggiorna
-     * stato di completamento e Continua a guardare esclusivamente per il profilo attivo.
+     * Passa all'episodio successivo reale (stessa stagione o stagione successiva) su conclusione naturale
+     * (fine riproduzione o countdown Prossimo Episodio) e aggiorna stato di completamento e Continua a guardare
+     * esclusivamente per il profilo attivo.
      */
     fun playNextEpisode() {
         val session = _playbackSession.value ?: return
@@ -2407,15 +2420,87 @@ class VixFlixViewModel @JvmOverloads constructor(
                 nextEpisode = next,
                 profileId = profileId
             )
+            val dur = session.metadataDurationMs?.takeIf { it > 0L } ?: 60_000L
             simklSyncManager.enqueueScrobbleStop(
                 profileId = profileId,
                 item = session.mediaItem,
                 seasonNumber = currentSeason,
                 episodeNumber = currentEp,
-                positionMs = 60_000L,
-                durationMs = 60_000L,
+                episodeTitle = session.episodeTitle,
+                positionMs = dur,
+                durationMs = dur,
                 isExplicitCompletion = true
             )
+        }
+
+        startPlayback(
+            item = session.mediaItem,
+            seasonNumber = next.seasonNumber,
+            episodeNumber = next.episodeNumber,
+            episodeTitle = next.title,
+            explicitStartPositionMs = 0L,
+            expectedDurationMs = next.runtimeMinutes?.takeIf { it in 1..600 }?.let { it * 60_000L }
+        )
+    }
+
+    /**
+     * Cambio manuale all'episodio successivo (pulsante controllo o tasto telecomando MediaNext):
+     * segna l'episodio corrente come completato SOLO se ha effettivamente raggiunto la soglia di completamento (>=96%),
+     * altrimenti salva il progresso parziale reale e invia uno scrobble stop parziale senza falsi completamenti su Simkl.
+     */
+    fun playNextEpisodeManual(currentPositionMs: Long, durationMs: Long) {
+        val session = _playbackSession.value ?: return
+        if (!session.mediaItem.isSeries) return
+        val next = session.verifiedNextEpisode ?: return
+        val currentSeason = session.seasonNumber ?: 1
+        val currentEp = session.episodeNumber ?: 1
+        val profileId = _activeProfileId.value
+        val resolvedDur = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L)
+        val actuallyCompleted = resolvedDur > 0L && currentPositionMs >= (resolvedDur * 0.96).toLong()
+
+        viewModelScope.launch {
+            if (actuallyCompleted) {
+                repository.markEpisodeCompletedAndAdvanceSeries(
+                    item = session.mediaItem,
+                    completedSeason = currentSeason,
+                    completedEpisode = currentEp,
+                    nextEpisode = next,
+                    profileId = profileId
+                )
+                simklSyncManager.enqueueScrobbleStop(
+                    profileId = profileId,
+                    item = session.mediaItem,
+                    seasonNumber = currentSeason,
+                    episodeNumber = currentEp,
+                    episodeTitle = session.episodeTitle,
+                    positionMs = maxOf(currentPositionMs, resolvedDur),
+                    durationMs = resolvedDur,
+                    isExplicitCompletion = true
+                )
+            } else {
+                if (currentPositionMs > 0L) {
+                    repository.saveWatchProgress(
+                        item = session.mediaItem,
+                        seasonNumber = currentSeason,
+                        episodeNumber = currentEp,
+                        episodeTitle = session.episodeTitle,
+                        positionMs = currentPositionMs,
+                        durationMs = resolvedDur,
+                        profileId = profileId,
+                        allowAutoComplete = false
+                    )
+                }
+                simklSyncManager.enqueueScrobbleStop(
+                    profileId = profileId,
+                    item = session.mediaItem,
+                    seasonNumber = currentSeason,
+                    episodeNumber = currentEp,
+                    episodeTitle = session.episodeTitle,
+                    positionMs = currentPositionMs,
+                    durationMs = resolvedDur,
+                    isExplicitCompletion = false
+                )
+            }
         }
 
         startPlayback(
@@ -2519,6 +2604,7 @@ class VixFlixViewModel @JvmOverloads constructor(
         nextEpisodePreResolveJob?.cancel()
         lastPreResolvedEpisodeKey = null
         livePlaybackPositionMs.set(0L)
+        simklSyncManager.clearActivePlaybackTarget()
         _playbackSession.value = null
     }
 
@@ -2551,6 +2637,18 @@ class VixFlixViewModel @JvmOverloads constructor(
         viewModelScope.launch {
             val isInList = watchlist.value.any { it.id == item.uniqueKey }
             repository.toggleWatchlist(item, isInList, currentProfileId)
+            if (isInList) {
+                simklSyncManager.enqueueRemoveFromPlanToWatch(
+                    profileId = currentProfileId,
+                    item = item
+                )
+            } else {
+                simklSyncManager.enqueueAddToList(
+                    profileId = currentProfileId,
+                    item = item,
+                    listStatus = "plantowatch"
+                )
+            }
         }
     }
 

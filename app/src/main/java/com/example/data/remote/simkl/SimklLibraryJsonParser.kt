@@ -177,12 +177,50 @@ object SimklLibraryJsonParser {
                 if (!ep.watchedAt.isNullOrBlank()) {
                     eObj.put("watched_at", ep.watchedAt)
                 }
+                if (ep.simklEpisodeId != null && ep.simklEpisodeId > 0L) {
+                    eObj.put("simkl_id", ep.simklEpisodeId)
+                }
                 epsArr.put(eObj)
             }
             sObj.put("episodes", epsArr)
             root.put(sObj)
         }
         return root.toString()
+    }
+
+    fun deserializeSeasonsJson(rawJson: String?): List<SimklParsedSeason> {
+        val trimmed = rawJson?.trim().orEmpty()
+        if (trimmed.isEmpty()) return emptyList()
+        val arr = runCatching { JSONArray(trimmed) }.getOrNull() ?: return emptyList()
+        return parseSeasons(arr)
+    }
+
+    fun serializeBatchEpisodes(episodes: List<Pair<Int, Int>>): String? {
+        if (episodes.isEmpty()) return null
+        val arr = JSONArray()
+        for ((s, e) in episodes.distinct()) {
+            val obj = JSONObject()
+            obj.put("season", s)
+            obj.put("episode", e)
+            arr.put(obj)
+        }
+        return arr.toString()
+    }
+
+    fun deserializeBatchEpisodes(rawJson: String?): List<Pair<Int, Int>> {
+        val trimmed = rawJson?.trim().orEmpty()
+        if (trimmed.isEmpty()) return emptyList()
+        val arr = runCatching { JSONArray(trimmed) }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Pair<Int, Int>>(arr.length())
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val s = parseFlexibleInt(obj, "season", allowZero = true) ?: continue
+            val e = parseFlexibleInt(obj, "episode", allowZero = s == 0)
+                ?: parseFlexibleInt(obj, "number", allowZero = s == 0)
+                ?: continue
+            out.add(s to e)
+        }
+        return out
     }
 
     private fun parseCategoryArray(
@@ -273,21 +311,41 @@ object SimklLibraryJsonParser {
         )
 
         val tmdbMediaType = if (category == CATEGORY_MOVIES) "movie" else "tv"
-        val parsedSeasons = if (category != CATEGORY_MOVIES) {
+        val hasSeasonsField = category != CATEGORY_MOVIES && itemObj.has("seasons") && !itemObj.isNull("seasons")
+        val parsedSeasons = if (hasSeasonsField) {
             parseSeasons(itemObj.opt("seasons"))
         } else {
             emptyList()
         }
 
         val countedWatchedFromSeasons = parsedSeasons.sumOf { s -> s.episodes.count { it.watched } }
-        val explicitWatchedCount = parseFlexibleInt(itemObj, "watched_episodes_count") ?: 0
-        val explicitTotalCount = parseFlexibleInt(itemObj, "total_episodes_count") ?: 0
+        val explicitWatchedCount = parseFlexibleInt(itemObj, "watched_episodes_count", allowZero = true)
+        val explicitTotalCount = parseFlexibleInt(itemObj, "total_episodes_count", allowZero = true)
         val countedTotalFromSeasons = parsedSeasons.sumOf { it.episodes.size }
 
-        val watchedCount = maxOf(explicitWatchedCount, countedWatchedFromSeasons)
-        val totalCount = maxOf(explicitTotalCount, countedTotalFromSeasons, watchedCount)
+        val watchedCount = if (hasSeasonsField && explicitWatchedCount != null) {
+            maxOf(explicitWatchedCount, countedWatchedFromSeasons)
+        } else if (hasSeasonsField) {
+            countedWatchedFromSeasons
+        } else {
+            explicitWatchedCount ?: 0
+        }
+        val totalCount = maxOf(explicitTotalCount ?: 0, countedTotalFromSeasons, watchedCount)
 
+        val nextToWatchInfoObj = itemObj.optJSONObject("next_to_watch_info")
+        val nextToWatchSeason = parseFlexibleInt(nextToWatchInfoObj, "season", allowZero = true)
+        val nextToWatchEpisode = parseFlexibleInt(
+            nextToWatchInfoObj,
+            "episode",
+            allowZero = nextToWatchSeason == 0
+        ) ?: parseFlexibleInt(nextToWatchInfoObj, "number", allowZero = nextToWatchSeason == 0)
         val nextToWatch = optNonBlankString(itemObj, "next_to_watch")
+            ?: optNonBlankString(nextToWatchInfoObj, "code")
+            ?: if (nextToWatchSeason != null && nextToWatchEpisode != null) {
+                "S${nextToWatchSeason.toString().padStart(2, '0')}E${nextToWatchEpisode.toString().padStart(2, '0')}"
+            } else {
+                null
+            }
         val lastWatchedCode = optNonBlankString(itemObj, "last_watched")
 
         return SimklLibraryParsedItem(
@@ -307,7 +365,10 @@ object SimklLibraryJsonParser {
             lastWatchedAt = lastWatchedAt,
             nextToWatch = nextToWatch,
             lastWatchedEpisodeCode = lastWatchedCode,
-            seasons = parsedSeasons
+            seasons = parsedSeasons,
+            nextToWatchSeason = nextToWatchSeason,
+            nextToWatchEpisode = nextToWatchEpisode,
+            hasSeasonsField = hasSeasonsField
         )
     }
 
@@ -362,11 +423,17 @@ object SimklLibraryJsonParser {
         val result = ArrayList<SimklParsedEpisode>()
 
         fun parseSingleEp(epObj: JSONObject, fallbackEpNumber: Int?): SimklParsedEpisode? {
-            val epNum = parseFlexibleInt(epObj, "number")
-                ?: parseFlexibleInt(epObj, "episode")
-                ?: fallbackEpNumber?.takeIf { it > 0 }
+            val allowZeroEp = seasonNum == 0
+            val epNum = parseFlexibleInt(epObj, "number", allowZero = allowZeroEp)
+                ?: parseFlexibleInt(epObj, "episode", allowZero = allowZeroEp)
+                ?: fallbackEpNumber?.takeIf { if (allowZeroEp) it >= 0 else it > 0 }
                 ?: return null
             val watchedAt = optNonBlankString(epObj, "watched_at")
+            val epIdsObj = epObj.optJSONObject("ids")
+            val simklEpId = parseFlexibleLong(epIdsObj, "simkl")
+                ?: parseFlexibleLong(epIdsObj, "simkl_id")
+                ?: parseFlexibleLong(epObj, "simkl_id")
+                ?: parseFlexibleLong(epObj, "id")
             val isWatched = when {
                 epObj.has("watched") -> {
                     val raw = epObj.opt("watched")
@@ -384,7 +451,8 @@ object SimklLibraryJsonParser {
                 seasonNumber = seasonNum,
                 episodeNumber = epNum,
                 watched = isWatched,
-                watchedAt = watchedAt
+                watchedAt = watchedAt,
+                simklEpisodeId = simklEpId
             )
         }
 

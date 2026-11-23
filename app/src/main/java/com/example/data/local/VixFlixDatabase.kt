@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
+import com.example.data.local.simkl.SimklEpisodeStateEntity
 import com.example.data.local.simkl.SimklLibraryItemEntity
 import com.example.data.local.simkl.SimklPendingScrobbleEntity
 import com.example.data.local.simkl.SimklPlaybackBaselineEntity
@@ -27,10 +28,11 @@ import com.example.data.local.simkl.SimklProfileSyncMetaEntity
         CompletedMediaEntity::class,
         SimklProfileSyncMetaEntity::class,
         SimklLibraryItemEntity::class,
+        SimklEpisodeStateEntity::class,
         SimklPlaybackBaselineEntity::class,
         SimklPendingScrobbleEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class VixFlixDatabase : RoomDatabase() {
@@ -535,6 +537,40 @@ abstract class VixFlixDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `simkl_pending_scrobble` ADD COLUMN `episodeTitle` TEXT")
+                db.execSQL("ALTER TABLE `simkl_pending_scrobble` ADD COLUMN `simklId` INTEGER")
+                db.execSQL("ALTER TABLE `simkl_pending_scrobble` ADD COLUMN `imdbId` TEXT")
+                db.execSQL("ALTER TABLE `simkl_pending_scrobble` ADD COLUMN `tvdbId` INTEGER")
+                db.execSQL("ALTER TABLE `simkl_pending_scrobble` ADD COLUMN `simklEpisodeId` INTEGER")
+                db.execSQL("ALTER TABLE `simkl_pending_scrobble` ADD COLUMN `batchEpisodesJson` TEXT")
+                db.execSQL("ALTER TABLE `simkl_pending_scrobble` ADD COLUMN `triggerEvent` TEXT NOT NULL DEFAULT ''")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `simkl_episode_state` (
+                        `profileId` TEXT NOT NULL,
+                        `seriesStableKey` TEXT NOT NULL,
+                        `simklSeriesId` INTEGER NOT NULL,
+                        `tmdbSeriesId` INTEGER,
+                        `seasonNumber` INTEGER NOT NULL,
+                        `episodeNumber` INTEGER NOT NULL,
+                        `simklEpisodeId` INTEGER,
+                        `watched` INTEGER NOT NULL,
+                        `watchedAt` TEXT,
+                        `watchedAtMs` INTEGER NOT NULL,
+                        `updatedAtMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`profileId`, `seriesStableKey`, `seasonNumber`, `episodeNumber`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_simkl_episode_state_profileId_tmdbSeriesId` ON `simkl_episode_state` (`profileId`, `tmdbSeriesId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_simkl_episode_state_profileId_simklSeriesId` ON `simkl_episode_state` (`profileId`, `simklSeriesId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_simkl_episode_state_profileId_seriesStableKey` ON `simkl_episode_state` (`profileId`, `seriesStableKey`)")
+            }
+        }
+
         fun getInstance(context: Context): VixFlixDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -543,7 +579,16 @@ abstract class VixFlixDatabase : RoomDatabase() {
                     "vixflix_stream.db"
                 )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8,
+                        MIGRATION_8_9
+                    )
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

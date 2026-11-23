@@ -1372,7 +1372,8 @@ fun VixFlixAppScreen(
                     onSaveIntroSegment = viewModel::saveCurrentEpisodeIntroSegment,
                     onScrobbleStart = viewModel::onPlayerScrobbleStart,
                     onScrobblePause = viewModel::onPlayerScrobblePause,
-                    onScrobbleStop = viewModel::onPlayerScrobbleStop
+                    onScrobbleStop = viewModel::onPlayerScrobbleStop,
+                    onManualNextEpisode = viewModel::playNextEpisodeManual
                 )
             }
         }

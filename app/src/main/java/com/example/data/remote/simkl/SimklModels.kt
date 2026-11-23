@@ -64,21 +64,34 @@ data class SimklActivitiesResponse(
     @param:Json(name = "anime") val anime: SimklActivityBucketDto? = null
 ) {
     val moviesPlaybackTimestamp: String?
-        get() = movies?.playback ?: movies?.all
+        get() = listOfNotNull(movies?.playback, movies?.all).maxOrNull()
     val showsPlaybackTimestamp: String?
-        get() = shows?.playback ?: tvShows?.playback ?: shows?.all ?: tvShows?.all
+        get() = listOfNotNull(shows?.playback, tvShows?.playback, shows?.all, tvShows?.all).maxOrNull()
+    val animePlaybackTimestamp: String?
+        get() = listOfNotNull(anime?.playback, anime?.all).maxOrNull()
     val moviesWatchedTimestamp: String?
-        get() = movies?.watchedAt ?: movies?.completed ?: movies?.all
+        get() = listOfNotNull(movies?.watchedAt, movies?.completed, movies?.all).maxOrNull()
     val showsWatchedTimestamp: String?
-        get() = shows?.watchedAt ?: shows?.completed ?: tvShows?.watchedAt ?: shows?.all
+        get() = listOfNotNull(
+            shows?.watchedAt,
+            shows?.completed,
+            shows?.watching,
+            tvShows?.watchedAt,
+            tvShows?.completed,
+            tvShows?.watching,
+            shows?.all,
+            tvShows?.all
+        ).maxOrNull()
+    val animeWatchedTimestamp: String?
+        get() = listOfNotNull(anime?.watchedAt, anime?.completed, anime?.watching, anime?.all).maxOrNull()
     val showsAllTimestamp: String?
-        get() = shows?.latestListActivityTimestamp ?: tvShows?.latestListActivityTimestamp
+        get() = listOfNotNull(shows?.latestListActivityTimestamp, tvShows?.latestListActivityTimestamp).maxOrNull()
     val moviesAllTimestamp: String?
         get() = movies?.latestListActivityTimestamp
     val animeAllTimestamp: String?
         get() = anime?.latestListActivityTimestamp
     val showsRemovedTimestamp: String?
-        get() = shows?.removedFromList ?: tvShows?.removedFromList
+        get() = listOfNotNull(shows?.removedFromList, tvShows?.removedFromList).maxOrNull()
     val moviesRemovedTimestamp: String?
         get() = movies?.removedFromList
     val animeRemovedTimestamp: String?
@@ -93,6 +106,7 @@ data class SimklActivityBucketDto(
     @param:Json(name = "completed") val completed: String? = null,
     @param:Json(name = "watching") val watching: String? = null,
     @param:Json(name = "plantowatch") val planToWatch: String? = null,
+    @param:Json(name = "plan_to_watch") val planToWatchSnake: String? = null,
     @param:Json(name = "hold") val hold: String? = null,
     @param:Json(name = "dropped") val dropped: String? = null,
     @param:Json(name = "watchlist") val watchlist: String? = null,
@@ -101,7 +115,17 @@ data class SimklActivityBucketDto(
     @param:Json(name = "removed_from_list") val removedFromList: String? = null
 ) {
     val latestListActivityTimestamp: String?
-        get() = listOfNotNull(all, watching, planToWatch, hold, dropped, watchlist, watchedAt, completed).maxOrNull()
+        get() = listOfNotNull(
+            all,
+            watching,
+            planToWatch,
+            planToWatchSnake,
+            hold,
+            dropped,
+            watchlist,
+            watchedAt,
+            completed
+        ).maxOrNull()
 }
 
 @JsonClass(generateAdapter = true)
@@ -136,7 +160,8 @@ data class SimklEpisodeDto(
     @param:Json(name = "ids") val ids: SimklIdsDto? = null
 ) {
     val resolvedEpisodeNumber: Int?
-        get() = number?.takeIf { it > 0 } ?: episodeAlt?.takeIf { it > 0 }
+        get() = number?.takeIf { it > 0 || (season == 0 && it >= 0) }
+            ?: episodeAlt?.takeIf { it > 0 || (season == 0 && it >= 0) }
 }
 
 @JsonClass(generateAdapter = true)
@@ -163,6 +188,80 @@ data class SimklScrobbleResponse(
     @param:Json(name = "id") val id: Long? = null,
     @param:Json(name = "action") val action: String? = null,
     @param:Json(name = "progress") val progress: Double? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklHistoryEpisodeItemDto(
+    @param:Json(name = "number") val number: Int,
+    @param:Json(name = "watched_at") val watchedAt: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklHistorySeasonDto(
+    @param:Json(name = "number") val number: Int,
+    @param:Json(name = "episodes") val episodes: List<SimklHistoryEpisodeItemDto>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklHistoryShowDto(
+    @param:Json(name = "title") val title: String? = null,
+    @param:Json(name = "year") val year: Int? = null,
+    @param:Json(name = "ids") val ids: SimklIdsDto? = null,
+    @param:Json(name = "seasons") val seasons: List<SimklHistorySeasonDto>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklHistoryMovieDto(
+    @param:Json(name = "title") val title: String? = null,
+    @param:Json(name = "year") val year: Int? = null,
+    @param:Json(name = "watched_at") val watchedAt: String? = null,
+    @param:Json(name = "ids") val ids: SimklIdsDto? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklHistorySyncRequest(
+    @param:Json(name = "movies") val movies: List<SimklHistoryMovieDto>? = null,
+    @param:Json(name = "shows") val shows: List<SimklHistoryShowDto>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklHistoryCountDto(
+    @param:Json(name = "movies") val movies: Int? = null,
+    @param:Json(name = "shows") val shows: Int? = null,
+    @param:Json(name = "episodes") val episodes: Int? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklHistorySyncResponse(
+    @param:Json(name = "added") val added: SimklHistoryCountDto? = null,
+    @param:Json(name = "deleted") val deleted: SimklHistoryCountDto? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklAddToListMovieDto(
+    @param:Json(name = "to") val to: String,
+    @param:Json(name = "title") val title: String? = null,
+    @param:Json(name = "year") val year: Int? = null,
+    @param:Json(name = "ids") val ids: SimklIdsDto
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklAddToListShowDto(
+    @param:Json(name = "to") val to: String,
+    @param:Json(name = "title") val title: String? = null,
+    @param:Json(name = "year") val year: Int? = null,
+    @param:Json(name = "ids") val ids: SimklIdsDto
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklAddToListRequest(
+    @param:Json(name = "movies") val movies: List<SimklAddToListMovieDto>? = null,
+    @param:Json(name = "shows") val shows: List<SimklAddToListShowDto>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SimklAddToListResponse(
+    @param:Json(name = "added") val added: SimklHistoryCountDto? = null
 )
 
 // --- Modelli di stato dominio / UI ---
@@ -244,7 +343,8 @@ data class SimklParsedEpisode(
     val seasonNumber: Int,
     val episodeNumber: Int,
     val watched: Boolean,
-    val watchedAt: String? = null
+    val watchedAt: String? = null,
+    val simklEpisodeId: Long? = null
 )
 
 @Immutable
@@ -271,7 +371,10 @@ data class SimklLibraryParsedItem(
     val lastWatchedAt: String?,
     val nextToWatch: String?,
     val lastWatchedEpisodeCode: String?,
-    val seasons: List<SimklParsedSeason>
+    val seasons: List<SimklParsedSeason>,
+    val nextToWatchSeason: Int? = null,
+    val nextToWatchEpisode: Int? = null,
+    val hasSeasonsField: Boolean = false
 )
 
 @Immutable
@@ -291,6 +394,24 @@ data class SimklSyncErrorEntry(
     val httpCode: Int? = null,
     val errorType: String,
     val message: String
+)
+
+/**
+ * Voce diagnostica sanitizzata per ogni operazione Simkl (mai token, segreti o credenziali).
+ */
+@Immutable
+data class SimklDiagnosticEntry(
+    val timestampMs: Long,
+    val endpoint: String,
+    val contentType: String,
+    val simklId: Long? = null,
+    val tmdbId: Int? = null,
+    val profileId: String,
+    val triggerEvent: String,
+    val httpCode: Int? = null,
+    val sanitizedResponse: String? = null,
+    val outcome: String,
+    val errorDetail: String? = null
 )
 
 @Immutable

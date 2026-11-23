@@ -243,7 +243,8 @@ fun VixPlayerScreen(
     onSaveIntroSegment: ((Long, Long) -> Unit)? = null,
     onScrobbleStart: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
     onScrobblePause: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
-    onScrobbleStop: (positionMs: Long, durationMs: Long, isCompleted: Boolean) -> Unit = { _, _, _ -> }
+    onScrobbleStop: (positionMs: Long, durationMs: Long, isCompleted: Boolean) -> Unit = { _, _, _ -> },
+    onManualNextEpisode: ((positionMs: Long, durationMs: Long) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -475,6 +476,7 @@ fun VixPlayerScreen(
     val latestOnScrobbleStart by rememberUpdatedState(onScrobbleStart)
     val latestOnScrobblePause by rememberUpdatedState(onScrobblePause)
     val latestOnScrobbleStop by rememberUpdatedState(onScrobbleStop)
+    val latestOnManualNextEpisode by rememberUpdatedState(onManualNextEpisode)
 
     // Reset deterministico e completo dello stato al cambio episodio/contenuto:
     // azzera posizione, durata, barra, overlay, tracce e vecchi mediaItem prima del caricamento del nuovo episodio.
@@ -560,13 +562,15 @@ fun VixPlayerScreen(
                     exoPlayer.pause()
                 }
                 val pos = exoPlayer.currentPosition.coerceAtLeast(currentPositionMsState.longValue)
-                val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L } ?: durationMsState.longValue
+                val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L }
+                    ?: durationMsState.longValue.takeIf { it > 0L }
+                    ?: (latestSession.metadataDurationMs ?: 0L)
                 if (pos > 0L) {
                     latestOnProgressUpdate(pos, dur)
-                    if (!playbackEnded && !scrobblePausedSinceStart && !scrobbleStoppedForEpisode) {
-                        scrobblePausedSinceStart = true
-                        latestOnScrobblePause(pos, dur)
-                    }
+                }
+                if ((pos > 0L || scrobbleStartedForEpisode) && !playbackEnded && !scrobblePausedSinceStart && !scrobbleStoppedForEpisode) {
+                    scrobblePausedSinceStart = true
+                    latestOnScrobblePause(pos, dur)
                 }
             }
         }
@@ -670,13 +674,13 @@ fun VixPlayerScreen(
             }
             else -> {
                 val pos = currentPositionMsState.longValue
-                val dur = durationMsState.longValue
+                val dur = durationMsState.longValue.takeIf { it > 0L } ?: (latestSession.metadataDurationMs ?: 0L)
                 if (pos > 0L) {
                     onProgressUpdate(pos, dur)
-                    if (!scrobbleStoppedForEpisode) {
-                        scrobbleStoppedForEpisode = true
-                        latestOnScrobbleStop(pos, dur, playbackEnded)
-                    }
+                }
+                if ((pos > 0L || scrobbleStartedForEpisode) && !scrobbleStoppedForEpisode) {
+                    scrobbleStoppedForEpisode = true
+                    latestOnScrobbleStop(pos, dur, playbackEnded)
                 }
                 onClose()
             }
@@ -805,7 +809,10 @@ fun VixPlayerScreen(
                         scrobbleStartedForEpisode = true
                         scrobblePausedSinceStart = false
                         scrobbleStoppedForEpisode = false
-                        latestOnScrobbleStart(currentPositionMsState.longValue, durationMsState.longValue)
+                        val effectiveDur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L }
+                            ?: durationMsState.longValue.takeIf { it > 0L }
+                            ?: (latestSession.metadataDurationMs ?: 0L)
+                        latestOnScrobbleStart(currentPositionMsState.longValue, effectiveDur)
                     }
                 } else if (playbackState == Player.STATE_ENDED) {
                     isBuffering = false
@@ -814,7 +821,9 @@ fun VixPlayerScreen(
                     playbackEnded = true
                     if (!scrobbleStoppedForEpisode) {
                         scrobbleStoppedForEpisode = true
-                        val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L } ?: durationMsState.longValue
+                        val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L }
+                            ?: durationMsState.longValue.takeIf { it > 0L }
+                            ?: (latestSession.metadataDurationMs ?: 0L)
                         val endPos = maxOf(currentPositionMsState.longValue, dur)
                         latestOnScrobbleStop(endPos, dur, true)
                     }
@@ -856,7 +865,9 @@ fun VixPlayerScreen(
                 if (exoPlayer.currentMediaItem?.mediaId != latestEpisodeKey) return
                 isPlaying = playing
                 val pos = exoPlayer.currentPosition.coerceAtLeast(currentPositionMsState.longValue)
-                val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L } ?: durationMsState.longValue
+                val dur = readVerifiedExoDurationMs(exoPlayer).takeIf { it > 0L }
+                    ?: durationMsState.longValue.takeIf { it > 0L }
+                    ?: (latestSession.metadataDurationMs ?: 0L)
                 if (playing) {
                     if (!scrobbleStartedForEpisode || scrobblePausedSinceStart) {
                         scrobbleStartedForEpisode = true
@@ -864,9 +875,11 @@ fun VixPlayerScreen(
                         scrobbleStoppedForEpisode = false
                         latestOnScrobbleStart(pos, dur)
                     }
-                } else if (pos > 0L) {
-                    latestOnProgressUpdate(pos, dur)
-                    if (!playbackEnded && exoPlayer.playbackState == Player.STATE_READY && !scrobblePausedSinceStart && !scrobbleStoppedForEpisode) {
+                } else {
+                    if (pos > 0L) {
+                        latestOnProgressUpdate(pos, dur)
+                    }
+                    if ((pos > 0L || scrobbleStartedForEpisode) && !playbackEnded && exoPlayer.playbackState == Player.STATE_READY && !scrobblePausedSinceStart && !scrobbleStoppedForEpisode) {
                         scrobblePausedSinceStart = true
                         latestOnScrobblePause(pos, dur)
                     }
@@ -891,13 +904,16 @@ fun VixPlayerScreen(
         exoPlayer.addListener(listener)
         onDispose {
             val finalPos = currentPositionMsState.longValue.coerceAtLeast(exoPlayer.currentPosition)
-            val finalDur = durationMsState.longValue.coerceAtLeast(readVerifiedExoDurationMs(exoPlayer))
+            val finalDur = durationMsState.longValue
+                .coerceAtLeast(readVerifiedExoDurationMs(exoPlayer))
+                .takeIf { it > 0L }
+                ?: (latestSession.metadataDurationMs ?: 0L)
             if (finalPos > 0L) {
                 latestOnProgressUpdate(finalPos, finalDur)
-                if (!scrobbleStoppedForEpisode) {
-                    scrobbleStoppedForEpisode = true
-                    latestOnScrobbleStop(finalPos, finalDur, playbackEnded)
-                }
+            }
+            if ((finalPos > 0L || scrobbleStartedForEpisode) && !scrobbleStoppedForEpisode) {
+                scrobbleStoppedForEpisode = true
+                latestOnScrobbleStop(finalPos, finalDur, playbackEnded)
             }
             exoPlayer.removeListener(listener)
             exoPlayer.release()
@@ -1212,13 +1228,13 @@ fun VixPlayerScreen(
                                     }
                                     else -> {
                                         val pos = currentPositionMsState.longValue
-                                        val dur = durationMsState.longValue
+                                        val dur = durationMsState.longValue.takeIf { it > 0L } ?: (latestSession.metadataDurationMs ?: 0L)
                                         if (pos > 0L) {
                                             onProgressUpdate(pos, dur)
-                                            if (!scrobbleStoppedForEpisode) {
-                                                scrobbleStoppedForEpisode = true
-                                                latestOnScrobbleStop(pos, dur, playbackEnded)
-                                            }
+                                        }
+                                        if ((pos > 0L || scrobbleStartedForEpisode) && !scrobbleStoppedForEpisode) {
+                                            scrobbleStoppedForEpisode = true
+                                            latestOnScrobbleStop(pos, dur, playbackEnded)
                                         }
                                         onClose()
                                     }
@@ -1264,24 +1280,30 @@ fun VixPlayerScreen(
                             Key.MediaNext -> {
                                 if (hasVerifiedNextEpisode) {
                                     val pos = currentPositionMsState.longValue
-                                    if (pos > 0L) {
-                                        onProgressUpdate(pos, durationMsState.longValue)
-                                    }
+                                    val dur = durationMsState.longValue.takeIf { it > 0L } ?: (latestSession.metadataDurationMs ?: 0L)
                                     scrobbleStoppedForEpisode = true
-                                    onNextEpisode()
+                                    val manualHandler = latestOnManualNextEpisode
+                                    if (manualHandler != null) {
+                                        manualHandler(pos, dur)
+                                    } else {
+                                        if (pos > 0L) {
+                                            onProgressUpdate(pos, dur)
+                                        }
+                                        onNextEpisode()
+                                    }
                                     return@onPreviewKeyEvent true
                                 }
                             }
                             Key.MediaPrevious -> {
                                 if (hasVerifiedPreviousEpisode) {
                                     val pos = currentPositionMsState.longValue
-                                    val dur = durationMsState.longValue
+                                    val dur = durationMsState.longValue.takeIf { it > 0L } ?: (latestSession.metadataDurationMs ?: 0L)
                                     if (pos > 0L) {
                                         onProgressUpdate(pos, dur)
-                                        if (!scrobbleStoppedForEpisode) {
-                                            scrobbleStoppedForEpisode = true
-                                            latestOnScrobbleStop(pos, dur, false)
-                                        }
+                                    }
+                                    if ((pos > 0L || scrobbleStartedForEpisode) && !scrobbleStoppedForEpisode) {
+                                        scrobbleStoppedForEpisode = true
+                                        latestOnScrobbleStop(pos, dur, false)
                                     }
                                     onPreviousEpisode()
                                     return@onPreviewKeyEvent true
@@ -1592,23 +1614,29 @@ fun VixPlayerScreen(
                             nextEpisodeFocusRequester = nextEpisodeFocusRequester,
                             onPreviousEpisode = {
                                 val pos = currentPositionMsState.longValue
-                                val dur = durationMsState.longValue
+                                val dur = durationMsState.longValue.takeIf { it > 0L } ?: (latestSession.metadataDurationMs ?: 0L)
                                 if (pos > 0L) {
                                     onProgressUpdate(pos, dur)
-                                    if (!scrobbleStoppedForEpisode) {
-                                        scrobbleStoppedForEpisode = true
-                                        latestOnScrobbleStop(pos, dur, false)
-                                    }
+                                }
+                                if ((pos > 0L || scrobbleStartedForEpisode) && !scrobbleStoppedForEpisode) {
+                                    scrobbleStoppedForEpisode = true
+                                    latestOnScrobbleStop(pos, dur, false)
                                 }
                                 onPreviousEpisode()
                             },
                             onNextEpisode = {
                                 val pos = currentPositionMsState.longValue
-                                if (pos > 0L) {
-                                    onProgressUpdate(pos, durationMsState.longValue)
-                                }
+                                val dur = durationMsState.longValue.takeIf { it > 0L } ?: (latestSession.metadataDurationMs ?: 0L)
                                 scrobbleStoppedForEpisode = true
-                                onNextEpisode()
+                                val manualHandler = latestOnManualNextEpisode
+                                if (manualHandler != null) {
+                                    manualHandler(pos, dur)
+                                } else {
+                                    if (pos > 0L) {
+                                        onProgressUpdate(pos, dur)
+                                    }
+                                    onNextEpisode()
+                                }
                             }
                         )
 

@@ -123,6 +123,24 @@ interface SimklApiService {
         @Body body: SimklScrobbleRequest
     ): Response<SimklScrobbleResponse>
 
+    @POST("sync/history")
+    suspend fun addToHistory(
+        @Header("Authorization") bearerToken: String,
+        @Body body: SimklHistorySyncRequest
+    ): Response<SimklHistorySyncResponse>
+
+    @POST("sync/history/remove")
+    suspend fun removeFromHistory(
+        @Header("Authorization") bearerToken: String,
+        @Body body: SimklHistorySyncRequest
+    ): Response<SimklHistorySyncResponse>
+
+    @POST("sync/add-to-list")
+    suspend fun addToList(
+        @Header("Authorization") bearerToken: String,
+        @Body body: SimklAddToListRequest
+    ): Response<SimklAddToListResponse>
+
     companion object {
         fun createOkHttpClient(
             baseHttpClient: OkHttpClient,

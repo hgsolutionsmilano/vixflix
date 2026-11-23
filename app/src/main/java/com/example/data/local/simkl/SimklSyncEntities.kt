@@ -124,19 +124,55 @@ data class SimklPlaybackBaselineEntity(
 )
 data class SimklPendingScrobbleEntity(
     val profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
-    val contentKey: String, // "movie_{tmdbId}" o "tv_{tmdbId}_s{season}_e{episode}"
+    val contentKey: String, // "movie_{tmdbId}", "tv_{tmdbId}_s{season}_e{episode}" o chiave batch history
     val tmdbId: Int,
     val mediaType: String, // "movie" | "tv"
     val title: String,
     val releaseYear: String = "",
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
-    val action: String, // "start" | "pause" | "stop" | "delete_playback"
+    val action: String, // "start" | "pause" | "stop" | "delete_playback" | "history_add" | "history_remove"
     val progressPercent: Double,
     val minProgress: Int = 96,
     val simklPlaybackId: Long? = null,
     val createdAtMs: Long = System.currentTimeMillis(),
     val updatedAtMs: Long = System.currentTimeMillis(),
     val attemptCount: Int = 0,
-    val nextRetryAtMs: Long = 0L
+    val nextRetryAtMs: Long = 0L,
+    val episodeTitle: String? = null,
+    val simklId: Long? = null,
+    val imdbId: String? = null,
+    val tvdbId: Int? = null,
+    val simklEpisodeId: Long? = null,
+    val batchEpisodesJson: String? = null,
+    val triggerEvent: String = ""
+)
+
+/**
+ * Stato persistente per singolo episodio sincronizzato con Simkl per singolo profilo utente.
+ * Consente aggiornamenti incrementali, rimozione dello stato visto (unwatch), episodi speciali
+ * (stagione 0) e ricalcolo deterministico del progresso per stagione e serie.
+ */
+@Immutable
+@Entity(
+    tableName = "simkl_episode_state",
+    primaryKeys = ["profileId", "seriesStableKey", "seasonNumber", "episodeNumber"],
+    indices = [
+        Index(value = ["profileId", "tmdbSeriesId"]),
+        Index(value = ["profileId", "simklSeriesId"]),
+        Index(value = ["profileId", "seriesStableKey"])
+    ]
+)
+data class SimklEpisodeStateEntity(
+    val profileId: String = DEFAULT_PRIMARY_PROFILE_ID,
+    val seriesStableKey: String,
+    val simklSeriesId: Long = 0L,
+    val tmdbSeriesId: Int? = null,
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val simklEpisodeId: Long? = null,
+    val watched: Boolean = false,
+    val watchedAt: String? = null,
+    val watchedAtMs: Long = 0L,
+    val updatedAtMs: Long = System.currentTimeMillis()
 )
