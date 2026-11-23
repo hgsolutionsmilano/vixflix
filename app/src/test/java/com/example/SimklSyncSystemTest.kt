@@ -27,6 +27,7 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
+import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.UserProfileEntity
 import com.example.data.local.UserProfileUiState
@@ -45,6 +46,7 @@ import com.example.data.remote.TmdbApiService
 import com.example.data.remote.simkl.SimklAuthFlowMode
 import com.example.data.remote.simkl.SimklConfig
 import com.example.data.remote.simkl.SimklConnectionState
+import com.example.data.remote.simkl.SimklLibraryJsonParser
 import com.example.data.remote.simkl.SimklProfileUiState
 import com.example.data.remote.simkl.SimklQrDialogState
 import com.example.data.remote.simkl.SimklQrMatrix
@@ -55,6 +57,8 @@ import com.example.data.remote.simkl.SimklSyncProgress
 import com.example.data.remote.simkl.SimklSyncSummary
 import com.example.data.remote.simkl.SimklSyncTrigger
 import com.example.data.repository.VixFlixRepository
+import com.example.ui.CalendarDate
+import com.example.ui.UpcomingEpisodeBadgeFormatter
 import com.example.ui.VixFlixViewModel
 import com.example.ui.components.SimklQrConnectDialog
 import com.example.ui.components.SimklQrGenerator
@@ -2722,6 +2726,331 @@ class SimklSyncSystemTest {
         )
         assertEquals(1, db.vixFlixDao().getSimklLibraryForProfile(profileB).size)
         assertEquals(0, db.vixFlixDao().getSimklLibraryForProfile(profileA).size)
+    }
+
+    // 55. [Test A] Rimozione stato "Visto" episodi su Simkl (ep 8, 9, 10 su 10) + unwatch intera serie: allinea simkl_episode_state, completed_media, episode_progress, conteggi e Continua a guardare anche quando date_from omette la serie
+    @Test
+    fun `55 simkl episode unwatch removes watched state from episodes 8_9_10 and handles full series unwatch`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_unw55", "ref_unw55", nowMs() + 3_600_000L))
+        server.tmdbTvJson[20010] = """{"id":20010,"name":"Reconcile Series","poster_path":"/rec.jpg","backdrop_path":"/rec_bg.jpg","vote_average":8.2,"first_air_date":"2023-01-10","seasons":[{"season_number":1,"episode_count":12}]}"""
+        server.tmdbSeasonJson["20010_1"] = """{"season_number":1,"episodes":[
+            {"episode_number":1,"season_number":1,"name":"Ep 1","runtime":45},
+            {"episode_number":7,"season_number":1,"name":"Ep 7","runtime":45},
+            {"episode_number":8,"season_number":1,"name":"Ep 8","runtime":48},
+            {"episode_number":9,"season_number":1,"name":"Ep 9","runtime":46},
+            {"episode_number":10,"season_number":1,"name":"Ep 10","runtime":50},
+            {"episode_number":11,"season_number":1,"name":"Ep 11","runtime":49}
+        ]}"""
+
+        // Fase 1: Simkl ha episodi 1..10 visti -> VixFlix su S01E11
+        val initialEpsJson = (1..10).joinToString(",") { n ->
+            """{"number":$n,"watched":true,"watched_at":"2026-10-01T10:${n.toString().padStart(2, '0')}:00Z","ids":{"simkl":${90000 + n}}}"""
+        }
+        server.activitiesJson = """{"all":"2026-10-01T10:10:00Z","shows":{"all":"2026-10-01T10:10:00Z","watched_at":"2026-10-01T10:10:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "last_watched_at":"2026-10-01T10:10:00Z",
+                "last_watched":"S01E10",
+                "next_to_watch":"S01E11",
+                "watched_episodes_count":10,
+                "total_episodes_count":12,
+                "show":{"title":"Reconcile Series","year":2023,"ids":{"simkl":55010,"tmdb":20010}},
+                "seasons":[{"number":1,"episodes":[$initialEpsJson]}]
+            }]
+        }"""
+
+        val mgr = buildManager(syncCooldownMs = 0L)
+        assertTrue(managerSync(mgr, profileId, SimklSyncTrigger.POST_AUTH))
+
+        assertEquals((1..10).toSet(), watchedEpisodesForSeason(20010, 1, profileId))
+        assertEquals(10, db.vixFlixDao().getSimklEpisodeStatesByTmdb(profileId, 20010).count { it.watched })
+        assertEquals("S01E10", db.vixFlixDao().getSimklLibraryForProfile(profileId).first().lastWatchedEpisodeCode)
+        assertEquals(11, db.vixFlixDao().getWatchProgress("tv_20010", profileId)?.episodeNumber)
+
+        // Inserisce un vecchio episode_progress parziale su S01E08 per verificare che venga azzerato su unwatch
+        db.vixFlixDao().upsertEpisodeProgress(
+            EpisodeProgressEntity(
+                profileId = profileId,
+                episodeKey = "tv_20010_s1_e8",
+                tmdbId = 20010,
+                seasonNumber = 1,
+                episodeNumber = 8,
+                positionMs = 420_000L,
+                durationMs = 2_880_000L,
+                updatedAt = nowMs()
+            )
+        )
+
+        // Fase 2: su Simkl vengono rimossi gli episodi 8, 9, 10!
+        // Simuliamo il caso reale Simkl: `activities.shows.watched_at` arretra a E07 e `?date_from=...` restituisce `{}` (omissione della serie nel delta)
+        val remainingEpsJson = (1..7).joinToString(",") { n ->
+            """{"number":$n,"watched":true,"watched_at":"2026-10-01T10:${n.toString().padStart(2, '0')}:00Z","ids":{"simkl":${90000 + n}}}"""
+        }
+        server.activitiesJson = """{"all":"2026-10-05T12:00:00Z","shows":{"all":"2026-10-05T12:00:00Z","watched_at":"2026-10-01T10:07:00Z"},"movies":{},"anime":{}}"""
+        server.allItemsDeltaJson = "{}"
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "last_watched_at":"2026-10-01T10:07:00Z",
+                "last_watched":"S01E07",
+                "next_to_watch":"S01E08",
+                "watched_episodes_count":7,
+                "total_episodes_count":12,
+                "show":{"title":"Reconcile Series","year":2023,"ids":{"simkl":55010,"tmdb":20010}},
+                "seasons":[{"number":1,"episodes":[$remainingEpsJson]}]
+            }]
+        }"""
+
+        assertTrue(managerSync(mgr, profileId, SimklSyncTrigger.FOREGROUND))
+
+        // Verifiche unwatch parziale 8, 9, 10:
+        assertEquals("Solo episodi 1..7 devono risultare visti in completed_media", (1..7).toSet(), watchedEpisodesForSeason(20010, 1, profileId))
+        val statesAfterPartial = db.vixFlixDao().getSimklEpisodeStatesByTmdb(profileId, 20010)
+        assertEquals(7, statesAfterPartial.count { it.watched })
+        assertTrue((8..10).all { ep -> statesAfterPartial.firstOrNull { it.episodeNumber == ep }?.watched == false })
+        assertNull("episode_progress di S01E08 deve essere rimosso", db.vixFlixDao().getEpisodeProgress("tv_20010_s1_e8", profileId))
+
+        val libAfterPartial = db.vixFlixDao().getSimklLibraryForProfile(profileId).first { it.tmdbId == 20010 }
+        assertEquals(7, libAfterPartial.watchedEpisodesCount)
+        assertEquals("S01E07", libAfterPartial.lastWatchedEpisodeCode)
+        assertEquals("S01E08", libAfterPartial.nextToWatch)
+
+        val cwAfterPartial = db.vixFlixDao().getWatchProgress("tv_20010", profileId)
+        assertNotNull("Continua a guardare deve aggiornarsi a S01E08", cwAfterPartial)
+        assertEquals(1, cwAfterPartial!!.seasonNumber)
+        assertEquals(8, cwAfterPartial.episodeNumber)
+        assertEquals("Il progresso parziale residuo deve essere resettato a 0", 0L, cwAfterPartial.positionMs)
+
+        // Fase 3: unwatch dell'intera serie (tutti gli episodi rimanenti 1..7 rimossi su Simkl)
+        server.activitiesJson = """{"all":"2026-10-06T09:00:00Z","shows":{"all":"2026-10-06T09:00:00Z","watched_at":"2026-10-06T09:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[{
+                "status":"watching",
+                "watched_episodes_count":0,
+                "total_episodes_count":12,
+                "show":{"title":"Reconcile Series","year":2023,"ids":{"simkl":55010,"tmdb":20010}},
+                "seasons":[]
+            }]
+        }"""
+
+        assertTrue(managerSync(mgr, profileId, SimklSyncTrigger.MANUAL))
+
+        assertTrue("Nessun episodio deve rimanere visto in completed_media", watchedEpisodesForSeason(20010, 1, profileId).isEmpty())
+        assertEquals(0, db.vixFlixDao().getSimklEpisodeStatesByTmdb(profileId, 20010).count { it.watched })
+        val libAfterFullUnwatch = db.vixFlixDao().getSimklLibraryForProfile(profileId).first { it.tmdbId == 20010 }
+        assertEquals(0, libAfterFullUnwatch.watchedEpisodesCount)
+        assertNull(libAfterFullUnwatch.lastWatchedEpisodeCode)
+    }
+
+    // 56. [Test B] Serie TV con stato SEEN su Simkl e 0 episodi visti (es. Tulsa King): entra in Continua a guardare su S01E01 reale da TMDB (anche futuro), progress 0%, zero falsi episodi completati, zero duplicati e aggiornamento/rimozione dinamica
+    @Test
+    fun `56 seen status tv series without watched episodes appears in continue watching using real tmdb episode and updates dynamically`() = runBlocking {
+        val profileId = DEFAULT_PRIMARY_PROFILE_ID
+        tokenStore.saveTokens(profileId, SimklTokenBundle("tok_seen56", "ref_seen56", nowMs() + 3_600_000L))
+
+        // Tulsa King (TMDB 153312): episodio reale già disponibile
+        server.tmdbTvJson[153312] = """{"id":153312,"name":"Tulsa King","overview":"Dwight Manfredi","poster_path":"/tulsa.jpg","backdrop_path":"/tulsa_bg.jpg","vote_average":8.4,"first_air_date":"2022-11-13","seasons":[{"season_number":1,"episode_count":9}]}"""
+        server.tmdbSeasonJson["153312_1"] = """{"season_number":1,"episodes":[
+            {"episode_number":1,"season_number":1,"name":"Go West, Old Man","runtime":42,"air_date":"2022-11-13"},
+            {"episode_number":2,"season_number":1,"name":"Center of the Universe","runtime":39,"air_date":"2022-11-20"}
+        ]}"""
+
+        // Seconda serie SEEN con primo episodio reale non ancora trasmesso (badge upcoming)
+        server.tmdbTvJson[153313] = """{"id":153313,"name":"Future Seen Series","poster_path":"/future.jpg","first_air_date":"2099-05-15","seasons":[{"season_number":1,"episode_count":8}]}"""
+        server.tmdbSeasonJson["153313_1"] = """{"season_number":1,"episodes":[
+            {"episode_number":1,"season_number":1,"name":"Premiere","runtime":50,"air_date":"2099-05-15"}
+        ]}"""
+
+        server.activitiesJson = """{"all":"2026-10-10T10:00:00Z","shows":{"all":"2026-10-10T10:00:00Z","seen":"2026-10-10T10:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[
+                {
+                    "status":"seen",
+                    "watched_episodes_count":0,
+                    "show":{"title":"Tulsa King","year":2022,"ids":{"simkl":1953928,"tmdb":153312}}
+                },
+                {
+                    "status":"seen",
+                    "watched_episodes_count":0,
+                    "show":{"title":"Future Seen Series","year":2099,"ids":{"simkl":1953929,"tmdb":153313}}
+                }
+            ]
+        }"""
+
+        val mgr = buildManager(syncCooldownMs = 0L)
+        assertTrue(managerSync(mgr, profileId, SimklSyncTrigger.POST_AUTH))
+
+        // Stato libreria conservato fedelmente come "seen", senza inquinare Plan to Watch / La mia lista
+        val lib = db.vixFlixDao().getSimklLibraryForProfile(profileId)
+        assertEquals(2, lib.size)
+        assertTrue(lib.all { it.status == SimklLibraryJsonParser.STATUS_SEEN && it.watchedEpisodesCount == 0 })
+        assertTrue(repo.observeSimklPlanToWatch(profileId).first().isEmpty())
+
+        // Zero episodi marcati falsamente come visti
+        assertTrue(watchedEpisodesForSeason(153312, 1, profileId).isEmpty())
+        assertTrue(watchedEpisodesForSeason(153313, 1, profileId).isEmpty())
+
+        // Tulsa King presente in Continua a guardare su S01E01 reale da TMDB con positionMs == 0L (0%)
+        val tulsaCw = db.vixFlixDao().getWatchProgress("tv_153312", profileId)
+        assertNotNull("Tulsa King (status=seen) deve apparire in Continua a guardare", tulsaCw)
+        assertEquals(1, tulsaCw!!.seasonNumber)
+        assertEquals(1, tulsaCw.episodeNumber)
+        assertEquals("Go West, Old Man", tulsaCw.episodeTitle)
+        assertEquals(0L, tulsaCw.positionMs)
+        assertEquals(0f, tulsaCw.progressFraction, 0.0001f)
+
+        // Future Seen Series presente su S01E01 con badge data uscita reale TMDB preservato
+        val futureCw = db.vixFlixDao().getWatchProgress("tv_153313", profileId)
+        assertNotNull(futureCw)
+        assertEquals(1, futureCw!!.seasonNumber)
+        assertEquals(1, futureCw.episodeNumber)
+        assertEquals(0L, futureCw.positionMs)
+        val badge = UpcomingEpisodeBadgeFormatter.resolveUpcomingEpisodeBadgeForEntry(
+            entry = futureCw,
+            seasonEpisodes = repositorySeasonEpisodesSync(153313, 1),
+            isSeriesCompleted = false,
+            today = CalendarDate(2026, 10, 10)
+        )
+        assertEquals("15/05/2099", badge)
+
+        // Sync ripetuta: ZERO duplicati in Continua a guardare e in simkl_library_item
+        assertTrue(managerSync(mgr, profileId, SimklSyncTrigger.MANUAL))
+        assertEquals(2, db.vixFlixDao().getSimklLibraryForProfile(profileId).size)
+        assertEquals(2, db.vixFlixDao().getWatchProgressListForProfile(profileId).size)
+
+        // Evoluzione dinamica su Simkl:
+        // - Tulsa King riceve visione S01E01 -> avanza a S01E02
+        // - Future Seen Series passa a plantowatch -> sparisce da Continua a guardare ed entra in Plan to Watch
+        server.activitiesJson = """{"all":"2026-10-12T12:00:00Z","shows":{"all":"2026-10-12T12:00:00Z","watched_at":"2026-10-12T12:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[
+                {
+                    "status":"watching",
+                    "last_watched_at":"2026-10-12T12:00:00Z",
+                    "next_to_watch":"S01E02",
+                    "watched_episodes_count":1,
+                    "show":{"title":"Tulsa King","year":2022,"ids":{"simkl":1953928,"tmdb":153312}},
+                    "seasons":[{"number":1,"episodes":[{"number":1,"watched":true,"watched_at":"2026-10-12T12:00:00Z"}]}]
+                },
+                {
+                    "status":"plantowatch",
+                    "watched_episodes_count":0,
+                    "show":{"title":"Future Seen Series","year":2099,"ids":{"simkl":1953929,"tmdb":153313}}
+                }
+            ]
+        }"""
+        assertTrue(managerSync(mgr, profileId, SimklSyncTrigger.MANUAL))
+
+        val tulsaUpdated = db.vixFlixDao().getWatchProgress("tv_153312", profileId)
+        assertEquals(2, tulsaUpdated?.episodeNumber)
+        assertEquals("Center of the Universe", tulsaUpdated?.episodeTitle)
+        assertNull("Serie spostata da seen -> plantowatch deve uscire da Continua a guardare", db.vixFlixDao().getWatchProgress("tv_153313", profileId))
+        assertEquals(listOf(153313), repo.observeSimklPlanToWatch(profileId).first().mapNotNull { it.tmdbId })
+    }
+
+    // 57. [Test C] Modifiche miste simultanee su più episodi e stagioni (unwatch parziale + nuovi visti + rimozione serie) + isolamento profilo secondario
+    @Test
+    fun `57 multi season mixed unwatch new watches removal and multi profile isolation remain consistent`() = runBlocking {
+        val primaryId = DEFAULT_PRIMARY_PROFILE_ID
+        val secondaryId = repo.createProfile("Profilo Secondario", "emerald", 0xFF10B981L).getOrThrow().id
+        tokenStore.saveTokens(primaryId, SimklTokenBundle("tok_p1_57", "ref_p1_57", nowMs() + 3_600_000L))
+        tokenStore.saveTokens(secondaryId, SimklTokenBundle("tok_p2_57", "ref_p2_57", nowMs() + 3_600_000L))
+
+        server.tmdbTvJson[30057] = """{"id":30057,"name":"Mixed Seasons Show","poster_path":"/mix.jpg","seasons":[{"season_number":1,"episode_count":5},{"season_number":2,"episode_count":3}]}"""
+        server.tmdbSeasonJson["30057_1"] = """{"season_number":1,"episodes":[{"episode_number":4,"name":"S1E4"},{"episode_number":5,"name":"S1E5"}]}"""
+        server.tmdbSeasonJson["30057_2"] = """{"season_number":2,"episodes":[{"episode_number":1,"name":"S2E1"},{"episode_number":2,"name":"S2E2"},{"episode_number":3,"name":"S2E3"}]}"""
+
+        val mgr = buildManager(syncCooldownMs = 0L)
+
+        // Sync iniziale Profilo 1: S1 E1..E5 visti + altra serie 30058
+        server.activitiesJson = """{"all":"2026-10-01T10:00:00Z","shows":{"all":"2026-10-01T10:00:00Z"},"movies":{},"anime":{}}"""
+        server.allShowsJson = """{
+            "shows":[
+                {
+                    "status":"watching",
+                    "watched_episodes_count":5,
+                    "show":{"title":"Mixed Seasons Show","year":2024,"ids":{"simkl":71001,"tmdb":30057}},
+                    "seasons":[{"number":1,"episodes":[{"number":1},{"number":2},{"number":3},{"number":4},{"number":5}]}]
+                },
+                {
+                    "status":"seen",
+                    "watched_episodes_count":0,
+                    "show":{"title":"To Be Removed Show","year":2025,"ids":{"simkl":71002,"tmdb":30058}}
+                }
+            ]
+        }"""
+        server.tmdbTvJson[30058] = """{"id":30058,"name":"To Be Removed Show","seasons":[{"season_number":1,"episode_count":2}]}"""
+        server.tmdbSeasonJson["30058_1"] = """{"season_number":1,"episodes":[{"episode_number":1,"name":"Pilot"}]}"""
+        assertTrue(managerSync(mgr, primaryId, SimklSyncTrigger.POST_AUTH))
+        assertEquals((1..5).toSet(), watchedEpisodesForSeason(30057, 1, primaryId))
+        assertNotNull(db.vixFlixDao().getWatchProgress("tv_30058", primaryId))
+
+        // Sync Profilo 2 su account diverso (nessuna contaminazione verso o da Profilo 1)
+        server.allShowsJson = """{
+            "shows":[
+                {
+                    "status":"seen",
+                    "watched_episodes_count":0,
+                    "show":{"title":"Only Secondary Seen","year":2025,"ids":{"simkl":72001,"tmdb":30059}}
+                }
+            ]
+        }"""
+        server.tmdbTvJson[30059] = """{"id":30059,"name":"Only Secondary Seen","seasons":[{"season_number":1,"episode_count":1}]}"""
+        server.tmdbSeasonJson["30059_1"] = """{"season_number":1,"episodes":[{"episode_number":1,"name":"Sec E1"}]}"""
+        assertTrue(managerSync(mgr, secondaryId, SimklSyncTrigger.POST_AUTH))
+
+        // Fase 2 su Profilo 1:
+        // - Mixed Seasons Show: rimosso S1E5 (unwatch) e aggiunti S2E1, S2E2 (anche se date_from ritorna solo shows={})
+        // - Serie 30058 rimossa completamente da Simkl (`removed_from_list`)
+        server.activitiesJson = """{"all":"2026-10-08T15:00:00Z","shows":{"all":"2026-10-08T15:00:00Z","removed_from_list":"2026-10-08T15:00:00Z"},"movies":{},"anime":{}}"""
+        server.allItemsDeltaJson = "{}"
+        server.allShowsJson = """{
+            "shows":[
+                {
+                    "status":"watching",
+                    "watched_episodes_count":6,
+                    "show":{"title":"Mixed Seasons Show","year":2024,"ids":{"simkl":71001,"tmdb":30057}},
+                    "seasons":[
+                        {"number":1,"episodes":[{"number":1},{"number":2},{"number":3},{"number":4}]},
+                        {"number":2,"episodes":[{"number":1},{"number":2}]}
+                    ]
+                }
+            ]
+        }"""
+        server.simklIdsOnlyShowsJson = """{"shows":[{"ids":{"simkl":71001}}]}"""
+        assertTrue(managerSync(mgr, primaryId, SimklSyncTrigger.MANUAL))
+
+        assertEquals(setOf(1, 2, 3, 4), watchedEpisodesForSeason(30057, 1, primaryId))
+        assertEquals(setOf(1, 2), watchedEpisodesForSeason(30057, 2, primaryId))
+        val mixedLib = db.vixFlixDao().getSimklLibraryForProfile(primaryId).first { it.tmdbId == 30057 }
+        assertEquals(6, mixedLib.watchedEpisodesCount)
+        assertEquals("S02E02", mixedLib.lastWatchedEpisodeCode)
+        // Prossimo non visto prioritario: S01E05 (appena reso non visto!)
+        assertEquals(1, db.vixFlixDao().getWatchProgress("tv_30057", primaryId)?.seasonNumber)
+        assertEquals(5, db.vixFlixDao().getWatchProgress("tv_30057", primaryId)?.episodeNumber)
+
+        // Serie rimossa 30058 sparita completamente dal Profilo 1
+        assertNull(db.vixFlixDao().getWatchProgress("tv_30058", primaryId))
+        assertTrue(db.vixFlixDao().getSimklLibraryForProfile(primaryId).none { it.tmdbId == 30058 })
+
+        // Isolamento rigoroso Profilo 2 intatto
+        val secLib = db.vixFlixDao().getSimklLibraryForProfile(secondaryId)
+        assertEquals(listOf(30059), secLib.mapNotNull { it.tmdbId })
+        assertNull(db.vixFlixDao().getWatchProgress("tv_30057", secondaryId))
+        assertNull(db.vixFlixDao().getWatchProgress("tv_30059", primaryId))
+    }
+
+    private suspend fun managerSync(
+        manager: SimklSyncManager,
+        profileId: String,
+        trigger: SimklSyncTrigger
+    ): Boolean = manager.syncProfileNow(profileId, trigger)
+
+    private suspend fun repositorySeasonEpisodesSync(tmdbId: Int, seasonNumber: Int): List<com.example.data.remote.TmdbEpisodeDto> {
+        return repo.getCachedSeasonEpisodes(tmdbId, seasonNumber)?.value
+            ?: repo.fetchSeasonEpisodes(tmdbId, seasonNumber).getOrNull().orEmpty()
     }
 
     private fun decodeAndVerifyIso18004Qr(matrix: SimklQrMatrix): String {

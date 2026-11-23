@@ -76,14 +76,16 @@ data class SimklActivitiesResponse(
             shows?.watchedAt,
             shows?.completed,
             shows?.watching,
+            shows?.seen,
             tvShows?.watchedAt,
             tvShows?.completed,
             tvShows?.watching,
+            tvShows?.seen,
             shows?.all,
             tvShows?.all
         ).maxOrNull()
     val animeWatchedTimestamp: String?
-        get() = listOfNotNull(anime?.watchedAt, anime?.completed, anime?.watching, anime?.all).maxOrNull()
+        get() = listOfNotNull(anime?.watchedAt, anime?.completed, anime?.watching, anime?.seen, anime?.all).maxOrNull()
     val showsAllTimestamp: String?
         get() = listOfNotNull(shows?.latestListActivityTimestamp, tvShows?.latestListActivityTimestamp).maxOrNull()
     val moviesAllTimestamp: String?
@@ -105,6 +107,7 @@ data class SimklActivityBucketDto(
     @param:Json(name = "watched_at") val watchedAt: String? = null,
     @param:Json(name = "completed") val completed: String? = null,
     @param:Json(name = "watching") val watching: String? = null,
+    @param:Json(name = "seen") val seen: String? = null,
     @param:Json(name = "plantowatch") val planToWatch: String? = null,
     @param:Json(name = "plan_to_watch") val planToWatchSnake: String? = null,
     @param:Json(name = "hold") val hold: String? = null,
@@ -118,6 +121,7 @@ data class SimklActivityBucketDto(
         get() = listOfNotNull(
             all,
             watching,
+            seen,
             planToWatch,
             planToWatchSnake,
             hold,
@@ -365,7 +369,7 @@ data class SimklLibraryParsedItem(
     val slug: String?,
     val title: String,
     val year: Int?,
-    val status: String, // "watching" | "plantowatch" | "hold" | "completed" | "dropped"
+    val status: String, // "watching" | "seen" | "plantowatch" | "hold" | "completed" | "dropped"
     val watchedEpisodesCount: Int,
     val totalEpisodesCount: Int,
     val lastWatchedAt: String?,
@@ -374,7 +378,8 @@ data class SimklLibraryParsedItem(
     val seasons: List<SimklParsedSeason>,
     val nextToWatchSeason: Int? = null,
     val nextToWatchEpisode: Int? = null,
-    val hasSeasonsField: Boolean = false
+    val hasSeasonsField: Boolean = false,
+    val hasExplicitWatchedCount: Boolean = false
 )
 
 @Immutable

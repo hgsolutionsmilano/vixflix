@@ -118,6 +118,12 @@ interface VixFlixDao {
         profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     )
 
+    @Query("DELETE FROM episode_progress WHERE profileId = :profileId AND tmdbId = :tmdbId")
+    suspend fun deleteEpisodeProgressForSeries(
+        tmdbId: Int,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    )
+
     // --- Profile-scoped Favorites / Watchlist ---
     @Query("SELECT * FROM my_list WHERE profileId = :profileId ORDER BY addedAt DESC")
     fun observeWatchlist(profileId: String = DEFAULT_PRIMARY_PROFILE_ID): Flow<List<WatchlistEntity>>
@@ -299,6 +305,12 @@ interface VixFlixDao {
     @Query("DELETE FROM completed_media WHERE profileId = :profileId AND contentKey = :contentKey")
     suspend fun deleteCompletedMedia(
         contentKey: String,
+        profileId: String = DEFAULT_PRIMARY_PROFILE_ID
+    )
+
+    @Query("DELETE FROM completed_media WHERE profileId = :profileId AND tmdbId = :tmdbId AND mediaType = 'tv'")
+    suspend fun deleteCompletedEpisodesForSeries(
+        tmdbId: Int,
         profileId: String = DEFAULT_PRIMARY_PROFILE_ID
     )
 

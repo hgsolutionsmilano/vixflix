@@ -368,7 +368,8 @@ object SimklLibraryJsonParser {
             seasons = parsedSeasons,
             nextToWatchSeason = nextToWatchSeason,
             nextToWatchEpisode = nextToWatchEpisode,
-            hasSeasonsField = hasSeasonsField
+            hasSeasonsField = hasSeasonsField,
+            hasExplicitWatchedCount = explicitWatchedCount != null
         )
     }
 
@@ -483,6 +484,7 @@ object SimklLibraryJsonParser {
     ): String {
         return when (rawStatus?.trim()?.lowercase()?.replace("-", "")?.replace("_", "")) {
             "watching", "currentlywatching" -> STATUS_WATCHING
+            "seen" -> if (category == CATEGORY_MOVIES) STATUS_COMPLETED else STATUS_SEEN
             "plantowatch", "watchlist" -> STATUS_PLAN_TO_WATCH
             "hold", "onhold" -> STATUS_HOLD
             "completed" -> STATUS_COMPLETED
@@ -555,6 +557,7 @@ object SimklLibraryJsonParser {
     const val CATEGORY_ANIME = "anime"
 
     const val STATUS_WATCHING = "watching"
+    const val STATUS_SEEN = "seen"
     const val STATUS_PLAN_TO_WATCH = "plantowatch"
     const val STATUS_HOLD = "hold"
     const val STATUS_COMPLETED = "completed"
