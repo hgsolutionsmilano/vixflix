@@ -33,7 +33,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -474,6 +477,20 @@ internal fun VixFlixExitConfirmationDialog(
 ) {
     val cancelFocus = remember { FocusRequester() }
     val exitFocus = remember { FocusRequester() }
+    var actionDispatched by remember { mutableStateOf(false) }
+
+    val safeCancel: () -> Unit = {
+        if (!actionDispatched) {
+            actionDispatched = true
+            onCancel()
+        }
+    }
+    val safeConfirmExit: () -> Unit = {
+        if (!actionDispatched) {
+            actionDispatched = true
+            onConfirmExit()
+        }
+    }
 
     LaunchedEffect(Unit) {
         for (frame in 1..4) {
@@ -481,10 +498,18 @@ internal fun VixFlixExitConfirmationDialog(
             if (cancelFocus.safeRequestFocus()) break
         }
         delay(50L)
-        cancelFocus.safeRequestFocus()
+        if (!actionDispatched) {
+            cancelFocus.safeRequestFocus()
+        }
     }
 
-    Dialog(onDismissRequest = onCancel) {
+    Dialog(
+        onDismissRequest = safeCancel,
+        properties = androidx.compose.ui.window.DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true
+        )
+    ) {
         DpadFocusScopeProvider(
             scope = DpadFocusScope.MODAL_QUICK_ACTION,
             onRecoverFocus = {
@@ -501,7 +526,7 @@ internal fun VixFlixExitConfirmationDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 460.dp)
-                    .consumeBackAndEscapeKey(onBack = onCancel)
+                    .consumeBackAndEscapeKey(onBack = safeCancel)
                     .testTag("vixflix_exit_confirmation_dialog")
             ) {
                 Column(
@@ -526,7 +551,7 @@ internal fun VixFlixExitConfirmationDialog(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         OutlinedButton(
-                            onClick = onCancel,
+                            onClick = safeCancel,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
                             border = BorderStroke(1.dp, NetflixElevatedSurface),
                             shape = RoundedCornerShape(10.dp),
@@ -561,7 +586,7 @@ internal fun VixFlixExitConfirmationDialog(
                         }
 
                         Button(
-                            onClick = onConfirmExit,
+                            onClick = safeConfirmExit,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = NetflixRed,
                                 contentColor = NetflixWhite

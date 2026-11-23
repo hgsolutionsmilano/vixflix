@@ -340,10 +340,15 @@ fun GlobalDpadFocusObserverHost(
     LaunchedEffect(activeScope, isTvOrDpadActive) {
         val fromScope = previousScope
         if (fromScope != activeScope) {
-            // Se stiamo uscendo da un overlay modale (es. MODAL_TRAILER_POPUP o MODAL_QUICK_ACTION)
-            // e il focus è rimasto agganciato al layer in chiusura, puliamo e riassegniamo allo scope attivo.
+            // Se stiamo passando a un overlay nella stessa finestra (es. Dettagli, Player, Profili)
+            // puliamo il focus residuo del layer precedente. Per MODAL_QUICK_ACTION (Dialog in finestra
+            // separata) evitiamo clearFocus sulla finestra host: su Fire TV (non-touch mode) un clearFocus
+            // sull'host provoca il riassegnamento automatico del focus sul menu laterale sottostante.
             val focusedScopeSnapshot = DpadFocusObserverRegistry.currentFocusedScope
-            if (focusedScopeSnapshot != null && focusedScopeSnapshot != activeScope) {
+            if (focusedScopeSnapshot != null &&
+                focusedScopeSnapshot != activeScope &&
+                activeScope != DpadFocusScope.MODAL_QUICK_ACTION
+            ) {
                 runCatching { focusManager.clearFocus(force = true) }
             }
             DpadFocusObserverRegistry.onScopeTransition(

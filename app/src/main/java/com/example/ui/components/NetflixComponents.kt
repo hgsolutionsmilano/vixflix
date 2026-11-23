@@ -2333,12 +2333,24 @@ fun MovieGenreChipBar(
         }
     }
 
+    var hadSelectedGenre by remember { mutableStateOf(selectedGenre != null) }
+
     LaunchedEffect(targetIndex, selectedGenre?.id) {
+        val returnedToAll = hadSelectedGenre && selectedGenre == null
+        hadSelectedGenre = selectedGenre != null
         if (targetIndex >= 0) {
-            runCatching { listState.animateScrollToItem(targetIndex) }
-            if (selectedGenre != null) {
-                androidx.compose.runtime.withFrameNanos { }
-                firstChipFocusRequester.safeRequestFocus()
+            if (returnedToAll) {
+                runCatching { listState.scrollToItem(0) }
+                for (attempt in 1..4) {
+                    androidx.compose.runtime.withFrameNanos { }
+                    if (firstChipFocusRequester.safeRequestFocus()) break
+                }
+            } else {
+                runCatching { listState.animateScrollToItem(targetIndex) }
+                if (selectedGenre != null) {
+                    androidx.compose.runtime.withFrameNanos { }
+                    firstChipFocusRequester.safeRequestFocus()
+                }
             }
         }
     }

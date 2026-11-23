@@ -335,6 +335,8 @@ fun VixFlixAppScreen(
         (!isProfileSelectorVisible || simklQrDialogState?.flowMode == SimklAuthFlowMode.AUTHENTICATE_OR_CREATE_PROFILE)
     val isQuickModalVisible = tvQuickActionEntry != null || tvQuickActionItem != null || isUpdateDialogVisible || isSimklQrDialogVisible || showExitConfirmDialog
     val isCatalogInteractive = !isSplashVisible && !isProfileSelectorVisible && !isDetailVisible && !isPlayerVisible
+    val isCatalogNavEnabled = isCatalogInteractive && !isQuickModalVisible
+    val isRailExpanded = isRailFocused && isCatalogNavEnabled
     val activeDpadScope = when {
         isSplashVisible -> DpadFocusScope.SPLASH
         isProfileSelectorVisible -> DpadFocusScope.PROFILE_SELECTOR
@@ -347,6 +349,14 @@ fun VixFlixAppScreen(
     }
     var wasQuickModalActive by remember { mutableStateOf(false) }
     var wasProfileSelectorVisible by remember { mutableStateOf(false) }
+
+    // Assicura che il menu laterale TV venga immediatamente richiuso e non possa restare aperto
+    // quando appare il popup di uscita o qualsiasi modale/overlay.
+    LaunchedEffect(isCatalogNavEnabled) {
+        if (!isCatalogNavEnabled && isRailFocused) {
+            isRailFocused = false
+        }
+    }
 
     // Pulisce gli stati UI temporanei in memoria al cambio profilo attivo
     val activeProfileId = profileUiState.activeProfile?.id
@@ -512,6 +522,7 @@ fun VixFlixAppScreen(
         // (senza mai forzare il focus sul menu laterale per evitare aperture involontarie)
         LaunchedEffect(isQuickModalVisible, isCatalogInteractive, useTvNavigationRail) {
             if (wasQuickModalActive && !isQuickModalVisible && isCatalogInteractive) {
+                isRailFocused = false
                 val target = if (isSearchBarVisible) {
                     lastFocusedContentRequester.takeIfAttached()
                         ?: searchFirstItemFocusRequester.takeIfAttached()
@@ -519,6 +530,7 @@ fun VixFlixAppScreen(
                 } else {
                     lastFocusedContentRequester.takeIfAttached()
                         ?: tabContentEntryFocusRequester.takeIfAttached()
+                        ?: (if (selectedTab == NavTab.MOVIES) movieGenreBarFocusRequester.takeIfAttached() else null)
                         ?: heroPlayFocusRequester.takeIfAttached()
                         ?: firstRowFocusRequester.takeIfAttached()
                 }
@@ -528,7 +540,9 @@ fun VixFlixAppScreen(
                         if (target.safeRequestFocus()) break
                     }
                     delay(60L)
-                    target.safeRequestFocus()
+                    if (isCatalogInteractive && !isQuickModalVisible) {
+                        target.safeRequestFocus()
+                    }
                 }
             }
             wasQuickModalActive = isQuickModalVisible
@@ -604,12 +618,13 @@ fun VixFlixAppScreen(
                     viewModel.selectTab(NavTab.HOME)
                 }
                 else -> {
+                    isRailFocused = false
                     showExitConfirmDialog = true
                 }
             }
         }
 
-        BackHandler(enabled = isCatalogInteractive && !isQuickModalVisible) {
+        BackHandler(enabled = isCatalogInteractive) {
             handleCatalogBack()
         }
 
@@ -628,7 +643,9 @@ fun VixFlixAppScreen(
         DpadFocusScopeProvider(
             scope = DpadFocusScope.MAIN_NAVIGATION,
             onRecoverFocus = {
-                if (isSearchBarVisible) {
+                if (!isCatalogNavEnabled) {
+                    null
+                } else if (isSearchBarVisible) {
                     recoverFocusFromCandidates(
                         "detail_origin" to detailOriginFocusRequester,
                         "last_focused_content" to lastFocusedContentRequester,
@@ -641,6 +658,8 @@ fun VixFlixAppScreen(
                         "detail_origin" to detailOriginFocusRequester,
                         "last_focused_content" to lastFocusedContentRequester,
                         "tab_content_entry" to tabContentEntryFocusRequester,
+                        "movie_genre_bar" to (if (selectedTab == NavTab.MOVIES && catalogState is CatalogUiState.Success) movieGenreBarFocusRequester else null),
+                        "platform_strip" to (if (selectedTab == NavTab.HOME && catalogState is CatalogUiState.Success) platformStripFocusRequester else null),
                         "hero_play_button" to heroPlayFocusRequester,
                         "first_row_entry" to firstRowFocusRequester,
                         "tv_rail_selected" to navRailSelectedFocusRequester
@@ -653,9 +672,13 @@ fun VixFlixAppScreen(
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             modifier = Modifier
                 .fillMaxSize()
-                .focusProperties { canFocus = isCatalogInteractive && !isQuickModalVisible }
+                .focusProperties {
+                    canFocus = isCatalogNavEnabled
+                    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+                    enter = { if (isCatalogNavEnabled) FocusRequester.Default else FocusRequester.Cancel }
+                }
                 .consumeBackAndEscapeKey(
-                    enabled = isCatalogInteractive && !isQuickModalVisible,
+                    enabled = isCatalogInteractive,
                     onBack = handleCatalogBack
                 )
                 .onKeyEvent { keyEvent ->
@@ -1112,7 +1135,7 @@ fun VixFlixAppScreen(
                 // Scrim morbido quando la barra laterale compatta TV è espansa (sopra locandine e top bar)
                 if (useTvNavigationRail) {
                     AnimatedVisibility(
-                        visible = isRailFocused,
+                        visible = isRailExpanded,
                         enter = fadeIn(tween(110)),
                         exit = fadeOut(tween(90)),
                         modifier = Modifier
@@ -1132,7 +1155,8 @@ fun VixFlixAppScreen(
                         activeProfile = profileUiState.activeProfile,
                         onOpenProfileSelector = { viewModel.openProfileSelector(manageMode = false) },
                         isSearchOpen = isSearchBarVisible,
-                        isExpanded = isRailFocused,
+                        isExpanded = isRailExpanded,
+                        allowFocus = isCatalogNavEnabled,
                         selectedItemFocusRequester = navRailSelectedFocusRequester,
                         rightToContentFocusRequester = if (isSearchBarVisible) {
                             (if (searchQuery.isNotBlank()) lastFocusedContentRequester.takeIfAttached() else null)
@@ -1141,7 +1165,7 @@ fun VixFlixAppScreen(
                             activeContentEntryFocusRequester
                         },
                         fallbackRightFocusRequester = activeTopBarFocusRequester,
-                        onFocusChanged = { isRailFocused = it },
+                        onFocusChanged = { focused -> isRailFocused = isCatalogNavEnabled && focused },
                         onToggleSearch = {
                             val willOpen = !isSearchBarVisible
                             isSearchBarVisible = willOpen
@@ -1172,7 +1196,6 @@ fun VixFlixAppScreen(
                         modifier = Modifier
                             .align(Alignment.CenterStart)
                             .zIndex(30f)
-                            .focusProperties { canFocus = isCatalogInteractive && !isQuickModalVisible }
                     )
                 }
             }
@@ -1478,6 +1501,7 @@ private fun TvExpandableNavigationRail(
     onOpenProfileSelector: () -> Unit,
     isSearchOpen: Boolean,
     isExpanded: Boolean,
+    allowFocus: Boolean = true,
     selectedItemFocusRequester: FocusRequester,
     rightToContentFocusRequester: FocusRequester?,
     fallbackRightFocusRequester: FocusRequester? = null,
@@ -1502,16 +1526,19 @@ private fun TvExpandableNavigationRail(
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(top = 12.dp, bottom = 12.dp, start = 10.dp, end = 10.dp)
-            .onFocusChanged { onFocusChanged(it.hasFocus) }
-            .consumeBackAndEscapeKey(enabled = isExpanded) {
+            .onFocusChanged { onFocusChanged(allowFocus && it.hasFocus) }
+            .consumeBackAndEscapeKey(enabled = isExpanded && allowFocus) {
                 onMoveFocusRight()
             }
             .focusGroup()
             .focusProperties {
+                canFocus = allowFocus
                 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-                enter = { selectedItemFocusRequester }
-                (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
-                    right = it
+                enter = { if (allowFocus) selectedItemFocusRequester else FocusRequester.Cancel }
+                if (allowFocus) {
+                    (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
+                        right = it
+                    }
                 }
             }
             .testTag("tv_navigation_rail")
@@ -1633,6 +1660,7 @@ private fun TvExpandableNavigationRail(
                     )
                     .safeFocusRequester(profileRailRequester)
                     .focusProperties {
+                        canFocus = allowFocus
                         (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
                             right = it
                         }
@@ -1683,8 +1711,8 @@ private fun TvExpandableNavigationRail(
                             )
                         }
                     }
-                    .focusable()
-                    .clickable { onOpenProfileSelector() }
+                    .focusable(enabled = allowFocus)
+                    .clickable(enabled = allowFocus) { onOpenProfileSelector() }
                     .padding(horizontal = 10.dp)
                     .testTag("tv_rail_profile_button"),
                 contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
@@ -1780,6 +1808,7 @@ private fun TvExpandableNavigationRail(
                     )
                     .safeFocusRequester(searchRailRequester)
                     .focusProperties {
+                        canFocus = allowFocus
                         (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
                             right = it
                         }
@@ -1832,8 +1861,8 @@ private fun TvExpandableNavigationRail(
                             )
                         }
                     }
-                    .focusable()
-                    .clickable { onToggleSearch() }
+                    .focusable(enabled = allowFocus)
+                    .clickable(enabled = allowFocus) { onToggleSearch() }
                     .padding(horizontal = 12.dp)
                     .testTag("search_toggle_button"),
                 contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
@@ -1938,6 +1967,7 @@ private fun TvExpandableNavigationRail(
                         )
                         .safeFocusRequester(itemRailRequester)
                         .focusProperties {
+                            canFocus = allowFocus
                             (rightToContentFocusRequester.takeIfAttached() ?: fallbackRightFocusRequester.takeIfAttached())?.let {
                                 right = it
                             }
@@ -1990,8 +2020,8 @@ private fun TvExpandableNavigationRail(
                                 )
                             }
                         }
-                        .focusable()
-                        .clickable { activateAndMoveRight() }
+                        .focusable(enabled = allowFocus)
+                        .clickable(enabled = allowFocus) { activateAndMoveRight() }
                         .padding(horizontal = 12.dp)
                         .testTag("tv_rail_${tab.name.lowercase()}"),
                     contentAlignment = if (isExpanded) Alignment.CenterStart else Alignment.Center
@@ -2132,10 +2162,12 @@ internal fun CatalogFeedContent(
     val catalogListState = rememberLazyListState()
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
     var previousTab by remember { mutableStateOf(selectedTab) }
+    var previousMovieGenreId by remember { mutableStateOf(activeMovieGenre?.id) }
     var previousPlatformId by remember { mutableStateOf(activePlatform?.providerId) }
     var previousScrollResetNonce by remember { mutableIntStateOf(tabScrollResetNonce) }
     var savedHomeScrollBeforePlatform by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var savedHomeStripLazyIdxBeforePlatform by remember { mutableStateOf<Int?>(null) }
+    var savedMoviesScrollBeforeGenre by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     val homeStripLazyIndex = remember(selectedTab, filteredContinueWatching.isNotEmpty()) {
         if (selectedTab == NavTab.HOME) {
             1 + if (filteredContinueWatching.isNotEmpty()) 1 else 0
@@ -2153,6 +2185,21 @@ internal fun CatalogFeedContent(
         onSelectStreamingPlatform(provider)
     }
 
+    val handleSelectMovieGenre: (TmdbGenreDto?) -> Unit = { genre ->
+        if (selectedTab == NavTab.MOVIES && activeMovieGenre == null && genre != null) {
+            savedMoviesScrollBeforeGenre =
+                catalogListState.firstVisibleItemIndex to catalogListState.firstVisibleItemScrollOffset
+        }
+        if (genre == null && selectedTab == NavTab.MOVIES) {
+            // Trasferisce il focus alla barra categorie PRIMA che il pulsante "Tutti i film" venga smontato,
+            // evitando che il focus orfano ricada sul menu laterale principale.
+            if (movieGenreBarFocusRequester.safeRequestFocus()) {
+                onRememberContentFocus(movieGenreBarFocusRequester)
+            }
+        }
+        onSelectMovieGenre(genre)
+    }
+
     LaunchedEffect(
         selectedTab,
         activeMovieGenre?.id,
@@ -2160,6 +2207,7 @@ internal fun CatalogFeedContent(
         platformState.mediaTypeFilter,
         tabScrollResetNonce
     ) {
+        val currentMovieGenreId = activeMovieGenre?.id
         val currentPlatformId = activePlatform?.providerId
         val resetNonceChanged = tabScrollResetNonce != previousScrollResetNonce
         val isExitingPlatformToHome = selectedTab == NavTab.HOME &&
@@ -2167,8 +2215,14 @@ internal fun CatalogFeedContent(
             previousPlatformId != null &&
             currentPlatformId == null &&
             !resetNonceChanged
+        val isExitingMovieGenreToAllMovies = selectedTab == NavTab.MOVIES &&
+            previousTab == NavTab.MOVIES &&
+            previousMovieGenreId != null &&
+            currentMovieGenreId == null &&
+            !resetNonceChanged
 
         previousTab = selectedTab
+        previousMovieGenreId = currentMovieGenreId
         previousPlatformId = currentPlatformId
         previousScrollResetNonce = tabScrollResetNonce
 
@@ -2197,10 +2251,32 @@ internal fun CatalogFeedContent(
                     break
                 }
             }
+        } else if (isExitingMovieGenreToAllMovies) {
+            val savedScroll = savedMoviesScrollBeforeGenre
+            savedMoviesScrollBeforeGenre = null
+            val (targetIdx, targetOffset) = if (savedScroll != null) {
+                savedScroll.first.coerceAtLeast(0) to savedScroll.second.coerceAtLeast(0)
+            } else {
+                0 to 0
+            }
+            runCatching { catalogListState.scrollToItem(targetIdx, targetOffset) }
+            for (attempt in 1..6) {
+                androidx.compose.runtime.withFrameNanos { }
+                val restoredTarget = movieGenreBarFocusRequester.takeIfAttached()
+                    ?: heroPlayFocusRequester.takeIfAttached()
+                    ?: firstRowFocusRequester.takeIfAttached()
+                if (restoredTarget != null && restoredTarget.safeRequestFocus()) {
+                    onRememberContentFocus(restoredTarget)
+                    break
+                }
+            }
         } else {
             if (selectedTab != NavTab.HOME || resetNonceChanged || currentPlatformId == null) {
                 savedHomeScrollBeforePlatform = null
                 savedHomeStripLazyIdxBeforePlatform = null
+            }
+            if (selectedTab != NavTab.MOVIES || resetNonceChanged || currentMovieGenreId == null) {
+                savedMoviesScrollBeforeGenre = null
             }
             runCatching { catalogListState.scrollToItem(0, 0) }
         }
@@ -2607,7 +2683,7 @@ internal fun CatalogFeedContent(
                     MovieGenreChipBar(
                         genres = movieGenreState.genres,
                         selectedGenre = activeMovieGenre,
-                        onSelectGenre = onSelectMovieGenre,
+                        onSelectGenre = handleSelectMovieGenre,
                         firstChipFocusRequester = movieGenreBarFocusRequester,
                         upFocusRequester = prev?.requester ?: topBarFocusRequester,
                         downFocusRequester = next?.requester,
@@ -3135,7 +3211,7 @@ internal fun CatalogFeedContent(
                                 }
 
                                 OutlinedButton(
-                                    onClick = { onSelectMovieGenre(null) },
+                                    onClick = { handleSelectMovieGenre(null) },
                                     shape = RoundedCornerShape(50),
                                     border = BorderStroke(1.dp, NetflixElevatedSurface),
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
@@ -3148,6 +3224,7 @@ internal fun CatalogFeedContent(
                                                     Key.DirectionDown -> if (firstGridTarget != null) navigateToTarget(firstGridTarget) else false
                                                     Key.DirectionUp -> if (genreBarTarget != null) navigateToTarget(genreBarTarget) else handleTopBoundaryUp()
                                                     Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                                    Key.DirectionRight -> true
                                                     else -> false
                                                 }
                                             } else {
@@ -3161,7 +3238,11 @@ internal fun CatalogFeedContent(
                                         }
                                         .tvFocusableControl(
                                             shape = RoundedCornerShape(50),
-                                            focusedBorderColor = NetflixWhite
+                                            focusedBorderColor = NetflixWhite,
+                                            focusTag = "clear_genre_filter_button",
+                                            onFocusChange = { focused ->
+                                                if (focused) onRememberContentFocus(clearGenreFilterFocusRequester)
+                                            }
                                         )
                                         .testTag("clear_genre_filter_button")
                                 ) {
@@ -3275,7 +3356,7 @@ internal fun CatalogFeedContent(
                                                 textAlign = TextAlign.Center
                                             )
                                             OutlinedButton(
-                                                onClick = { onSelectMovieGenre(null) },
+                                                onClick = { handleSelectMovieGenre(null) },
                                                 shape = RoundedCornerShape(8.dp),
                                                 border = BorderStroke(1.dp, NetflixElevatedSurface),
                                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
