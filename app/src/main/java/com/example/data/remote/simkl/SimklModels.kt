@@ -63,18 +63,17 @@ data class SimklActivitiesResponse(
     @param:Json(name = "tv_shows") val tvShows: SimklActivityBucketDto? = null,
     @param:Json(name = "anime") val anime: SimklActivityBucketDto? = null
 ) {
+    // Playback separato rigorosamente dalle modifiche di libreria/watchlist (solo campo `playback`).
     val moviesPlaybackTimestamp: String?
-        get() = movies?.playback?.takeIf { it.isNotBlank() } ?: movies?.all?.takeIf { it.isNotBlank() }
+        get() = movies?.playback?.takeIf { it.isNotBlank() }
     val showsPlaybackTimestamp: String?
         get() = listOfNotNull(
             shows?.playback?.takeIf { it.isNotBlank() },
             tvShows?.playback?.takeIf { it.isNotBlank() }
-        ).maxOrNull() ?: listOfNotNull(
-            shows?.all?.takeIf { it.isNotBlank() },
-            tvShows?.all?.takeIf { it.isNotBlank() }
         ).maxOrNull()
     val animePlaybackTimestamp: String?
-        get() = anime?.playback?.takeIf { it.isNotBlank() } ?: anime?.all?.takeIf { it.isNotBlank() }
+        get() = anime?.playback?.takeIf { it.isNotBlank() }
+
     val moviesWatchedTimestamp: String?
         get() = listOfNotNull(movies?.watchedAt, movies?.completed, movies?.all).maxOrNull()
     val showsWatchedTimestamp: String?
@@ -92,6 +91,15 @@ data class SimklActivitiesResponse(
         ).maxOrNull()
     val animeWatchedTimestamp: String?
         get() = listOfNotNull(anime?.watchedAt, anime?.completed, anime?.watching, anime?.seen, anime?.all).maxOrNull()
+    val showsCompletedOrDroppedTimestamp: String?
+        get() = listOfNotNull(
+            shows?.completed,
+            shows?.dropped,
+            tvShows?.completed,
+            tvShows?.dropped
+        ).maxOrNull()
+    val animeCompletedOrDroppedTimestamp: String?
+        get() = listOfNotNull(anime?.completed, anime?.dropped).maxOrNull()
     val showsAllTimestamp: String?
         get() = listOfNotNull(shows?.latestListActivityTimestamp, tvShows?.latestListActivityTimestamp).maxOrNull()
     val moviesAllTimestamp: String?
@@ -104,6 +112,12 @@ data class SimklActivitiesResponse(
         get() = movies?.removedFromList
     val animeRemovedTimestamp: String?
         get() = anime?.removedFromList
+    val showsRatedAtTimestamp: String?
+        get() = listOfNotNull(shows?.ratedAt, shows?.rated, tvShows?.ratedAt, tvShows?.rated).maxOrNull()
+    val moviesRatedAtTimestamp: String?
+        get() = listOfNotNull(movies?.ratedAt, movies?.rated).maxOrNull()
+    val animeRatedAtTimestamp: String?
+        get() = listOfNotNull(anime?.ratedAt, anime?.rated).maxOrNull()
 }
 
 @JsonClass(generateAdapter = true)
@@ -422,7 +436,25 @@ data class SimklDiagnosticEntry(
     val httpCode: Int? = null,
     val sanitizedResponse: String? = null,
     val outcome: String,
-    val errorDetail: String? = null
+    val errorDetail: String? = null,
+    val operationType: String = "",
+    val durationMs: Long = 0L,
+    val retryCount: Int = 0,
+    val responseBytes: Long? = null,
+    val itemsCount: Int? = null
+)
+
+@Immutable
+data class SimklApiMetricsSnapshot(
+    val totalCallsSession: Int = 0,
+    val callsByEndpoint: Map<String, Int> = emptyMap(),
+    val callsAvoidedUnchangedActivities: Int = 0,
+    val fullSyncsCount: Int = 0,
+    val incrementalSyncsCount: Int = 0,
+    val rateLimit429Count: Int = 0,
+    val maxItems400Count: Int = 0,
+    val retriesCount: Int = 0,
+    val incompleteSyncsCount: Int = 0
 )
 
 @Immutable
@@ -457,7 +489,8 @@ data class SimklProfileUiState(
     val isClientIdConfigured: Boolean = false,
     val qrDialogState: SimklQrDialogState? = null,
     val syncProgress: SimklSyncProgress? = null,
-    val lastSyncSummary: SimklSyncSummary? = null
+    val lastSyncSummary: SimklSyncSummary? = null,
+    val apiMetrics: SimklApiMetricsSnapshot = SimklApiMetricsSnapshot()
 ) {
     val isConnected: Boolean
         get() = connectionState == SimklConnectionState.CONNECTED_SYNCED ||

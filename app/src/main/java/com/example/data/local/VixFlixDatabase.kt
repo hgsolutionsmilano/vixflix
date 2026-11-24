@@ -32,7 +32,7 @@ import com.example.data.local.simkl.SimklProfileSyncMetaEntity
         SimklPlaybackBaselineEntity::class,
         SimklPendingScrobbleEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class VixFlixDatabase : RoomDatabase() {
@@ -579,6 +579,12 @@ abstract class VixFlixDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `simkl_profile_sync_meta` ADD COLUMN `activitiesSnapshotJson` TEXT")
+            }
+        }
+
         fun getInstance(context: Context): VixFlixDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -596,7 +602,8 @@ abstract class VixFlixDatabase : RoomDatabase() {
                         MIGRATION_6_7,
                         MIGRATION_7_8,
                         MIGRATION_8_9,
-                        MIGRATION_9_10
+                        MIGRATION_9_10,
+                        MIGRATION_10_11
                     )
                     .fallbackToDestructiveMigration()
                     .build()

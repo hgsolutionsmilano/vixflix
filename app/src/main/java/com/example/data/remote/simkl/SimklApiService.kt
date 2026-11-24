@@ -56,15 +56,15 @@ interface SimklApiService {
     @GET("sync/activities")
     suspend fun getSyncActivities(
         @Header("Authorization") bearerToken: String
-    ): Response<SimklActivitiesResponse>
+    ): Response<ResponseBody>
 
     @GET("sync/all-items")
     suspend fun getAllItems(
         @Header("Authorization") bearerToken: String,
         @Query("date_from") dateFrom: String? = null,
-        @Query("extended") extended: String = "full",
-        @Query("episode_watched_at") episodeWatchedAt: String? = "yes",
-        @Query("include_all_episodes") includeAllEpisodes: String? = "yes"
+        @Query("extended") extended: String? = null,
+        @Query("episode_watched_at") episodeWatchedAt: String? = null,
+        @Query("include_all_episodes") includeAllEpisodes: String? = null
     ): Response<ResponseBody>
 
     @GET("sync/all-items/{type}")
@@ -72,7 +72,7 @@ interface SimklApiService {
         @Header("Authorization") bearerToken: String,
         @Path("type") type: String,
         @Query("date_from") dateFrom: String? = null,
-        @Query("extended") extended: String = "full",
+        @Query("extended") extended: String? = null,
         @Query("episode_watched_at") episodeWatchedAt: String? = null,
         @Query("include_all_episodes") includeAllEpisodes: String? = null
     ): Response<ResponseBody>
@@ -83,7 +83,7 @@ interface SimklApiService {
         @Path("type") type: String,
         @Path("status") status: String,
         @Query("date_from") dateFrom: String? = null,
-        @Query("extended") extended: String = "full",
+        @Query("extended") extended: String? = null,
         @Query("episode_watched_at") episodeWatchedAt: String? = null,
         @Query("include_all_episodes") includeAllEpisodes: String? = null
     ): Response<ResponseBody>

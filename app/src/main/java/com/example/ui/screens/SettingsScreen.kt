@@ -2974,6 +2974,15 @@ private fun SimklSettingsSectionCard(
                                     color = if (hasFailures) Color(0xFFFFB74D) else NetflixLightGray,
                                     modifier = Modifier.testTag("simkl_summary_diagnostics")
                                 )
+                                val metrics = simklUiState.apiMetrics
+                                if (metrics.totalCallsSession > 0) {
+                                    Text(
+                                        text = "Sessione API: ${metrics.totalCallsSession} chiamate • Evitate: ${metrics.callsAvoidedUnchangedActivities} • Full/Incr: ${metrics.fullSyncsCount}/${metrics.incrementalSyncsCount} • 429/max_items: ${metrics.rateLimit429Count}/${metrics.maxItems400Count}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NetflixLightGray,
+                                        modifier = Modifier.testTag("simkl_summary_api_metrics")
+                                    )
+                                }
                                 syncSummary.errors.take(3).forEachIndexed { idx, err ->
                                     val codeTag = err.httpCode?.let { "HTTP $it" } ?: err.errorType
                                     Text(

@@ -451,7 +451,8 @@ class SimklSyncSystemTest {
                 VixFlixDatabase.MIGRATION_6_7,
                 VixFlixDatabase.MIGRATION_7_8,
                 VixFlixDatabase.MIGRATION_8_9,
-                VixFlixDatabase.MIGRATION_9_10
+                VixFlixDatabase.MIGRATION_9_10,
+                VixFlixDatabase.MIGRATION_10_11
             )
             .allowMainThreadQueries()
             .build()
@@ -755,6 +756,7 @@ class SimklSyncSystemTest {
         waitUntil { server.recordedRequests.any { it.method == "DELETE" && it.path == "/sync/playback/9901" } }
 
         // Test rimozione remota per un altro titolo completato su Simkl (stato completed pulisce la card obsoleta)
+        server.activitiesJson = """{"all":"2026-10-05T11:00:00Z","movies":{"all":"2026-10-05T10:00:00Z","playback":"2026-10-05T11:00:00Z"},"shows":{},"anime":{}}"""
         server.playbackMoviesJson = """
             [{"id":9902,"progress":30.0,"paused_at":"2026-10-05T10:00:00Z","movie":{"title":"Arrival","year":2016,"ids":{"tmdb":329865}}}]
         """.trimIndent()

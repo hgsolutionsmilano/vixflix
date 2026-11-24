@@ -169,7 +169,14 @@ object SimklLibraryJsonParser {
                     CATEGORY_MOVIES -> parsedRoot.optJSONArray("movies")
                     CATEGORY_ANIME -> parsedRoot.optJSONArray("anime")
                     else -> parsedRoot.optJSONArray("shows") ?: parsedRoot.optJSONArray("tv_shows")
-                } ?: return if (parsedRoot.length() == 0) emptySet() else null
+                }
+                if (arr == null) {
+                    val hasKnownCategoryKey = parsedRoot.has("shows") ||
+                        parsedRoot.has("tv_shows") ||
+                        parsedRoot.has("movies") ||
+                        parsedRoot.has("anime")
+                    return if (parsedRoot.length() == 0 || hasKnownCategoryKey) emptySet() else null
+                }
                 processArray(arr)
             }
             else -> return null
