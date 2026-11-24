@@ -1109,3 +1109,26 @@ internal fun rememberTvHorizontalBringIntoViewSpec(
     }
 }
 
+/**
+ * BringIntoViewSpec verticale con margini di sicurezza top/bottom per Fire TV Stick e Android TV.
+ * Garantisce che durante la navigazione D-Pad nei menu (es. Impostazioni), l'elemento focalizzato
+ * non venga mai tagliato ai bordi superiore o inferiore dello schermo.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun rememberTvVerticalBringIntoViewSpec(
+    topMargin: Dp = 44.dp,
+    bottomMargin: Dp = 56.dp
+): BringIntoViewSpec {
+    val density = LocalDensity.current
+    val topPx = with(density) { topMargin.toPx() }
+    val bottomPx = with(density) { bottomMargin.toPx() }
+    return remember(topPx, bottomPx) {
+        SafeEdgeHorizontalBringIntoViewSpec(
+            startMarginPx = topPx,
+            endMarginPx = bottomPx
+        )
+    }
+}
+
+

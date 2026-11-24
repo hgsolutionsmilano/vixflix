@@ -11,14 +11,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,12 +34,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.CheckCircle
@@ -72,21 +75,21 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -97,26 +100,17 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import androidx.compose.ui.res.stringResource
 import com.example.BuildConfig
 import com.example.R
 import com.example.data.local.CacheStatsSummary
@@ -134,10 +128,8 @@ import com.example.data.remote.simkl.SimklProfileUiState
 import com.example.ui.GitHubUpdateUiState
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
-import com.example.ui.components.DpadFocusScopeProvider
 import com.example.ui.components.ProfileAvatarArtwork
-import com.example.ui.components.consumeBackAndEscapeKey
-import com.example.ui.components.recoverFocusFromCandidates
+import com.example.ui.components.rememberTvVerticalBringIntoViewSpec
 import com.example.ui.components.safeFocusRequester
 import com.example.ui.components.safeRequestFocus
 import com.example.ui.components.takeIfAttached
@@ -151,6 +143,7 @@ import com.example.ui.theme.NetflixMatchGreen
 import com.example.ui.theme.NetflixMutedGray
 import com.example.ui.theme.NetflixRed
 import com.example.ui.theme.NetflixWhite
+import kotlinx.coroutines.launch
 
 /**
  * Categorie modulari della sezione Impostazioni.
@@ -161,12 +154,13 @@ enum class SettingsCategory(
     val subtitle: String,
     val icon: ImageVector
 ) {
-    PLAYBACK("Riproduzione", "Lingua audio, player e catalogo", Icons.Default.Tune),
-    UPDATES("Aggiornamenti", "Release GitHub e auto-check", Icons.Default.SystemUpdate),
+    PLAYBACK("Riproduzione", "Audio, player e sottotitoli", Icons.Default.Tune),
+    UPDATES("Aggiornamenti", "GitHub Releases e auto-check", Icons.Default.SystemUpdate),
     API_SOURCES("API & Sorgenti", "Chiave TMDB e config", Icons.Default.Key),
-    SYSTEM("Sistema & Dati", "Profili, ripresa e info app", Icons.Default.Info)
+    SYSTEM("Sistema & Dati", "Profili, Simkl e cache", Icons.Default.Info)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SettingsScreen(
     gitHubState: GitHubUpdateUiState,
@@ -245,8 +239,6 @@ fun SettingsScreen(
         }
     }
 
-    val activeCategoryTabRequester = resolveCategoryTabRequester(selectedCategory)
-
     LaunchedEffect(Unit) {
         repeat(3) {
             withFrameNanos { }
@@ -323,163 +315,194 @@ fun SettingsScreen(
     }
 
     val hasUpdateAvailable = gitHubState.releaseInfo?.isUpdateAvailable == true
+    val verticalBringIntoViewSpec = rememberTvVerticalBringIntoViewSpec(
+        topMargin = 44.dp,
+        bottomMargin = 56.dp
+    )
 
-    LazyColumn(
-        state = listState,
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(NetflixBlack)
-            .testTag("settings_screen"),
-        contentPadding = PaddingValues(
-            top = contentPadding.calculateTopPadding() + 14.dp,
-            bottom = contentPadding.calculateBottomPadding() + 48.dp,
-            start = if (isTvLayout) 28.dp else 16.dp,
-            end = if (isTvLayout) 28.dp else 16.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        item(key = "settings_header") {
-            SettingsHeaderBanner(
-                isTvLayout = isTvLayout,
-                streamLang = streamLang,
-                preferWebPlayer = preferWebPlayer,
-                bufferPreset = bufferPreset,
-                hasUpdateAvailable = hasUpdateAvailable,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 920.dp)
-            )
+        val availableWidth = maxWidth
+        val isCompactTv = isTvLayout && availableWidth < 760.dp
+        val isWideTabBar = availableWidth >= 620.dp
+        val showTabSubtitles = availableWidth >= 820.dp
+        val horizontalPadding = when {
+            !isTvLayout -> 16.dp
+            isCompactTv -> 20.dp
+            else -> 32.dp
         }
+        val maxContentWidth = 980.dp
 
-        item(key = "settings_category_bar") {
-            SettingsCategoryTabRow(
-                selectedCategory = selectedCategory,
-                hasUpdateAvailable = hasUpdateAvailable,
-                onSelectCategory = {
-                    if (selectedCategory != it) {
-                        selectedCategory = it
-                    }
-                    scrollToTopOnly()
-                },
-                resolveTabFocusRequester = resolveCategoryTabRequester,
-                panelFirstControlFocusRequester = panelFirstControlFocusRequester,
-                onTabFocused = { requester ->
-                    onRememberContentFocus(requester)
-                    scrollToTopOnly()
-                },
-                onUpFromTab = {
-                    scrollToTopOnly()
-                    upFocusRequester.safeRequestFocus()
-                },
-                onDownToPanel = { scrollDownAndFocusPanel(panelFirstControlFocusRequesters.getValue(selectedCategory)) },
-                navRailFocusRequester = navRailFocusRequester,
-                upFocusRequester = upFocusRequester,
+        CompositionLocalProvider(
+            LocalBringIntoViewSpec provides verticalBringIntoViewSpec
+        ) {
+            LazyColumn(
+                state = listState,
+                horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 920.dp)
-            )
-        }
-
-        item(key = "settings_active_panel") {
-            AnimatedContent(
-                targetState = selectedCategory,
-                transitionSpec = {
-                    (fadeIn(tween(220)) + androidx.compose.animation.slideInVertically(
-                        animationSpec = tween(240, easing = FastOutSlowInEasing),
-                        initialOffsetY = { it / 16 }
-                    )).togetherWith(fadeOut(tween(150)))
-                },
-                label = "settingsCategoryTransition",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 920.dp)
-            ) { category ->
-                val isCurrentCategory = category == selectedCategory
-                val categoryPanelFirstFocus = if (isCurrentCategory) {
-                    panelFirstControlFocusRequesters.getValue(category)
-                } else {
-                    remember { FocusRequester() }
-                }
-                val categoryTabRequester = resolveCategoryTabRequester(category)
-                when (category) {
-                    SettingsCategory.PLAYBACK -> PlaybackSettingsPanel(
+                    .fillMaxSize()
+                    .testTag("settings_screen"),
+                contentPadding = PaddingValues(
+                    top = contentPadding.calculateTopPadding() + if (isCompactTv) 12.dp else 18.dp,
+                    bottom = contentPadding.calculateBottomPadding() + 56.dp,
+                    start = horizontalPadding,
+                    end = horizontalPadding
+                ),
+                verticalArrangement = Arrangement.spacedBy(if (isCompactTv) 12.dp else 16.dp)
+            ) {
+                item(key = "settings_header") {
+                    SettingsHeaderBanner(
+                        isTvLayout = isTvLayout,
+                        isCompactTv = isCompactTv,
                         streamLang = streamLang,
                         preferWebPlayer = preferWebPlayer,
                         bufferPreset = bufferPreset,
-                        playerAdvancedSettings = playerAdvancedSettings,
-                        onSelectStreamLang = onSelectStreamLang,
-                        onSetPreferWebPlayer = onSetPreferWebPlayer,
-                        onSelectBufferPreset = onSelectBufferPreset,
-                        onSetSkipIntroEnabled = onSetSkipIntroEnabled,
-                        onSetNextEpisodePromptEnabled = onSetNextEpisodePromptEnabled,
-                        onSetAutoPlayNextEpisodeEnabled = onSetAutoPlayNextEpisodeEnabled,
-                        onSetNextEpisodeCountdownSec = onSetNextEpisodeCountdownSec,
-                        onSetCreditsDetectionEnabled = onSetCreditsDetectionEnabled,
-                        onSetManualMovieCompletionEnabled = onSetManualMovieCompletionEnabled,
-                        playerComfortSettings = playerComfortSettings,
-                        onSelectVideoAspectMode = onSelectVideoAspectMode,
-                        onSelectSubtitleTextSize = onSelectSubtitleTextSize,
-                        onSelectSubtitleTextColor = onSelectSubtitleTextColor,
-                        onSelectSubtitleBackgroundStyle = onSelectSubtitleBackgroundStyle,
-                        onRefreshCatalog = onRefreshCatalog,
-                        firstControlFocusRequester = categoryPanelFirstFocus,
-                        upToCategoryFocusRequester = categoryTabRequester,
-                        onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
-                        onRememberContentFocus = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
+                        hasUpdateAvailable = hasUpdateAvailable,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = maxContentWidth)
                     )
+                }
 
-                    SettingsCategory.UPDATES -> UpdatesSettingsPanel(
-                        state = gitHubState,
-                        autoCheckUpdates = autoCheckUpdates,
-                        onSetAutoCheckUpdates = onSetAutoCheckUpdates,
-                        onRepoSlugChange = onRepoSlugChange,
-                        onCheckUpdates = onCheckUpdates,
-                        onTriggerUpdate = onTriggerUpdate,
-                        firstControlFocusRequester = categoryPanelFirstFocus,
-                        upToCategoryFocusRequester = categoryTabRequester,
-                        onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
-                        onRememberContentFocus = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
+                item(key = "settings_category_bar") {
+                    SettingsCategoryTabRow(
+                        selectedCategory = selectedCategory,
+                        hasUpdateAvailable = hasUpdateAvailable,
+                        isWideTabBar = isWideTabBar,
+                        showSubtitles = showTabSubtitles,
+                        onSelectCategory = {
+                            if (selectedCategory != it) {
+                                selectedCategory = it
+                            }
+                            scrollToTopOnly()
+                        },
+                        resolveTabFocusRequester = resolveCategoryTabRequester,
+                        panelFirstControlFocusRequester = panelFirstControlFocusRequester,
+                        onTabFocused = { requester ->
+                            onRememberContentFocus(requester)
+                            scrollToTopOnly()
+                        },
+                        onUpFromTab = {
+                            scrollToTopOnly()
+                            upFocusRequester.safeRequestFocus()
+                        },
+                        onDownToPanel = {
+                            scrollDownAndFocusPanel(panelFirstControlFocusRequesters.getValue(selectedCategory))
+                        },
+                        navRailFocusRequester = navRailFocusRequester,
+                        upFocusRequester = upFocusRequester,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = maxContentWidth)
                     )
+                }
 
-                    SettingsCategory.API_SOURCES -> ApiSourcesSettingsPanel(
-                        state = gitHubState,
-                        onUpdateTmdbKey = onUpdateTmdbKey,
-                        onResetTmdbKey = onResetTmdbKey,
-                        firstControlFocusRequester = categoryPanelFirstFocus,
-                        upToCategoryFocusRequester = categoryTabRequester,
-                        onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
-                        onRememberContentFocus = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
+                item(key = "settings_active_panel") {
+                    AnimatedContent(
+                        targetState = selectedCategory,
+                        transitionSpec = {
+                            (fadeIn(tween(180)) + androidx.compose.animation.slideInVertically(
+                                animationSpec = tween(200, easing = FastOutSlowInEasing),
+                                initialOffsetY = { it / 24 }
+                            )).togetherWith(fadeOut(tween(130)))
+                        },
+                        label = "settingsCategoryTransition",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = maxContentWidth)
+                    ) { category ->
+                        val isCurrentCategory = category == selectedCategory
+                        val categoryPanelFirstFocus = if (isCurrentCategory) {
+                            panelFirstControlFocusRequesters.getValue(category)
+                        } else {
+                            remember { FocusRequester() }
+                        }
+                        val categoryTabRequester = resolveCategoryTabRequester(category)
+                        when (category) {
+                            SettingsCategory.PLAYBACK -> PlaybackSettingsPanel(
+                                streamLang = streamLang,
+                                preferWebPlayer = preferWebPlayer,
+                                bufferPreset = bufferPreset,
+                                playerAdvancedSettings = playerAdvancedSettings,
+                                onSelectStreamLang = onSelectStreamLang,
+                                onSetPreferWebPlayer = onSetPreferWebPlayer,
+                                onSelectBufferPreset = onSelectBufferPreset,
+                                onSetSkipIntroEnabled = onSetSkipIntroEnabled,
+                                onSetNextEpisodePromptEnabled = onSetNextEpisodePromptEnabled,
+                                onSetAutoPlayNextEpisodeEnabled = onSetAutoPlayNextEpisodeEnabled,
+                                onSetNextEpisodeCountdownSec = onSetNextEpisodeCountdownSec,
+                                onSetCreditsDetectionEnabled = onSetCreditsDetectionEnabled,
+                                onSetManualMovieCompletionEnabled = onSetManualMovieCompletionEnabled,
+                                playerComfortSettings = playerComfortSettings,
+                                onSelectVideoAspectMode = onSelectVideoAspectMode,
+                                onSelectSubtitleTextSize = onSelectSubtitleTextSize,
+                                onSelectSubtitleTextColor = onSelectSubtitleTextColor,
+                                onSelectSubtitleBackgroundStyle = onSelectSubtitleBackgroundStyle,
+                                onRefreshCatalog = onRefreshCatalog,
+                                firstControlFocusRequester = categoryPanelFirstFocus,
+                                upToCategoryFocusRequester = categoryTabRequester,
+                                onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                                onRememberContentFocus = onRememberContentFocus,
+                                navRailFocusRequester = navRailFocusRequester
+                            )
 
-                    SettingsCategory.SYSTEM -> SystemSettingsPanel(
-                        isTvLayout = isTvLayout,
-                        continueWatchingCount = continueWatchingCount,
-                        watchlistCount = watchlistCount,
-                        backgroundPrefetchEnabled = backgroundPrefetchEnabled,
-                        cacheStats = cacheStats,
-                        isBackgroundCatalogRefreshing = isBackgroundCatalogRefreshing,
-                        cacheClearedFeedbackNonce = cacheClearedFeedbackNonce,
-                        profileUiState = profileUiState,
-                        onOpenProfileSelector = onOpenProfileSelector,
-                        onSetAutoLoginProfile = onSetAutoLoginProfile,
-                        onSetDefaultProfileId = onSetDefaultProfileId,
-                        simklUiState = simklUiState,
-                        onConnectSimkl = onConnectSimkl,
-                        onSyncSimklNow = onSyncSimklNow,
-                        onUnlinkSimkl = onUnlinkSimkl,
-                        onSetBackgroundPrefetch = onSetBackgroundPrefetch,
-                        onRefreshCatalog = onRefreshCatalog,
-                        onClearLocalCache = onClearLocalCache,
-                        onClearContinueWatching = onClearContinueWatching,
-                        firstControlFocusRequester = categoryPanelFirstFocus,
-                        upToCategoryFocusRequester = categoryTabRequester,
-                        onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
-                        onRememberContentFocus = onRememberContentFocus,
-                        navRailFocusRequester = navRailFocusRequester
-                    )
+                            SettingsCategory.UPDATES -> UpdatesSettingsPanel(
+                                state = gitHubState,
+                                autoCheckUpdates = autoCheckUpdates,
+                                onSetAutoCheckUpdates = onSetAutoCheckUpdates,
+                                onRepoSlugChange = onRepoSlugChange,
+                                onCheckUpdates = onCheckUpdates,
+                                onTriggerUpdate = onTriggerUpdate,
+                                firstControlFocusRequester = categoryPanelFirstFocus,
+                                upToCategoryFocusRequester = categoryTabRequester,
+                                onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                                onRememberContentFocus = onRememberContentFocus,
+                                navRailFocusRequester = navRailFocusRequester
+                            )
+
+                            SettingsCategory.API_SOURCES -> ApiSourcesSettingsPanel(
+                                state = gitHubState,
+                                onUpdateTmdbKey = onUpdateTmdbKey,
+                                onResetTmdbKey = onResetTmdbKey,
+                                firstControlFocusRequester = categoryPanelFirstFocus,
+                                upToCategoryFocusRequester = categoryTabRequester,
+                                onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                                onRememberContentFocus = onRememberContentFocus,
+                                navRailFocusRequester = navRailFocusRequester
+                            )
+
+                            SettingsCategory.SYSTEM -> SystemSettingsPanel(
+                                isTvLayout = isTvLayout,
+                                isWideStatRow = availableWidth >= 720.dp,
+                                continueWatchingCount = continueWatchingCount,
+                                watchlistCount = watchlistCount,
+                                backgroundPrefetchEnabled = backgroundPrefetchEnabled,
+                                cacheStats = cacheStats,
+                                isBackgroundCatalogRefreshing = isBackgroundCatalogRefreshing,
+                                cacheClearedFeedbackNonce = cacheClearedFeedbackNonce,
+                                profileUiState = profileUiState,
+                                onOpenProfileSelector = onOpenProfileSelector,
+                                onSetAutoLoginProfile = onSetAutoLoginProfile,
+                                onSetDefaultProfileId = onSetDefaultProfileId,
+                                simklUiState = simklUiState,
+                                onConnectSimkl = onConnectSimkl,
+                                onSyncSimklNow = onSyncSimklNow,
+                                onUnlinkSimkl = onUnlinkSimkl,
+                                onSetBackgroundPrefetch = onSetBackgroundPrefetch,
+                                onRefreshCatalog = onRefreshCatalog,
+                                onClearLocalCache = onClearLocalCache,
+                                onClearContinueWatching = onClearContinueWatching,
+                                firstControlFocusRequester = categoryPanelFirstFocus,
+                                upToCategoryFocusRequester = categoryTabRequester,
+                                onUpToCategoryBar = scrollToTopAndFocusCategoryBar,
+                                onRememberContentFocus = onRememberContentFocus,
+                                navRailFocusRequester = navRailFocusRequester
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -489,6 +512,7 @@ fun SettingsScreen(
 @Composable
 private fun SettingsHeaderBanner(
     isTvLayout: Boolean,
+    isCompactTv: Boolean,
     streamLang: String,
     preferWebPlayer: Boolean,
     bufferPreset: StreamingBufferPreset,
@@ -496,9 +520,9 @@ private fun SettingsHeaderBanner(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(14.dp),
         color = NetflixCardSurface,
-        border = BorderStroke(1.dp, NetflixElevatedSurface),
+        border = BorderStroke(1.dp, NetflixElevatedSurface.copy(alpha = 0.85f)),
         modifier = modifier
     ) {
         Box(
@@ -507,13 +531,13 @@ private fun SettingsHeaderBanner(
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            NetflixRed.copy(alpha = 0.22f),
+                            NetflixRed.copy(alpha = 0.14f),
                             NetflixCardSurface,
                             NetflixDarkSurface
                         )
                     )
                 )
-                .padding(18.dp)
+                .padding(horizontal = 18.dp, vertical = if (isCompactTv) 12.dp else 15.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -526,38 +550,49 @@ private fun SettingsHeaderBanner(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(NetflixRed.copy(alpha = 0.18f)),
+                            .size(if (isCompactTv) 40.dp else 44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(NetflixRed.copy(alpha = 0.16f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Settings,
                             contentDescription = "Impostazioni",
                             tint = NetflixRed,
-                            modifier = Modifier.size(26.dp)
+                            modifier = Modifier.size(if (isCompactTv) 22.dp else 24.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Impostazioni VixFlix",
-                            style = MaterialTheme.typography.headlineSmall,
+                            style = if (isCompactTv) {
+                                MaterialTheme.typography.titleLarge
+                            } else {
+                                MaterialTheme.typography.headlineSmall
+                            },
                             fontWeight = FontWeight.Bold,
-                            color = NetflixWhite
+                            color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "v${BuildConfig.VERSION_NAME} • ${if (isTvLayout) "TV & Tablet Widescreen" else "Smartphone Verticale"} • ${if (preferWebPlayer) "Web Player" else "ExoPlayer"} (${bufferPreset.sizeMb} MB)",
+                            text = "v${BuildConfig.VERSION_NAME} • ${if (isTvLayout) "TV & Telecomando" else "Smartphone"} • ${if (preferWebPlayer) "Web Player" else "ExoPlayer"} (${bufferPreset.sizeMb} MB)",
                             style = MaterialTheme.typography.bodySmall,
-                            color = NetflixLightGray
+                            color = NetflixLightGray,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.width(12.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Surface(
                         color = NetflixElevatedSurface,
                         shape = RoundedCornerShape(8.dp)
@@ -567,22 +602,26 @@ private fun SettingsHeaderBanner(
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = NetflixWhite,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                         )
                     }
 
                     if (hasUpdateAvailable) {
                         Surface(
-                            color = NetflixMatchGreen.copy(alpha = 0.18f),
+                            color = NetflixMatchGreen.copy(alpha = 0.16f),
                             shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, NetflixMatchGreen)
+                            border = BorderStroke(1.dp, NetflixMatchGreen.copy(alpha = 0.7f))
                         ) {
                             Text(
                                 text = "UPDATE",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = NetflixMatchGreen,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                             )
                         }
                     }
@@ -596,6 +635,8 @@ private fun SettingsHeaderBanner(
 private fun SettingsCategoryTabRow(
     selectedCategory: SettingsCategory,
     hasUpdateAvailable: Boolean,
+    isWideTabBar: Boolean,
+    showSubtitles: Boolean,
     onSelectCategory: (SettingsCategory) -> Unit,
     resolveTabFocusRequester: (SettingsCategory) -> FocusRequester,
     panelFirstControlFocusRequester: FocusRequester?,
@@ -606,24 +647,38 @@ private fun SettingsCategoryTabRow(
     upFocusRequester: FocusRequester?,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier
+    val rowModifier = if (isWideTabBar) {
+        modifier
+            .focusGroup()
+            .padding(vertical = 2.dp)
+    } else {
+        modifier
             .focusGroup()
             .horizontalScroll(rememberScrollState())
-            .padding(vertical = 2.dp),
+            .padding(horizontal = 2.dp, vertical = 4.dp)
+    }
+
+    Row(
+        modifier = rowModifier,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         SettingsCategory.entries.forEachIndexed { index, category ->
             val isSelected = category == selectedCategory
             val tabFocusRequester = resolveTabFocusRequester(category)
+            var isFocused by remember { mutableStateOf(false) }
+
             val bgColor by animateColorAsState(
-                targetValue = if (isSelected) NetflixRed else NetflixCardSurface,
-                animationSpec = tween(200),
+                targetValue = when {
+                    isSelected -> NetflixRed
+                    isFocused -> Color(0xFF282B34)
+                    else -> NetflixCardSurface
+                },
+                animationSpec = tween(160),
                 label = "settingsTabBg"
             )
             val borderColor by animateColorAsState(
                 targetValue = if (isSelected) NetflixRed else NetflixElevatedSurface,
-                animationSpec = tween(200),
+                animationSpec = tween(160),
                 label = "settingsTabBorder"
             )
 
@@ -638,12 +693,18 @@ private fun SettingsCategoryTabRow(
                 null
             }
 
+            val itemModifier = if (isWideTabBar) {
+                Modifier.weight(1f)
+            } else {
+                Modifier
+            }
+
             Surface(
                 color = bgColor,
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, borderColor),
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
+                modifier = itemModifier
+                    .heightIn(min = if (showSubtitles) 58.dp else 48.dp)
                     .safeFocusRequester(tabFocusRequester)
                     .onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown) {
@@ -667,8 +728,11 @@ private fun SettingsCategoryTabRow(
                     .tvFocusableControl(
                         shape = RoundedCornerShape(12.dp),
                         focusedBorderColor = NetflixWhite,
-                        focusedScale = 1.04f,
+                        focusedScale = 1.0f,
+                        borderWidth = 2.dp,
+                        focusTag = "settings_tab_${category.name.lowercase()}",
                         onFocusChange = { focused ->
+                            isFocused = focused
                             if (focused) {
                                 onSelectCategory(category)
                                 onTabFocused(tabFocusRequester)
@@ -680,8 +744,11 @@ private fun SettingsCategoryTabRow(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    modifier = Modifier.padding(
+                        horizontal = if (isWideTabBar) 12.dp else 14.dp,
+                        vertical = if (showSubtitles) 10.dp else 12.dp
+                    )
                 ) {
                     Icon(
                         imageVector = category.icon,
@@ -689,19 +756,37 @@ private fun SettingsCategoryTabRow(
                         tint = if (isSelected) Color.White else NetflixLightGray,
                         modifier = Modifier.size(18.dp)
                     )
-                    Text(
-                        text = category.title,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = NetflixWhite
-                    )
-                    if (category == SettingsCategory.UPDATES && hasUpdateAvailable) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(NetflixMatchGreen)
-                        )
+                    Column(modifier = if (isWideTabBar) Modifier.weight(1f) else Modifier) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = category.title,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = NetflixWhite,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (category == SettingsCategory.UPDATES && hasUpdateAvailable) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(NetflixMatchGreen)
+                                )
+                            }
+                        }
+                        if (showSubtitles) {
+                            Text(
+                                text = category.subtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isSelected) Color.White.copy(alpha = 0.82f) else NetflixLightGray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }
@@ -737,9 +822,25 @@ private fun PlaybackSettingsPanel(
     navRailFocusRequester: FocusRequester?
 ) {
     var catalogRefreshed by remember { mutableStateOf(false) }
+
+    val langFirstFocus = firstControlFocusRequester ?: remember { FocusRequester() }
+    val playerFirstFocus = remember { FocusRequester() }
+    val bufferFirstFocus = remember { FocusRequester() }
+    val aspectFirstFocus = remember { FocusRequester() }
+    val subSizeFirstFocus = remember { FocusRequester() }
+    val subColorFirstFocus = remember { FocusRequester() }
+    val subBgFirstFocus = remember { FocusRequester() }
+    val skipIntroFocus = remember { FocusRequester() }
+    val nextPromptFocus = remember { FocusRequester() }
+    val autoPlayNextFocus = remember { FocusRequester() }
+    val countdownFirstFocus = remember { FocusRequester() }
+    val creditsFocus = remember { FocusRequester() }
+    val manualCompleteFocus = remember { FocusRequester() }
     val refreshCatalogFocusRequester = remember { FocusRequester() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        SettingsGroupHeader(title = "Preferenze Streaming")
+
         SettingsSectionCard(
             title = "Lingua Audio & Sottotitoli",
             subtitle = "Seleziona la lingua predefinita per i flussi VixSrc su film ed episodi",
@@ -754,8 +855,9 @@ private fun PlaybackSettingsPanel(
                 ),
                 selectedKey = streamLang.lowercase(),
                 onSelect = onSelectStreamLang,
-                firstOptionFocusRequester = firstControlFocusRequester,
+                firstOptionFocusRequester = langFirstFocus,
                 upFocusRequester = upToCategoryFocusRequester,
+                downFocusRequester = playerFirstFocus,
                 onUpKey = onUpToCategoryBar,
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
@@ -777,6 +879,9 @@ private fun PlaybackSettingsPanel(
                 ),
                 selectedKey = if (preferWebPlayer) "web" else "native",
                 onSelect = { key -> onSetPreferWebPlayer(key == "web") },
+                firstOptionFocusRequester = playerFirstFocus,
+                upFocusRequester = langFirstFocus,
+                downFocusRequester = bufferFirstFocus,
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 tagPrefix = "settings_player"
@@ -793,89 +898,15 @@ private fun PlaybackSettingsPanel(
             BufferPresetGrid(
                 selectedPreset = bufferPreset,
                 onSelectPreset = onSelectBufferPreset,
+                upFocusRequester = playerFirstFocus,
+                downFocusRequester = aspectFirstFocus,
+                firstPresetFocusRequester = bufferFirstFocus,
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester
             )
         }
 
-        SettingsSectionCard(
-            title = "Funzionalità Avanzate Player",
-            subtitle = "Personalizza Salta Intro, titoli di coda, episodio successivo e completamento film",
-            icon = Icons.Default.Tune,
-            badgeText = "${playerAdvancedSettings.sanitizedCountdownSec}s",
-            badgeColor = NetflixRed
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                SettingsSwitchRow(
-                    label = "Salta intro",
-                    description = "Mostra il pulsante SALTA INTRO quando esistono dati affidabili per l'episodio",
-                    checked = playerAdvancedSettings.skipIntroEnabled,
-                    onCheckedChange = onSetSkipIntroEnabled,
-                    onRememberContentFocus = onRememberContentFocus,
-                    navRailFocusRequester = navRailFocusRequester,
-                    testTagName = "settings_skip_intro_switch"
-                )
-
-                SettingsSwitchRow(
-                    label = "Proposta episodio successivo",
-                    description = "Mostra il popup PROSSIMO EPISODIO sui titoli di coda se esiste un episodio successivo",
-                    checked = playerAdvancedSettings.nextEpisodePromptEnabled,
-                    onCheckedChange = onSetNextEpisodePromptEnabled,
-                    onRememberContentFocus = onRememberContentFocus,
-                    navRailFocusRequester = navRailFocusRequester,
-                    testTagName = "settings_next_episode_prompt_switch"
-                )
-
-                SettingsSwitchRow(
-                    label = "Riproduzione automatica episodio successivo",
-                    description = "Avvia automaticamente il prossimo episodio allo scadere del conto alla rovescia",
-                    checked = playerAdvancedSettings.autoPlayNextEpisodeEnabled,
-                    onCheckedChange = onSetAutoPlayNextEpisodeEnabled,
-                    onRememberContentFocus = onRememberContentFocus,
-                    navRailFocusRequester = navRailFocusRequester,
-                    testTagName = "settings_auto_play_next_switch"
-                )
-
-                Text(
-                    text = "Conto alla rovescia episodio successivo",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = NetflixWhite
-                )
-                SettingsChoiceRow(
-                    options = PlayerAdvancedSettings.ALLOWED_COUNTDOWN_OPTIONS.map { sec ->
-                        sec.toString() to "${sec}s"
-                    },
-                    selectedKey = playerAdvancedSettings.sanitizedCountdownSec.toString(),
-                    onSelect = { key ->
-                        key.toIntOrNull()?.let(onSetNextEpisodeCountdownSec)
-                    },
-                    onRememberContentFocus = onRememberContentFocus,
-                    navRailFocusRequester = navRailFocusRequester,
-                    tagPrefix = "settings_countdown"
-                )
-
-                SettingsSwitchRow(
-                    label = "Rilevamento titoli di coda",
-                    description = "Attiva il rilevamento dei titoli di coda per serie TV e film",
-                    checked = playerAdvancedSettings.creditsDetectionEnabled,
-                    onCheckedChange = onSetCreditsDetectionEnabled,
-                    onRememberContentFocus = onRememberContentFocus,
-                    navRailFocusRequester = navRailFocusRequester,
-                    testTagName = "settings_credits_detection_switch"
-                )
-
-                SettingsSwitchRow(
-                    label = "Conferma manuale completamento film",
-                    description = "Mostra il pulsante Termina film nei controlli del player per completare il film manualmente",
-                    checked = playerAdvancedSettings.manualMovieCompletionEnabled,
-                    onCheckedChange = onSetManualMovieCompletionEnabled,
-                    onRememberContentFocus = onRememberContentFocus,
-                    navRailFocusRequester = navRailFocusRequester,
-                    testTagName = "settings_manual_movie_complete_switch"
-                )
-            }
-        }
+        SettingsGroupHeader(title = "Comfort & Aspetto Video")
 
         SettingsSectionCard(
             title = stringResource(R.string.settings_comfort_title),
@@ -904,6 +935,9 @@ private fun PlaybackSettingsPanel(
                     options = VideoAspectMode.entries.map { it.storageKey to it.label },
                     selectedKey = playerComfortSettings.videoAspectMode.storageKey,
                     onSelect = { key -> onSelectVideoAspectMode(VideoAspectMode.fromStorageKey(key)) },
+                    firstOptionFocusRequester = aspectFirstFocus,
+                    upFocusRequester = bufferFirstFocus,
+                    downFocusRequester = subSizeFirstFocus,
                     onRememberContentFocus = onRememberContentFocus,
                     navRailFocusRequester = navRailFocusRequester,
                     tagPrefix = "settings_aspect"
@@ -919,6 +953,9 @@ private fun PlaybackSettingsPanel(
                     options = SubtitleTextSize.entries.map { it.storageKey to it.label },
                     selectedKey = playerComfortSettings.subtitleTextSize.storageKey,
                     onSelect = { key -> onSelectSubtitleTextSize(SubtitleTextSize.fromStorageKey(key)) },
+                    firstOptionFocusRequester = subSizeFirstFocus,
+                    upFocusRequester = aspectFirstFocus,
+                    downFocusRequester = subColorFirstFocus,
                     onRememberContentFocus = onRememberContentFocus,
                     navRailFocusRequester = navRailFocusRequester,
                     tagPrefix = "settings_sub_size"
@@ -934,6 +971,9 @@ private fun PlaybackSettingsPanel(
                     options = SubtitleTextColor.entries.map { it.storageKey to it.label },
                     selectedKey = playerComfortSettings.subtitleTextColor.storageKey,
                     onSelect = { key -> onSelectSubtitleTextColor(SubtitleTextColor.fromStorageKey(key)) },
+                    firstOptionFocusRequester = subColorFirstFocus,
+                    upFocusRequester = subSizeFirstFocus,
+                    downFocusRequester = subBgFirstFocus,
                     onRememberContentFocus = onRememberContentFocus,
                     navRailFocusRequester = navRailFocusRequester,
                     tagPrefix = "settings_sub_color"
@@ -949,12 +989,116 @@ private fun PlaybackSettingsPanel(
                     options = SubtitleBackgroundStyle.entries.map { it.storageKey to it.label },
                     selectedKey = playerComfortSettings.subtitleBackgroundStyle.storageKey,
                     onSelect = { key -> onSelectSubtitleBackgroundStyle(SubtitleBackgroundStyle.fromStorageKey(key)) },
+                    firstOptionFocusRequester = subBgFirstFocus,
+                    upFocusRequester = subColorFirstFocus,
+                    downFocusRequester = skipIntroFocus,
                     onRememberContentFocus = onRememberContentFocus,
                     navRailFocusRequester = navRailFocusRequester,
                     tagPrefix = "settings_sub_bg"
                 )
             }
         }
+
+        SettingsGroupHeader(title = "Automazioni Riproduzione")
+
+        SettingsSectionCard(
+            title = "Funzionalità Avanzate Player",
+            subtitle = "Personalizza Salta Intro, titoli di coda, episodio successivo e completamento film",
+            icon = Icons.Default.Tune,
+            badgeText = "${playerAdvancedSettings.sanitizedCountdownSec}s",
+            badgeColor = NetflixRed
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SettingsSwitchRow(
+                    label = "Salta intro",
+                    description = "Mostra il pulsante SALTA INTRO quando esistono dati affidabili per l'episodio",
+                    checked = playerAdvancedSettings.skipIntroEnabled,
+                    onCheckedChange = onSetSkipIntroEnabled,
+                    focusRequester = skipIntroFocus,
+                    upFocusRequester = subBgFirstFocus,
+                    downFocusRequester = nextPromptFocus,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_skip_intro_switch"
+                )
+
+                SettingsSwitchRow(
+                    label = "Proposta episodio successivo",
+                    description = "Mostra il popup PROSSIMO EPISODIO sui titoli di coda se esiste un episodio successivo",
+                    checked = playerAdvancedSettings.nextEpisodePromptEnabled,
+                    onCheckedChange = onSetNextEpisodePromptEnabled,
+                    focusRequester = nextPromptFocus,
+                    upFocusRequester = skipIntroFocus,
+                    downFocusRequester = autoPlayNextFocus,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_next_episode_prompt_switch"
+                )
+
+                SettingsSwitchRow(
+                    label = "Riproduzione automatica episodio successivo",
+                    description = "Avvia automaticamente il prossimo episodio allo scadere del conto alla rovescia",
+                    checked = playerAdvancedSettings.autoPlayNextEpisodeEnabled,
+                    onCheckedChange = onSetAutoPlayNextEpisodeEnabled,
+                    focusRequester = autoPlayNextFocus,
+                    upFocusRequester = nextPromptFocus,
+                    downFocusRequester = countdownFirstFocus,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_auto_play_next_switch"
+                )
+
+                Text(
+                    text = "Conto alla rovescia episodio successivo",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite
+                )
+                SettingsChoiceRow(
+                    options = PlayerAdvancedSettings.ALLOWED_COUNTDOWN_OPTIONS.map { sec ->
+                        sec.toString() to "${sec}s"
+                    },
+                    selectedKey = playerAdvancedSettings.sanitizedCountdownSec.toString(),
+                    onSelect = { key ->
+                        key.toIntOrNull()?.let(onSetNextEpisodeCountdownSec)
+                    },
+                    firstOptionFocusRequester = countdownFirstFocus,
+                    upFocusRequester = autoPlayNextFocus,
+                    downFocusRequester = creditsFocus,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    tagPrefix = "settings_countdown"
+                )
+
+                SettingsSwitchRow(
+                    label = "Rilevamento titoli di coda",
+                    description = "Attiva il rilevamento dei titoli di coda per serie TV e film",
+                    checked = playerAdvancedSettings.creditsDetectionEnabled,
+                    onCheckedChange = onSetCreditsDetectionEnabled,
+                    focusRequester = creditsFocus,
+                    upFocusRequester = countdownFirstFocus,
+                    downFocusRequester = manualCompleteFocus,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_credits_detection_switch"
+                )
+
+                SettingsSwitchRow(
+                    label = "Conferma manuale completamento film",
+                    description = "Mostra il pulsante Termina film nei controlli del player per completare il film manualmente",
+                    checked = playerAdvancedSettings.manualMovieCompletionEnabled,
+                    onCheckedChange = onSetManualMovieCompletionEnabled,
+                    focusRequester = manualCompleteFocus,
+                    upFocusRequester = creditsFocus,
+                    downFocusRequester = refreshCatalogFocusRequester,
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    testTagName = "settings_manual_movie_complete_switch"
+                )
+            }
+        }
+
+        SettingsGroupHeader(title = "Catalogo")
 
         SettingsSectionCard(
             title = "Catalogo Live TMDB",
@@ -978,6 +1122,7 @@ private fun PlaybackSettingsPanel(
                     .onPreviewKeyEvent { keyEvent ->
                         if (keyEvent.type == KeyEventType.KeyDown) {
                             when (keyEvent.key) {
+                                Key.DirectionUp -> manualCompleteFocus.safeRequestFocus()
                                 Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
                                 Key.DirectionRight, Key.DirectionDown -> true
                                 else -> false
@@ -987,11 +1132,13 @@ private fun PlaybackSettingsPanel(
                         }
                     }
                     .focusProperties {
+                        manualCompleteFocus.takeIfAttached()?.let { up = it }
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
                     }
                     .tvFocusableControl(
                         shape = RoundedCornerShape(10.dp),
-                        focusedScale = 1.02f,
+                        focusedScale = 1.0f,
+                        borderWidth = 2.dp,
                         focusTag = "settings_refresh_catalog_button",
                         onFocusChange = { focused ->
                             if (focused) onRememberContentFocus(refreshCatalogFocusRequester)
@@ -999,11 +1146,13 @@ private fun PlaybackSettingsPanel(
                     )
                     .testTag("settings_refresh_catalog_button")
             ) {
-                Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = if (catalogRefreshed) "Aggiornamento Catalogo Avviato" else "Ricarica Catalogo TMDB Ora",
-                    style = MaterialTheme.typography.labelLarge
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -1026,11 +1175,14 @@ private fun UpdatesSettingsPanel(
 ) {
     var inputRepo by remember(state.repoSlug) { mutableStateOf(state.repoSlug) }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val autoUpdateSwitchFocus = firstControlFocusRequester ?: remember { FocusRequester() }
     val repoInputFocusRequester = remember { FocusRequester() }
     val checkUpdatesFocusRequester = remember { FocusRequester() }
     val downloadUpdateFocusRequester = remember { FocusRequester() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        SettingsGroupHeader(title = "Controllo & Sorgente Aggiornamenti")
+
         SettingsSectionCard(
             title = "Controllo Automatico",
             subtitle = "Verifica nuove release APK all'avvio dell'app",
@@ -1043,8 +1195,9 @@ private fun UpdatesSettingsPanel(
                 description = "Mostra una notifica quando è disponibile una nuova versione",
                 checked = autoCheckUpdates,
                 onCheckedChange = onSetAutoCheckUpdates,
-                focusRequester = firstControlFocusRequester,
+                focusRequester = autoUpdateSwitchFocus,
                 upFocusRequester = upToCategoryFocusRequester,
+                downFocusRequester = repoInputFocusRequester,
                 onUpKey = onUpToCategoryBar,
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
@@ -1098,7 +1251,7 @@ private fun UpdatesSettingsPanel(
                     }
                     .focusProperties {
                         navRailFocusRequester.takeIfAttached()?.let { left = it }
-                        firstControlFocusRequester.takeIfAttached()?.let { up = it }
+                        autoUpdateSwitchFocus.takeIfAttached()?.let { up = it }
                         checkUpdatesFocusRequester.takeIfAttached()?.let { down = it }
                     }
                     .onPreviewKeyEvent { event ->
@@ -1106,7 +1259,7 @@ private fun UpdatesSettingsPanel(
                             when (event.key) {
                                 Key.DirectionUp -> {
                                     keyboardController?.hide()
-                                    firstControlFocusRequester.safeRequestFocus()
+                                    autoUpdateSwitchFocus.safeRequestFocus()
                                 }
                                 Key.DirectionDown -> {
                                     keyboardController?.hide()
@@ -1168,7 +1321,8 @@ private fun UpdatesSettingsPanel(
                     }
                     .tvFocusableControl(
                         shape = RoundedCornerShape(10.dp),
-                        focusedScale = 1.02f,
+                        focusedScale = 1.0f,
+                        borderWidth = 2.dp,
                         focusTag = "check_github_updates_button",
                         onFocusChange = { focused ->
                             if (focused) onRememberContentFocus(checkUpdatesFocusRequester)
@@ -1183,13 +1337,15 @@ private fun UpdatesSettingsPanel(
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
-                    Text("Controllo GitHub Releases in corso…")
+                    Text("Controllo GitHub Releases in corso…", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 } else {
-                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Verifica Nuova Versione su GitHub",
-                        style = MaterialTheme.typography.labelLarge
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -1197,9 +1353,9 @@ private fun UpdatesSettingsPanel(
             if (!state.errorMessage.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Surface(
-                    color = NetflixRed.copy(alpha = 0.15f),
+                    color = NetflixRed.copy(alpha = 0.14f),
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, NetflixRed),
+                    border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.7f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
@@ -1235,7 +1391,7 @@ private fun UpdatesSettingsPanel(
                             },
                             contentDescription = null,
                             tint = if (release.isUpdateAvailable) NetflixMatchGreen else NetflixLightGray,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -1331,7 +1487,8 @@ private fun UpdatesSettingsPanel(
                             }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
-                                focusedScale = 1.02f,
+                                focusedScale = 1.0f,
+                                borderWidth = 2.dp,
                                 focusTag = "download_update_apk_button",
                                 onFocusChange = { focused ->
                                     if (focused) onRememberContentFocus(downloadUpdateFocusRequester)
@@ -1339,7 +1496,7 @@ private fun UpdatesSettingsPanel(
                             )
                             .testTag("download_update_apk_button")
                     ) {
-                        Icon(imageVector = Icons.Default.CloudDownload, contentDescription = null)
+                        Icon(imageVector = Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = when {
@@ -1349,7 +1506,9 @@ private fun UpdatesSettingsPanel(
                                 else -> "Riscarica APK Release (${release.tagName})"
                             },
                             style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1382,6 +1541,8 @@ private fun ApiSourcesSettingsPanel(
     val showResetButton = inputTmdbKey != TmdbApiConfig.INTEGRATED_TMDB_API_KEY
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        SettingsGroupHeader(title = "Configurazione Sorgente Dati")
+
         SettingsSectionCard(
             title = "Chiave API TMDB",
             subtitle = "Usata per catalogo film, serie TV, locandine e ricerca",
@@ -1408,6 +1569,8 @@ private fun ApiSourcesSettingsPanel(
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
                         color = NetflixMatchGreen,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.testTag("visible_tmdb_api_key_text")
                     )
                 }
@@ -1481,21 +1644,21 @@ private fun ApiSourcesSettingsPanel(
                     .testTag("tmdb_api_key_input")
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusGroup()
             ) {
                 Button(
                     onClick = { onUpdateTmdbKey(inputTmdbKey) },
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NetflixRed,
                         contentColor = Color.White
                     ),
-                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
@@ -1521,7 +1684,8 @@ private fun ApiSourcesSettingsPanel(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(10.dp),
-                            focusedScale = 1.02f,
+                            focusedScale = 1.0f,
+                            borderWidth = 2.dp,
                             focusTag = "save_tmdb_key_button",
                             onFocusChange = { focused ->
                                 if (focused) onRememberContentFocus(saveKeyFocusRequester)
@@ -1529,7 +1693,12 @@ private fun ApiSourcesSettingsPanel(
                         )
                         .testTag("save_tmdb_key_button")
                 ) {
-                    Text("Applica Chiave", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        text = "Applica Chiave",
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
                 OutlinedButton(
@@ -1568,7 +1737,8 @@ private fun ApiSourcesSettingsPanel(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(10.dp),
-                            focusedScale = 1.03f,
+                            focusedScale = 1.0f,
+                            borderWidth = 2.dp,
                             focusTag = "copy_tmdb_key_button",
                             onFocusChange = { focused ->
                                 if (focused) onRememberContentFocus(copyKeyFocusRequester)
@@ -1582,7 +1752,11 @@ private fun ApiSourcesSettingsPanel(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (copiedFeedback) "Copiata!" else "Copia")
+                    Text(
+                        text = if (copiedFeedback) "Copiata!" else "Copia",
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
 
                 if (showResetButton) {
@@ -1617,7 +1791,8 @@ private fun ApiSourcesSettingsPanel(
                             }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
-                                focusedScale = 1.03f,
+                                focusedScale = 1.0f,
+                                borderWidth = 2.dp,
                                 focusTag = "reset_tmdb_key_button",
                                 onFocusChange = { focused ->
                                     if (focused) onRememberContentFocus(resetKeyFocusRequester)
@@ -1663,7 +1838,8 @@ private fun ApiSourcesSettingsPanel(
                     }
                     .tvFocusableControl(
                         shape = RoundedCornerShape(10.dp),
-                        focusedScale = 1.01f,
+                        focusedScale = 1.0f,
+                        borderWidth = 2.dp,
                         focusTag = "toggle_technical_details_button",
                         onFocusChange = { focused ->
                             if (focused) onRememberContentFocus(techDetailsFocusRequester)
@@ -1679,7 +1855,9 @@ private fun ApiSourcesSettingsPanel(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = if (showTechnicalDetails) "Nascondi Dettagli Configurazione" else "Mostra Dettagli Configurazione",
-                    style = MaterialTheme.typography.labelLarge
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -1721,6 +1899,7 @@ private fun ApiSourcesSettingsPanel(
 @Composable
 private fun SystemSettingsPanel(
     isTvLayout: Boolean,
+    isWideStatRow: Boolean,
     continueWatchingCount: Int,
     watchlistCount: Int,
     backgroundPrefetchEnabled: Boolean,
@@ -1747,11 +1926,17 @@ private fun SystemSettingsPanel(
 ) {
     var clearedFeedback by remember { mutableStateOf(false) }
     var showUnlinkSimklConfirm by remember(simklUiState.profileId) { mutableStateOf(false) }
+    var wasUnlinkSimklDialogOpen by remember { mutableStateOf(false) }
     var showClearContinueWatchingConfirm by remember(profileUiState.activeProfile?.id) { mutableStateOf(false) }
     var wasClearCwDialogOpen by remember { mutableStateOf(false) }
+
     val switchProfileFocusRequester = firstControlFocusRequester ?: remember { FocusRequester() }
     val manageProfilesFocusRequester = remember { FocusRequester() }
     val autoLoginFocusRequester = remember { FocusRequester() }
+    val defaultLastUsedFocusRequester = remember { FocusRequester() }
+    val profileChipFocusRequesters = remember(profileUiState.profiles.map { it.id }) {
+        profileUiState.profiles.associate { it.id to FocusRequester() }
+    }
     val simklConnectFocusRequester = remember { FocusRequester() }
     val simklSyncFocusRequester = remember { FocusRequester() }
     val simklUnlinkFocusRequester = remember { FocusRequester() }
@@ -1760,6 +1945,37 @@ private fun SystemSettingsPanel(
     val clearCacheFocusRequester = remember { FocusRequester() }
     val clearContinueWatchingFocusRequester = remember { FocusRequester() }
 
+    val hasDefaultProfileChips = profileUiState.profiles.isNotEmpty()
+    val showSimklConnectedActions = simklUiState.isConnected ||
+        (simklUiState.connectionState == SimklConnectionState.ERROR && !simklUiState.accountDisplayName.isNullOrBlank())
+
+    fun resolveSimklPrimaryFocus(): FocusRequester = when {
+        !showSimklConnectedActions -> simklConnectFocusRequester
+        simklUiState.connectionState == SimklConnectionState.SYNCING -> simklUnlinkFocusRequester
+        else -> simklSyncFocusRequester
+    }
+
+    val simklUpFocusRequester = if (hasDefaultProfileChips) {
+        defaultLastUsedFocusRequester
+    } else {
+        autoLoginFocusRequester
+    }
+
+    // Ripristino focus deterministico dopo chiusura dialogo scollegamento Simkl
+    LaunchedEffect(showUnlinkSimklConfirm, showSimklConnectedActions) {
+        if (wasUnlinkSimklDialogOpen && !showUnlinkSimklConfirm) {
+            repeat(3) { withFrameNanos { } }
+            val target = if (showSimklConnectedActions) {
+                simklUnlinkFocusRequester
+            } else {
+                simklConnectFocusRequester
+            }
+            target.safeRequestFocus()
+        }
+        wasUnlinkSimklDialogOpen = showUnlinkSimklConfirm
+    }
+
+    // Ripristino focus deterministico dopo chiusura dialogo svuotamento Continua a guardare
     LaunchedEffect(showClearContinueWatchingConfirm, continueWatchingCount) {
         if (wasClearCwDialogOpen && !showClearContinueWatchingConfirm) {
             repeat(3) { withFrameNanos { } }
@@ -1796,7 +2012,8 @@ private fun SystemSettingsPanel(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        // Sezione Profili Utente & Avvio (100% locale e navigabile con D-Pad)
+        SettingsGroupHeader(title = "Account & Profili")
+
         val activeProfile = profileUiState.activeProfile
         SettingsSectionCard(
             title = "Profili Utente & Avvio",
@@ -1823,7 +2040,7 @@ private fun SystemSettingsPanel(
                     ProfileAvatarArtwork(
                         avatarId = activeProfile.avatarId,
                         accentColorHex = activeProfile.accentColorHex,
-                        size = 48.dp,
+                        size = 46.dp,
                         cornerRadius = 10.dp,
                         profileName = activeProfile.name
                     )
@@ -1832,12 +2049,16 @@ private fun SystemSettingsPanel(
                             text = "Profilo attivo: ${activeProfile.name}",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
-                            color = NetflixWhite
+                            color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "Lingua ${activeProfile.preferredLanguage.uppercase()} • Audio ${activeProfile.preferredAudioLanguage.uppercase()} • Sottotitoli ${if (activeProfile.subtitlesEnabled) activeProfile.preferredSubtitleLanguage.uppercase() else "OFF"}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = NetflixLightGray
+                            color = NetflixLightGray,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1882,7 +2103,8 @@ private fun SystemSettingsPanel(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(10.dp),
-                            focusedScale = 1.02f,
+                            focusedScale = 1.0f,
+                            borderWidth = 2.dp,
                             focusTag = "settings_switch_profile_button",
                             onFocusChange = { focused ->
                                 if (focused) onRememberContentFocus(switchProfileFocusRequester)
@@ -1892,7 +2114,9 @@ private fun SystemSettingsPanel(
                 ) {
                     Text(
                         text = "Cambia profilo",
-                        style = MaterialTheme.typography.labelLarge
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
@@ -1925,7 +2149,8 @@ private fun SystemSettingsPanel(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(10.dp),
-                            focusedScale = 1.02f,
+                            focusedScale = 1.0f,
+                            borderWidth = 2.dp,
                             focusTag = "settings_manage_profiles_button",
                             onFocusChange = { focused ->
                                 if (focused) onRememberContentFocus(manageProfilesFocusRequester)
@@ -1935,7 +2160,9 @@ private fun SystemSettingsPanel(
                 ) {
                     Text(
                         text = "Gestisci profili",
-                        style = MaterialTheme.typography.labelLarge
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -1953,27 +2180,46 @@ private fun SystemSettingsPanel(
                 onCheckedChange = onSetAutoLoginProfile,
                 focusRequester = autoLoginFocusRequester,
                 upFocusRequester = switchProfileFocusRequester,
+                downFocusRequester = if (hasDefaultProfileChips) {
+                    defaultLastUsedFocusRequester
+                } else {
+                    resolveSimklPrimaryFocus()
+                },
                 onUpKey = { switchProfileFocusRequester.safeRequestFocus() },
+                onDownKey = {
+                    if (hasDefaultProfileChips) {
+                        defaultLastUsedFocusRequester.safeRequestFocus()
+                    } else {
+                        resolveSimklPrimaryFocus().safeRequestFocus()
+                    }
+                },
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 testTagName = "settings_autologin_profile_toggle"
             )
 
-            if (profileUiState.profiles.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(10.dp))
+            if (hasDefaultProfileChips) {
+                Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = "Profilo predefinito all'avvio",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = NetflixLightGray
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+                val orderedChipRequesters = listOf(defaultLastUsedFocusRequester) +
+                    profileUiState.profiles.map { profileChipFocusRequesters.getValue(it.id) }
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .focusGroup()
                         .horizontalScroll(rememberScrollState())
+                        .padding(vertical = 2.dp)
                 ) {
                     val isLastUsedSelected = profileUiState.defaultProfileId == null
+                    val nextAfterLastUsed = orderedChipRequesters.getOrNull(1)
                     Surface(
                         color = if (isLastUsedSelected) NetflixRed.copy(alpha = 0.24f) else NetflixDarkSurface,
                         shape = RoundedCornerShape(10.dp),
@@ -1982,31 +2228,63 @@ private fun SystemSettingsPanel(
                             color = if (isLastUsedSelected) NetflixRed else NetflixElevatedSurface
                         ),
                         modifier = Modifier
-                            .heightIn(min = 42.dp)
+                            .heightIn(min = 48.dp)
+                            .safeFocusRequester(defaultLastUsedFocusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> autoLoginFocusRequester.safeRequestFocus()
+                                        Key.DirectionDown -> resolveSimklPrimaryFocus().safeRequestFocus()
+                                        Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
+                                        Key.DirectionRight -> nextAfterLastUsed?.safeRequestFocus() ?: true
+                                        else -> false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            .focusProperties {
+                                autoLoginFocusRequester.takeIfAttached()?.let { up = it }
+                                resolveSimklPrimaryFocus().takeIfAttached()?.let { down = it }
+                                navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                nextAfterLastUsed?.takeIfAttached()?.let { right = it }
+                            }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
                                 focusedBorderColor = NetflixWhite,
+                                focusedScale = 1.0f,
+                                borderWidth = 2.dp,
                                 focusTag = "settings_default_profile_last_used",
+                                onFocusChange = { focused ->
+                                    if (focused) onRememberContentFocus(defaultLastUsedFocusRequester)
+                                },
                                 onClick = { onSetDefaultProfileId(null) }
                             )
                             .testTag("settings_default_profile_last_used")
                     ) {
                         Box(
                             contentAlignment = Alignment.Center,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                         ) {
                             Text(
                                 text = "Ultimo usato",
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelLarge,
                                 fontWeight = if (isLastUsedSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = NetflixWhite
+                                color = NetflixWhite,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
 
-                    profileUiState.profiles.forEach { profile ->
+                    profileUiState.profiles.forEachIndexed { idx, profile ->
                         val selected = profileUiState.defaultProfileId == profile.id
                         val accent = Color(profile.accentColorHex)
+                        val chipIndex = idx + 1
+                        val chipRequester = orderedChipRequesters[chipIndex]
+                        val prevChipRequester = orderedChipRequesters[chipIndex - 1]
+                        val nextChipRequester = orderedChipRequesters.getOrNull(chipIndex + 1)
+
                         Surface(
                             color = if (selected) accent.copy(alpha = 0.24f) else NetflixDarkSurface,
                             shape = RoundedCornerShape(10.dp),
@@ -2015,31 +2293,58 @@ private fun SystemSettingsPanel(
                                 color = if (selected) accent else NetflixElevatedSurface
                             ),
                             modifier = Modifier
-                                .heightIn(min = 42.dp)
+                                .heightIn(min = 48.dp)
+                                .safeFocusRequester(chipRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp -> autoLoginFocusRequester.safeRequestFocus()
+                                            Key.DirectionDown -> resolveSimklPrimaryFocus().safeRequestFocus()
+                                            Key.DirectionLeft -> prevChipRequester.safeRequestFocus()
+                                            Key.DirectionRight -> nextChipRequester?.safeRequestFocus() ?: true
+                                            else -> false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                .focusProperties {
+                                    autoLoginFocusRequester.takeIfAttached()?.let { up = it }
+                                    resolveSimklPrimaryFocus().takeIfAttached()?.let { down = it }
+                                    prevChipRequester.takeIfAttached()?.let { left = it }
+                                    nextChipRequester?.takeIfAttached()?.let { right = it }
+                                }
                                 .tvFocusableControl(
                                     shape = RoundedCornerShape(10.dp),
                                     focusedBorderColor = NetflixWhite,
+                                    focusedScale = 1.0f,
+                                    borderWidth = 2.dp,
                                     focusTag = "settings_default_profile_${profile.id}",
+                                    onFocusChange = { focused ->
+                                        if (focused) onRememberContentFocus(chipRequester)
+                                    },
                                     onClick = { onSetDefaultProfileId(profile.id) }
                                 )
                                 .testTag("settings_default_profile_${profile.id}")
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                             ) {
                                 ProfileAvatarArtwork(
                                     avatarId = profile.avatarId,
                                     accentColorHex = profile.accentColorHex,
-                                    size = 22.dp,
-                                    cornerRadius = 5.dp
+                                    size = 24.dp,
+                                    cornerRadius = 6.dp
                                 )
                                 Text(
                                     text = profile.name,
-                                    style = MaterialTheme.typography.labelMedium,
+                                    style = MaterialTheme.typography.labelLarge,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = NetflixWhite
+                                    color = NetflixWhite,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                         }
@@ -2054,7 +2359,7 @@ private fun SystemSettingsPanel(
             connectFocusRequester = simklConnectFocusRequester,
             syncFocusRequester = simklSyncFocusRequester,
             unlinkFocusRequester = simklUnlinkFocusRequester,
-            upFocusRequester = autoLoginFocusRequester,
+            upFocusRequester = simklUpFocusRequester,
             downFocusRequester = prefetchFocusRequester,
             navRailFocusRequester = navRailFocusRequester,
             onRememberContentFocus = onRememberContentFocus,
@@ -2062,6 +2367,8 @@ private fun SystemSettingsPanel(
             onSyncNow = onSyncSimklNow,
             onRequestUnlink = { showUnlinkSimklConfirm = true }
         )
+
+        SettingsGroupHeader(title = "Prestazioni & Cache")
 
         SettingsSectionCard(
             title = "Cache & Prestazioni",
@@ -2074,38 +2381,64 @@ private fun SystemSettingsPanel(
             },
             badgeColor = if (cacheStats.catalogUpdatedAtMs != null) NetflixMatchGreen else NetflixLightGray
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                SettingsStatTile(
-                    label = "Locandine Coil",
-                    value = formatCacheSizeMb(cacheStats.imageCacheSizeBytes),
-                    modifier = Modifier.weight(1f)
-                )
-                SettingsStatTile(
-                    label = "Link Video Validi",
-                    value = cacheStats.validStreamLinksCount.toString(),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                SettingsStatTile(
-                    label = "Schede Dettaglio",
-                    value = cacheStats.cachedDetailsCount.toString(),
-                    modifier = Modifier.weight(1f)
-                )
-                SettingsStatTile(
-                    label = "Stagioni Episodi",
-                    value = cacheStats.cachedSeasonsCount.toString(),
-                    modifier = Modifier.weight(1f)
-                )
+            if (isWideStatRow) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SettingsStatTile(
+                        label = "Locandine Coil",
+                        value = formatCacheSizeMb(cacheStats.imageCacheSizeBytes),
+                        modifier = Modifier.weight(1f)
+                    )
+                    SettingsStatTile(
+                        label = "Link Video Validi",
+                        value = cacheStats.validStreamLinksCount.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                    SettingsStatTile(
+                        label = "Schede Dettaglio",
+                        value = cacheStats.cachedDetailsCount.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                    SettingsStatTile(
+                        label = "Stagioni Episodi",
+                        value = cacheStats.cachedSeasonsCount.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SettingsStatTile(
+                        label = "Locandine Coil",
+                        value = formatCacheSizeMb(cacheStats.imageCacheSizeBytes),
+                        modifier = Modifier.weight(1f)
+                    )
+                    SettingsStatTile(
+                        label = "Link Video Validi",
+                        value = cacheStats.validStreamLinksCount.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SettingsStatTile(
+                        label = "Schede Dettaglio",
+                        value = cacheStats.cachedDetailsCount.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                    SettingsStatTile(
+                        label = "Stagioni Episodi",
+                        value = cacheStats.cachedSeasonsCount.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -2117,17 +2450,22 @@ private fun SystemSettingsPanel(
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            val firstCacheButtonFocus = if (!isBackgroundCatalogRefreshing) {
+                refreshCacheFocusRequester
+            } else {
+                clearCacheFocusRequester
+            }
+
             SettingsSwitchRow(
                 label = "Precaricamento leggero locandine",
                 description = "Precarica in background Hero e locandine principali senza rallentare UI o streaming",
                 checked = backgroundPrefetchEnabled,
                 onCheckedChange = onSetBackgroundPrefetch,
                 focusRequester = prefetchFocusRequester,
-                upFocusRequester = if (simklUiState.isConnected) simklSyncFocusRequester else simklConnectFocusRequester,
-                onUpKey = {
-                    val target = if (simklUiState.isConnected) simklSyncFocusRequester else simklConnectFocusRequester
-                    target.safeRequestFocus()
-                },
+                upFocusRequester = resolveSimklPrimaryFocus(),
+                downFocusRequester = firstCacheButtonFocus,
+                onUpKey = { resolveSimklPrimaryFocus().safeRequestFocus() },
+                onDownKey = { firstCacheButtonFocus.safeRequestFocus() },
                 onRememberContentFocus = onRememberContentFocus,
                 navRailFocusRequester = navRailFocusRequester,
                 testTagName = "settings_prefetch_switch"
@@ -2154,6 +2492,7 @@ private fun SystemSettingsPanel(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
+                                    Key.DirectionUp -> prefetchFocusRequester.safeRequestFocus()
                                     Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
                                     Key.DirectionRight -> clearCacheFocusRequester.safeRequestFocus()
                                     Key.DirectionDown -> {
@@ -2170,6 +2509,7 @@ private fun SystemSettingsPanel(
                             }
                         }
                         .focusProperties {
+                            prefetchFocusRequester.takeIfAttached()?.let { up = it }
                             navRailFocusRequester.takeIfAttached()?.let { left = it }
                             clearCacheFocusRequester.takeIfAttached()?.let { right = it }
                             if (continueWatchingCount > 0) {
@@ -2178,7 +2518,8 @@ private fun SystemSettingsPanel(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(10.dp),
-                            focusedScale = 1.02f,
+                            focusedScale = 1.0f,
+                            borderWidth = 2.dp,
                             focusTag = "settings_refresh_catalog_cache_button",
                             onFocusChange = { focused ->
                                 if (focused) onRememberContentFocus(refreshCacheFocusRequester)
@@ -2190,14 +2531,16 @@ private fun SystemSettingsPanel(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = if (isBackgroundCatalogRefreshing) "Aggiornamento…" else "Aggiorna Ora",
-                        style = MaterialTheme.typography.labelLarge
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
                 OutlinedButton(
                     onClick = onClearLocalCache,
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, NetflixRed),
+                    border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.85f)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
                     modifier = Modifier
                         .weight(1f)
@@ -2206,6 +2549,7 @@ private fun SystemSettingsPanel(
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
                                 when (keyEvent.key) {
+                                    Key.DirectionUp -> prefetchFocusRequester.safeRequestFocus()
                                     Key.DirectionLeft -> {
                                         if (!isBackgroundCatalogRefreshing) {
                                             refreshCacheFocusRequester.safeRequestFocus()
@@ -2228,6 +2572,7 @@ private fun SystemSettingsPanel(
                             }
                         }
                         .focusProperties {
+                            prefetchFocusRequester.takeIfAttached()?.let { up = it }
                             if (!isBackgroundCatalogRefreshing) {
                                 refreshCacheFocusRequester.takeIfAttached()?.let { left = it }
                             } else {
@@ -2239,7 +2584,8 @@ private fun SystemSettingsPanel(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(10.dp),
-                            focusedScale = 1.02f,
+                            focusedScale = 1.0f,
+                            borderWidth = 2.dp,
                             focusTag = "settings_clear_cache_button",
                             onFocusChange = { focused ->
                                 if (focused) onRememberContentFocus(clearCacheFocusRequester)
@@ -2255,16 +2601,21 @@ private fun SystemSettingsPanel(
                         } else {
                             "Svuota Cache"
                         },
-                        style = MaterialTheme.typography.labelLarge
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         }
 
+        SettingsGroupHeader(title = "Gestione Dati & Reset", isDangerZone = true)
+
         SettingsSectionCard(
             title = "Continua a Guardare & Dati Profilo",
             subtitle = "Dati locali del profilo attivo (non rimossi dallo svuotamento cache)",
-            icon = Icons.Default.Storage
+            icon = Icons.Default.Storage,
+            isDangerZone = true
         ) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -2320,7 +2671,8 @@ private fun SystemSettingsPanel(
                     }
                     .tvFocusableControl(
                         shape = RoundedCornerShape(10.dp),
-                        focusedScale = 1.02f,
+                        focusedScale = 1.0f,
+                        borderWidth = 2.dp,
                         focusTag = "settings_clear_history_button",
                         onFocusChange = { focused ->
                             if (focused) onRememberContentFocus(clearContinueWatchingFocusRequester)
@@ -2328,7 +2680,7 @@ private fun SystemSettingsPanel(
                     )
                     .testTag("settings_clear_history_button")
             ) {
-                Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null)
+                Icon(imageVector = Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = when {
@@ -2336,10 +2688,14 @@ private fun SystemSettingsPanel(
                         continueWatchingCount == 0 -> "Nessun contenuto in corso"
                         else -> "Svuota Continua a Guardare ($continueWatchingCount)"
                     },
-                    style = MaterialTheme.typography.labelLarge
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
+
+        SettingsGroupHeader(title = "Informazioni Sistema")
 
         SettingsSectionCard(
             title = "Informazioni Applicazione",
@@ -2348,7 +2704,10 @@ private fun SystemSettingsPanel(
         ) {
             SettingsInfoLine(label = "Versione App", value = "v${BuildConfig.VERSION_NAME} (Code ${BuildConfig.VERSION_CODE})")
             SettingsInfoLine(label = "Application ID", value = BuildConfig.APPLICATION_ID)
-            SettingsInfoLine(label = "Interfaccia Attiva", value = if (isTvLayout) "Android TV / Google TV / Fire Stick / Tablet Orizzontale (Touch + D-Pad)" else "Smartphone Verticale (Touch)")
+            SettingsInfoLine(
+                label = "Interfaccia Attiva",
+                value = if (isTvLayout) "Android TV / Google TV / Fire TV Stick (D-Pad + Touch)" else "Smartphone Verticale (Touch)"
+            )
             SettingsInfoLine(label = "Firma Keystore", value = "SHA1 96:99:D9:34…BB:7C")
         }
     }
@@ -2410,7 +2769,7 @@ private fun SimklSettingsSectionCard(
 
     Box(modifier = Modifier.testTag("simkl_settings_card")) {
         SettingsSectionCard(
-            title = "SINCRONIZZAZIONE SIMKL",
+            title = "Sincronizzazione Simkl",
             subtitle = "Stato cloud per \"$activeProfileName\" (AUTH V2 + QR Code TV)",
             icon = Icons.Default.Sync,
             badgeText = badgeLabel,
@@ -2458,6 +2817,8 @@ private fun SimklSettingsSectionCard(
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = badgeColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("simkl_connection_badge")
                         )
                     }
@@ -2477,6 +2838,8 @@ private fun SimklSettingsSectionCard(
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = NetflixWhite,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.testTag("simkl_account_label")
                             )
                         }
@@ -2495,6 +2858,8 @@ private fun SimklSettingsSectionCard(
                             text = formatRelativeCacheAge(simklUiState.lastSyncAtMs),
                             style = MaterialTheme.typography.labelMedium,
                             color = NetflixWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("simkl_last_sync_label")
                         )
                     }
@@ -2661,7 +3026,8 @@ private fun SimklSettingsSectionCard(
                         }
                         .tvFocusableControl(
                             shape = RoundedCornerShape(10.dp),
-                            focusedScale = 1.02f,
+                            focusedScale = 1.0f,
+                            borderWidth = 2.dp,
                             focusTag = "simkl_connect_button",
                             onFocusChange = { focused ->
                                 if (focused) onRememberContentFocus(connectFocusRequester)
@@ -2677,14 +3043,17 @@ private fun SimklSettingsSectionCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = if (simklUiState.connectionState == SimklConnectionState.AUTH_EXPIRED) {
-                            "RICOLLEGA ACCOUNT SIMKL"
+                            "Ricollega Account Simkl"
                         } else {
-                            "COLLEGA ACCOUNT SIMKL"
+                            "Collega Account Simkl"
                         },
-                        style = MaterialTheme.typography.labelLarge
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             } else {
+                val isSyncingNow = simklUiState.connectionState == SimklConnectionState.SYNCING
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier
@@ -2693,7 +3062,7 @@ private fun SimklSettingsSectionCard(
                 ) {
                     Button(
                         onClick = onSyncNow,
-                        enabled = simklUiState.connectionState != SimklConnectionState.SYNCING,
+                        enabled = !isSyncingNow,
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = NetflixRed,
@@ -2724,7 +3093,8 @@ private fun SimklSettingsSectionCard(
                             }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
-                                focusedScale = 1.02f,
+                                focusedScale = 1.0f,
+                                borderWidth = 2.dp,
                                 focusTag = "simkl_sync_now_button",
                                 onFocusChange = { focused ->
                                     if (focused) onRememberContentFocus(syncFocusRequester)
@@ -2739,19 +3109,17 @@ private fun SimklSettingsSectionCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (simklUiState.connectionState == SimklConnectionState.SYNCING) {
-                                "SINCRONIZZAZIONE…"
-                            } else {
-                                "SINCRONIZZA ORA"
-                            },
-                            style = MaterialTheme.typography.labelLarge
+                            text = if (isSyncingNow) "Sincronizzazione…" else "Sincronizza Ora",
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
                     OutlinedButton(
                         onClick = onRequestUnlink,
                         shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, NetflixRed),
+                        border = BorderStroke(1.dp, NetflixRed.copy(alpha = 0.85f)),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
                         modifier = Modifier
                             .weight(1f)
@@ -2762,7 +3130,13 @@ private fun SimklSettingsSectionCard(
                                     when (keyEvent.key) {
                                         Key.DirectionUp -> upFocusRequester.safeRequestFocus()
                                         Key.DirectionDown -> downFocusRequester.safeRequestFocus()
-                                        Key.DirectionLeft -> syncFocusRequester.safeRequestFocus()
+                                        Key.DirectionLeft -> {
+                                            if (!isSyncingNow) {
+                                                syncFocusRequester.safeRequestFocus()
+                                            } else {
+                                                navRailFocusRequester.safeRequestFocus()
+                                            }
+                                        }
                                         Key.DirectionRight -> true
                                         else -> false
                                     }
@@ -2773,11 +3147,16 @@ private fun SimklSettingsSectionCard(
                             .focusProperties {
                                 upFocusRequester.takeIfAttached()?.let { up = it }
                                 downFocusRequester.takeIfAttached()?.let { down = it }
-                                syncFocusRequester.takeIfAttached()?.let { left = it }
+                                if (!isSyncingNow) {
+                                    syncFocusRequester.takeIfAttached()?.let { left = it }
+                                } else {
+                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
+                                }
                             }
                             .tvFocusableControl(
                                 shape = RoundedCornerShape(10.dp),
-                                focusedScale = 1.02f,
+                                focusedScale = 1.0f,
+                                borderWidth = 2.dp,
                                 focusTag = "simkl_unlink_button",
                                 onFocusChange = { focused ->
                                     if (focused) onRememberContentFocus(unlinkFocusRequester)
@@ -2792,725 +3171,11 @@ private fun SimklSettingsSectionCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "SCOLLEGA ACCOUNT SIMKL",
+                            text = "Scollega Simkl",
                             style = MaterialTheme.typography.labelLarge,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SimklUnlinkConfirmDialog(
-    profileName: String,
-    accountDisplayName: String?,
-    onDismiss: () -> Unit,
-    onConfirmUnlink: () -> Unit
-) {
-    val cancelFocusRequester = remember { FocusRequester() }
-    val confirmFocusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(Unit) {
-        repeat(2) { withFrameNanos { } }
-        cancelFocusRequester.safeRequestFocus()
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        BackHandler(onBack = onDismiss)
-        Surface(
-            color = NetflixCardSurface,
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, NetflixElevatedSurface),
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 500.dp)
-                .testTag("simkl_unlink_confirm_dialog")
-        ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.padding(22.dp)
-            ) {
-                Text(
-                    text = "SCOLLEGA ACCOUNT SIMKL?",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = NetflixWhite
-                )
-                Text(
-                    text = buildString {
-                        append("Stai scollegando Simkl ")
-                        if (!accountDisplayName.isNullOrBlank()) {
-                            append("($accountDisplayName) ")
-                        }
-                        append("dal profilo \"$profileName\". I token di accesso verranno rimossi e revocati, ma i tuoi progressi locali in Continua a guardare resteranno intatti.")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = NetflixLightGray
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, NetflixElevatedSurface),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .safeFocusRequester(cancelFocusRequester)
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(10.dp),
-                                focusTag = "simkl_cancel_unlink_button"
-                            )
-                            .testTag("simkl_cancel_unlink_button")
-                    ) {
-                        Text("ANNULLA", style = MaterialTheme.typography.labelLarge)
-                    }
-                    Button(
-                        onClick = onConfirmUnlink,
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NetflixRed,
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .safeFocusRequester(confirmFocusRequester)
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(10.dp),
-                                focusTag = "simkl_confirm_unlink_button"
-                            )
-                            .testTag("simkl_confirm_unlink_button")
-                    ) {
-                        Text("SCOLLEGA", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ClearContinueWatchingConfirmDialog(
-    onDismiss: () -> Unit,
-    onConfirmClear: () -> Unit
-) {
-    val cancelFocusRequester = remember { FocusRequester() }
-    val confirmFocusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(Unit) {
-        for (frame in 1..4) {
-            withFrameNanos { }
-            if (cancelFocusRequester.safeRequestFocus()) break
-        }
-        delay(50L)
-        cancelFocusRequester.safeRequestFocus()
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        BackHandler(onBack = onDismiss)
-        DpadFocusScopeProvider(
-            scope = DpadFocusScope.MODAL_QUICK_ACTION,
-            onRecoverFocus = {
-                recoverFocusFromCandidates(
-                    "clear_cw_cancel_button" to cancelFocusRequester,
-                    "clear_cw_confirm_button" to confirmFocusRequester
-                )
-            }
-        ) {
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-                border = BorderStroke(1.5.dp, NetflixElevatedSurface),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 480.dp)
-                    .consumeBackAndEscapeKey(onBack = onDismiss)
-                    .testTag("clear_continue_watching_confirm_dialog")
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 24.dp, vertical = 24.dp)
-                        .focusGroup()
-                ) {
-                    Text(
-                        text = "SVUOTARE CONTINUA A GUARDARE?",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = NetflixWhite,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Vuoi davvero rimuovere tutti i contenuti dalla sezione Continua a guardare? Questa operazione non può essere annullata.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = NetflixLightGray,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(22.dp))
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        OutlinedButton(
-                            onClick = onDismiss,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, NetflixElevatedSurface),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NetflixWhite),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .safeFocusRequester(cancelFocusRequester)
-                                .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                        when (keyEvent.key) {
-                                            Key.DirectionRight -> confirmFocusRequester.safeRequestFocus()
-                                            Key.DirectionLeft, Key.DirectionUp, Key.DirectionDown -> true
-                                            else -> false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                .focusProperties {
-                                    confirmFocusRequester.takeIfAttached()?.let { right = it }
-                                }
-                                .tvFocusableControl(
-                                    shape = RoundedCornerShape(10.dp),
-                                    focusedScale = 1.04f,
-                                    focusedBorderColor = NetflixWhite,
-                                    focusTag = "clear_cw_cancel_button"
-                                )
-                                .testTag("clear_cw_cancel_button")
-                        ) {
-                            Text(
-                                text = "ANNULLA",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        Button(
-                            onClick = onConfirmClear,
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = NetflixRed,
-                                contentColor = Color.White
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .safeFocusRequester(confirmFocusRequester)
-                                .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                        when (keyEvent.key) {
-                                            Key.DirectionLeft -> cancelFocusRequester.safeRequestFocus()
-                                            Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> true
-                                            else -> false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                .focusProperties {
-                                    cancelFocusRequester.takeIfAttached()?.let { left = it }
-                                }
-                                .tvFocusableControl(
-                                    shape = RoundedCornerShape(10.dp),
-                                    focusedScale = 1.04f,
-                                    focusedBorderColor = NetflixWhite,
-                                    focusTag = "clear_cw_confirm_button"
-                                )
-                                .testTag("clear_cw_confirm_button")
-                        ) {
-                            Text(
-                                text = "CONFERMA",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingsSectionCard(
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    badgeText: String? = null,
-    badgeColor: Color = NetflixMatchGreen,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = NetflixCardSurface),
-        border = BorderStroke(1.dp, NetflixElevatedSurface),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = NetflixRed,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = NetflixWhite
-                        )
-                        Text(
-                            text = subtitle,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = NetflixLightGray
-                        )
-                    }
-                }
-
-                if (!badgeText.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        color = badgeColor.copy(alpha = 0.16f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.7f))
-                    ) {
-                        Text(
-                            text = badgeText,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = badgeColor,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-            content()
-        }
-    }
-}
-
-@Composable
-private fun SettingsChoiceRow(
-    options: List<Pair<String, String>>,
-    selectedKey: String,
-    onSelect: (String) -> Unit,
-    firstOptionFocusRequester: FocusRequester? = null,
-    upFocusRequester: FocusRequester? = null,
-    onUpKey: (() -> Boolean)? = null,
-    onRememberContentFocus: (FocusRequester) -> Unit = {},
-    navRailFocusRequester: FocusRequester?,
-    tagPrefix: String
-) {
-    val optionDedicatedRequesters = remember(options) {
-        options.associate { (key, _) -> key to FocusRequester() }
-    }
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusGroup()
-    ) {
-        val resolvedRequesters = options.mapIndexed { idx, (k, _) ->
-            if (idx == 0 && firstOptionFocusRequester != null) {
-                firstOptionFocusRequester
-            } else {
-                optionDedicatedRequesters[k] ?: remember { FocusRequester() }
-            }
-        }
-        options.forEachIndexed { index, (key, label) ->
-            val selected = key == selectedKey
-            val optionRequester = resolvedRequesters[index]
-            val prevRequester = resolvedRequesters.getOrNull(index - 1)
-            val nextRequester = resolvedRequesters.getOrNull(index + 1)
-            val containerColor by animateColorAsState(
-                targetValue = if (selected) NetflixRed else NetflixDarkSurface,
-                animationSpec = tween(180),
-                label = "choiceBg"
-            )
-            Surface(
-                color = containerColor,
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(
-                    1.dp,
-                    if (selected) NetflixRed else NetflixElevatedSurface
-                ),
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 48.dp)
-                    .safeFocusRequester(optionRequester)
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown) {
-                            when (keyEvent.key) {
-                                Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                                Key.DirectionLeft -> {
-                                    if (index == 0) {
-                                        navRailFocusRequester.safeRequestFocus()
-                                    } else {
-                                        prevRequester.safeRequestFocus()
-                                    }
-                                }
-                                Key.DirectionRight -> {
-                                    if (index == options.lastIndex) {
-                                        true
-                                    } else {
-                                        nextRequester.safeRequestFocus()
-                                    }
-                                }
-                                else -> false
-                            }
-                        } else {
-                            false
-                        }
-                    }
-                    .focusProperties {
-                        if (index == 0) {
-                            navRailFocusRequester.takeIfAttached()?.let { left = it }
-                        } else {
-                            prevRequester.takeIfAttached()?.let { left = it }
-                        }
-                        nextRequester.takeIfAttached()?.let { right = it }
-                        upFocusRequester.takeIfAttached()?.let { up = it }
-                    }
-                    .tvFocusableControl(
-                        shape = RoundedCornerShape(10.dp),
-                        focusedBorderColor = NetflixWhite,
-                        focusedScale = 1.03f,
-                        focusTag = "${tagPrefix}_$key",
-                        onFocusChange = { focused ->
-                            if (focused) onRememberContentFocus(optionRequester)
-                        },
-                        onClick = { onSelect(key) }
-                    )
-                    .testTag("${tagPrefix}_$key")
-            ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 12.dp)
-                ) {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                        color = NetflixWhite,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingsSwitchRow(
-    label: String,
-    description: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    focusRequester: FocusRequester? = null,
-    upFocusRequester: FocusRequester? = null,
-    onUpKey: (() -> Boolean)? = null,
-    onRememberContentFocus: (FocusRequester) -> Unit = {},
-    navRailFocusRequester: FocusRequester?,
-    testTagName: String
-) {
-    val resolvedFocusRequester = focusRequester ?: remember { FocusRequester() }
-    Surface(
-        color = NetflixDarkSurface,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, NetflixElevatedSurface),
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 56.dp)
-            .safeFocusRequester(resolvedFocusRequester)
-            .onPreviewKeyEvent { keyEvent ->
-                if (keyEvent.type == KeyEventType.KeyDown) {
-                    when (keyEvent.key) {
-                        Key.DirectionUp -> (onUpKey?.invoke() == true) || upFocusRequester.safeRequestFocus()
-                        Key.DirectionLeft -> navRailFocusRequester.safeRequestFocus()
-                        Key.DirectionRight -> true
-                        else -> false
-                    }
-                } else {
-                    false
-                }
-            }
-            .focusProperties {
-                navRailFocusRequester.takeIfAttached()?.let { left = it }
-                upFocusRequester.takeIfAttached()?.let { up = it }
-            }
-            .tvFocusableControl(
-                shape = RoundedCornerShape(10.dp),
-                focusedBorderColor = NetflixWhite,
-                focusedScale = 1.01f,
-                focusTag = testTagName,
-                onFocusChange = { focused ->
-                    if (focused) onRememberContentFocus(resolvedFocusRequester)
-                },
-                onClick = { onCheckedChange(!checked) }
-            )
-            .testTag(testTagName)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = NetflixWhite
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NetflixLightGray
-                )
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Switch(
-                checked = checked,
-                onCheckedChange = null,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = NetflixRed,
-                    uncheckedThumbColor = NetflixLightGray,
-                    uncheckedTrackColor = NetflixElevatedSurface
-                )
-            )
-        }
-    }
-}
-
-@Composable
-private fun SettingsStatTile(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = NetflixDarkSurface,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, NetflixElevatedSurface),
-        modifier = modifier
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = NetflixRed
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = NetflixLightGray,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
-private fun SettingsInfoLine(
-    label: String,
-    value: String
-) {
-    Row(
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = NetflixLightGray
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.labelMedium,
-            color = NetflixWhite,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-private fun BufferPresetGrid(
-    selectedPreset: StreamingBufferPreset,
-    onSelectPreset: (StreamingBufferPreset) -> Unit,
-    onRememberContentFocus: (FocusRequester) -> Unit = {},
-    navRailFocusRequester: FocusRequester?
-) {
-    val rows = remember { StreamingBufferPreset.entries.chunked(2) }
-    val presetRequesters = remember {
-        StreamingBufferPreset.entries.associateWith { FocusRequester() }
-    }
-    Column(
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusGroup()
-    ) {
-        rows.forEach { rowPresets ->
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                rowPresets.forEachIndexed { colIndex, preset ->
-                    val isSelected = preset == selectedPreset
-                    val presetRequester = presetRequesters.getValue(preset)
-                    val prevColRequester = rowPresets.getOrNull(colIndex - 1)?.let { presetRequesters[it] }
-                    val nextColRequester = rowPresets.getOrNull(colIndex + 1)?.let { presetRequesters[it] }
-                    val bgColor by animateColorAsState(
-                        targetValue = if (isSelected) NetflixRed.copy(alpha = 0.22f) else NetflixDarkSurface,
-                        animationSpec = tween(180),
-                        label = "bufferBg"
-                    )
-                    val borderColor by animateColorAsState(
-                        targetValue = if (isSelected) NetflixRed else NetflixElevatedSurface,
-                        animationSpec = tween(180),
-                        label = "bufferBorder"
-                    )
-
-                    Surface(
-                        color = bgColor,
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, borderColor),
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 66.dp)
-                            .safeFocusRequester(presetRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionLeft -> {
-                                            if (colIndex == 0) {
-                                                navRailFocusRequester.safeRequestFocus()
-                                            } else {
-                                                prevColRequester.safeRequestFocus()
-                                            }
-                                        }
-                                        Key.DirectionRight -> {
-                                            if (colIndex == rowPresets.lastIndex) {
-                                                true
-                                            } else {
-                                                nextColRequester.safeRequestFocus()
-                                            }
-                                        }
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .focusProperties {
-                                if (colIndex == 0) {
-                                    navRailFocusRequester.takeIfAttached()?.let { left = it }
-                                } else {
-                                    prevColRequester.takeIfAttached()?.let { left = it }
-                                }
-                                nextColRequester.takeIfAttached()?.let { right = it }
-                            }
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(12.dp),
-                                focusedBorderColor = NetflixWhite,
-                                focusedScale = 1.03f,
-                                focusTag = "settings_buffer_${preset.storageKey}",
-                                onFocusChange = { focused ->
-                                    if (focused) onRememberContentFocus(presetRequester)
-                                },
-                                onClick = { onSelectPreset(preset) }
-                            )
-                            .testTag("settings_buffer_${preset.storageKey}")
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = preset.label,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = NetflixWhite,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Surface(
-                                    color = if (isSelected) NetflixRed else NetflixElevatedSurface,
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
-                                    Text(
-                                        text = "${preset.sizeMb} MB",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = preset.windowHint,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isSelected) NetflixMatchGreen else NetflixLightGray,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
                     }
                 }
             }

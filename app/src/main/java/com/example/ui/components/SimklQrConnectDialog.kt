@@ -135,7 +135,17 @@ fun SimklQrConnectDialog(
         )
     ) {
         BackHandler(onBack = onDismiss)
-
+        DpadFocusScopeProvider(
+            scope = DpadFocusScope.MODAL_QUICK_ACTION,
+            onRecoverFocus = {
+                recoverFocusFromCandidates(
+                    "simkl_resolution_action" to resolutionActionFocus,
+                    "simkl_copy_code_button" to copyButtonFocus,
+                    "simkl_regenerate_code_button" to regenerateButtonFocus,
+                    "simkl_close_qr_dialog_button" to closeButtonFocus
+                )
+            }
+        ) {
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -158,9 +168,10 @@ fun SimklQrConnectDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
-                        .padding(22.dp)
+                        .padding(horizontal = 22.dp, vertical = 18.dp)
                 ) {
                     val isWideLayout = maxWidth >= 560.dp
+                    val adaptiveQrSize = if (maxHeight < 420.dp) 164.dp else 208.dp
 
                     Column(
                         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -254,8 +265,8 @@ fun SimklQrConnectDialog(
                                 SimklQrAndPinColumn(
                                     state = state,
                                     copiedFeedback = copiedFeedback,
-                                    qrBoxSize = 212.dp,
-                                    modifier = Modifier.width(228.dp)
+                                    qrBoxSize = adaptiveQrSize,
+                                    modifier = Modifier.width(adaptiveQrSize + 16.dp)
                                 )
                                 SimklQrDetailsColumn(
                                     state = state,
@@ -275,7 +286,7 @@ fun SimklQrConnectDialog(
                                 SimklQrAndPinColumn(
                                     state = state,
                                     copiedFeedback = copiedFeedback,
-                                    qrBoxSize = 212.dp,
+                                    qrBoxSize = adaptiveQrSize,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 SimklQrDetailsColumn(
@@ -335,7 +346,8 @@ fun SimklQrConnectDialog(
                                         }
                                         .tvFocusableControl(
                                             shape = RoundedCornerShape(10.dp),
-                                            focusedScale = 1.02f,
+                                            focusedScale = 1.0f,
+                                            borderWidth = 2.dp,
                                             focusTag = "simkl_copy_code_button"
                                         )
                                         .testTag("simkl_copy_code_button")
@@ -348,7 +360,9 @@ fun SimklQrConnectDialog(
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = if (copiedFeedback) "CODICE COPIATO" else "COPIA CODICE",
-                                        style = MaterialTheme.typography.labelLarge
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -391,7 +405,8 @@ fun SimklQrConnectDialog(
                                         }
                                         .tvFocusableControl(
                                             shape = RoundedCornerShape(10.dp),
-                                            focusedScale = 1.02f,
+                                            focusedScale = 1.0f,
+                                            borderWidth = 2.dp,
                                             focusTag = "simkl_regenerate_code_button"
                                         )
                                         .testTag("simkl_regenerate_code_button")
@@ -459,7 +474,8 @@ fun SimklQrConnectDialog(
                                     }
                                     .tvFocusableControl(
                                         shape = RoundedCornerShape(10.dp),
-                                        focusedScale = 1.02f,
+                                        focusedScale = 1.0f,
+                                        borderWidth = 2.dp,
                                         focusTag = "simkl_close_qr_dialog_button"
                                     )
                                     .testTag("simkl_close_qr_dialog_button")
@@ -472,13 +488,16 @@ fun SimklQrConnectDialog(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "ANNULLA",
-                                    style = MaterialTheme.typography.labelLarge
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
                     }
                 }
             }
+        }
         }
     }
 }
