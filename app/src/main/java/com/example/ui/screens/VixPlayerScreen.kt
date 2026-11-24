@@ -36,9 +36,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -1550,73 +1547,35 @@ fun VixPlayerScreen(
                     }
             )
 
-            // Stato errore stream o loading
+            // Stato errore stream o loading (stesso popup di avvio streaming)
             if (currentError != null && !session.isResolvingStream) {
-                Column(
+                VixStreamLaunchErrorPopup(
+                    session = session,
+                    streamLang = streamLang,
+                    errorMessage = currentError,
+                    retryFocusRequester = retryFocusRequester,
+                    onRetry = {
+                        playerErrorMessage = null
+                        isBuffering = true
+                        playWhenReadyState = true
+                        retryNonce++
+                        if (onInvalidateAndRetryStream != null) {
+                            onInvalidateAndRetryStream.invoke()
+                        } else {
+                            onToggleLanguage(streamLang)
+                        }
+                    },
+                    onClose = {
+                        val pos = currentPositionMsState.longValue
+                        if (pos > 0L) {
+                            onProgressUpdate(pos, durationMsState.longValue)
+                        }
+                        onClose()
+                    },
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .padding(28.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(NetflixCardSurface.copy(alpha = 0.95f))
-                        .padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ErrorOutline,
-                        contentDescription = null,
-                        tint = NetflixRed,
-                        modifier = Modifier.size(44.dp)
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = currentError,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = NetflixWhite,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Button(
-                        onClick = {
-                            playerErrorMessage = null
-                            isBuffering = true
-                            playWhenReadyState = true
-                            retryNonce++
-                            if (onInvalidateAndRetryStream != null) {
-                                onInvalidateAndRetryStream.invoke()
-                            } else {
-                                onToggleLanguage(streamLang)
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NetflixRed,
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .safeFocusRequester(retryFocusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionUp, Key.DirectionLeft, Key.DirectionRight, Key.DirectionDown -> true
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .tvFocusableControl(
-                                shape = RoundedCornerShape(8.dp),
-                                focusedScale = 1.06f,
-                                focusTag = "player_retry_stream_button"
-                            )
-                            .testTag("player_retry_stream_button")
-                    ) {
-                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Riprova Connessione VixSrc")
-                    }
-                }
+                        .padding(horizontal = 20.dp)
+                )
             } else if (showLoadingOverlay) {
                 VixStreamLoadingPopup(
                     session = session,
