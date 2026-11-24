@@ -83,6 +83,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -117,6 +118,7 @@ import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbGenreDto
 import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.TmdbWatchProviderDto
+import com.example.data.remote.TmdbWatchProviderMap
 import com.example.ui.NavTab
 import com.example.ui.theme.BebasNeueFontFamily
 import com.example.ui.theme.NetflixBlack
@@ -2582,7 +2584,11 @@ fun StreamingPlatformsStrip(
     isTvLayout: Boolean = rememberIsTvDevice(),
     modifier: Modifier = Modifier
 ) {
-    val safeProviders = remember(providers) { providers.distinctBy { it.providerId } }
+    val safeProviders = remember(providers) {
+        providers
+            .filterNot { TmdbWatchProviderMap.isExcludedProvider(it) }
+            .distinctBy { it.providerId }
+    }
     if (safeProviders.isEmpty()) return
 
     val listState = rememberLazyListState()
@@ -2829,7 +2835,6 @@ private fun StreamingPlatformCard(
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    val brandColor = remember(provider.brandColorHex) { Color(provider.brandColorHex) }
     val cardShape = RoundedCornerShape(16.dp)
 
     val borderColor = when {
@@ -2838,35 +2843,12 @@ private fun StreamingPlatformCard(
         else -> NetflixElevatedSurface
     }
 
-    val containerBrush = remember(isSelected, isFocused, brandColor) {
-        when {
-            isSelected -> Brush.verticalGradient(
-                colors = listOf(
-                    brandColor.copy(alpha = 0.42f),
-                    NetflixCardSurface
-                )
-            )
-            isFocused -> Brush.verticalGradient(
-                colors = listOf(
-                    brandColor.copy(alpha = 0.30f),
-                    NetflixElevatedSurface
-                )
-            )
-            else -> Brush.verticalGradient(
-                colors = listOf(
-                    NetflixCardSurface,
-                    NetflixDarkSurface
-                )
-            )
-        }
-    }
-
     Surface(
         color = Color.Transparent,
         shape = cardShape,
         modifier = modifier
-            .width(120.dp)
-            .height(84.dp)
+            .width(ImageTargetSizes.PROVIDER_CARD_WIDTH_DP.dp)
+            .height(ImageTargetSizes.PROVIDER_CARD_HEIGHT_DP.dp)
             .tvFocusableControl(
                 shape = cardShape,
                 focusedScale = 1.08f,
@@ -2885,11 +2867,15 @@ private fun StreamingPlatformCard(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .fillMaxSize()
-                .background(containerBrush, cardShape)
+                .clip(cardShape)
         ) {
             PlatformLogoBadge(
                 provider = provider,
-                size = 64.dp
+                size = null,
+                shape = cardShape,
+                contentScale = ContentScale.FillBounds,
+                showInnerBorder = false,
+                modifier = Modifier.fillMaxSize()
             )
 
             if (isSelected) {
@@ -2917,25 +2903,38 @@ private fun StreamingPlatformCard(
 @Composable
 fun PlatformLogoBadge(
     provider: TmdbWatchProviderDto,
-    size: Dp = 64.dp,
+    size: Dp? = null,
+    shape: Shape? = null,
+    contentScale: ContentScale = ContentScale.FillBounds,
+    showInnerBorder: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val brandColor = remember(provider.brandColorHex) { Color(provider.brandColorHex) }
-    val cornerRadius = if (size >= 56.dp) 14.dp else 10.dp
-    val shape = RoundedCornerShape(cornerRadius)
+    val resolvedShape = shape ?: RoundedCornerShape(
+        if (size == null || size >= 56.dp) 16.dp else 10.dp
+    )
+    val requestWidthDp = size ?: ImageTargetSizes.PROVIDER_CARD_WIDTH_DP.dp
+    val requestHeightDp = size ?: ImageTargetSizes.PROVIDER_CARD_HEIGHT_DP.dp
+    val fallbackFontSize = if (size != null) (size.value * 0.45f).sp else 32.sp
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .size(size)
-            .clip(shape)
-            .background(brandColor)
-            .border(1.dp, NetflixWhite.copy(alpha = 0.18f), shape)
+            .then(if (size != null) Modifier.size(size) else Modifier.fillMaxSize())
+            .clip(resolvedShape)
+            .background(brandColor, resolvedShape)
+            .then(
+                if (showInnerBorder) {
+                    Modifier.border(1.dp, NetflixWhite.copy(alpha = 0.18f), resolvedShape)
+                } else {
+                    Modifier
+                }
+            )
     ) {
         Text(
             text = provider.shortBadge,
             fontFamily = BebasNeueFontFamily,
-            fontSize = (size.value * 0.45f).sp,
+            fontSize = fallbackFontSize,
             fontWeight = FontWeight.Bold,
             color = Color.White
         )
@@ -2943,15 +2942,15 @@ fun PlatformLogoBadge(
             AsyncImage(
                 model = rememberSizedImageRequest(
                     url = provider.logoUrl,
-                    widthDp = size,
-                    heightDp = size,
+                    widthDp = requestWidthDp,
+                    heightDp = requestHeightDp,
                     allowRgb565 = false
                 ),
                 contentDescription = "Logo ${provider.displayName}",
-                contentScale = ContentScale.Crop,
+                contentScale = contentScale,
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(shape)
+                    .clip(resolvedShape)
             )
         }
     }

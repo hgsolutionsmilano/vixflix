@@ -40,6 +40,8 @@ object ImageTargetSizes {
     const val EPISODE_STILL_HEIGHT_DP = 76f
 
     const val PROVIDER_LOGO_DP = 56f
+    const val PROVIDER_CARD_WIDTH_DP = 120f
+    const val PROVIDER_CARD_HEIGHT_DP = 84f
 
     fun dpToPx(dp: Float, density: Float): Int = (dp * density).roundToInt().coerceAtLeast(48)
 

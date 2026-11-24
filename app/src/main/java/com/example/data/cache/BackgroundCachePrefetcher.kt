@@ -155,8 +155,8 @@ class BackgroundCachePrefetcher(private val context: Context) {
         providers.take(10).forEach { provider ->
             addSpec(
                 url = provider.logoUrl,
-                widthDp = ImageTargetSizes.PROVIDER_LOGO_DP,
-                heightDp = ImageTargetSizes.PROVIDER_LOGO_DP,
+                widthDp = ImageTargetSizes.PROVIDER_CARD_WIDTH_DP,
+                heightDp = ImageTargetSizes.PROVIDER_CARD_HEIGHT_DP,
                 allowRgb565 = false
             )
         }

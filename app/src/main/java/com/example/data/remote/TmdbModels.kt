@@ -492,7 +492,31 @@ object TmdbWatchProviderMap {
     const val ID_CRUNCHYROLL = 283
     const val ID_RAKUTEN_TV = 35
     const val ID_MEDIASET_INFINITY = 359
-    const val ID_MUBI = 11
+
+    private val excludedProviderIds: Set<Int> = setOf(
+        11,   // MUBI
+        100,  // GuideDoc
+        309,  // Sun Nxt
+        538,  // Plex
+        2077, // Plex Channel
+        2354  // Jolt Film
+    )
+
+    private val excludedProviderKeywords: List<String> = listOf(
+        "jolt",
+        "guidedoc",
+        "guide doc",
+        "sun nxt",
+        "sunnxt",
+        "plex",
+        "mubi"
+    )
+
+    fun isExcludedProvider(provider: TmdbWatchProviderDto): Boolean {
+        if (provider.providerId in excludedProviderIds) return true
+        val normalized = provider.providerName.trim().lowercase()
+        return excludedProviderKeywords.any { keyword -> normalized.contains(keyword) }
+    }
 
     /**
      * Ordine prioritario richiesto nella Home:
@@ -507,8 +531,7 @@ object TmdbWatchProviderMap {
         ID_NOW,
         ID_CRUNCHYROLL,
         ID_RAKUTEN_TV,
-        ID_MEDIASET_INFINITY,
-        ID_MUBI
+        ID_MEDIASET_INFINITY
     )
 
     val defaultProviders: List<TmdbWatchProviderDto> = listOf(
@@ -565,12 +588,6 @@ object TmdbWatchProviderMap {
             providerName = "Mediaset Infinity",
             logoPath = "/cDzkhg6Sr4GW2aRdV22uDuRrQqZ.jpg",
             displayPriority = 9
-        ),
-        TmdbWatchProviderDto(
-            providerId = ID_MUBI,
-            providerName = "MUBI",
-            logoPath = "/fj9Y8i4Qr3TF4A1L96t7b29sW5M.jpg",
-            displayPriority = 10
         )
     )
 
@@ -584,7 +601,6 @@ object TmdbWatchProviderMap {
         ID_CRUNCHYROLL -> "Crunchyroll"
         ID_RAKUTEN_TV -> "Rakuten TV"
         ID_MEDIASET_INFINITY -> "Infinity+"
-        ID_MUBI -> "MUBI"
         else -> rawName
             .replace("Amazon Prime Video", "Prime Video", ignoreCase = true)
             .replace("Disney Plus", "Disney+", ignoreCase = true)
@@ -603,7 +619,6 @@ object TmdbWatchProviderMap {
         ID_CRUNCHYROLL -> "CR"
         ID_RAKUTEN_TV -> "R"
         ID_MEDIASET_INFINITY -> "INF"
-        ID_MUBI -> "M"
         else -> displayName.take(2).uppercase()
     }
 
@@ -617,7 +632,6 @@ object TmdbWatchProviderMap {
         ID_CRUNCHYROLL -> 0xFFF47521L
         ID_RAKUTEN_TV -> 0xFFBF0000L
         ID_MEDIASET_INFINITY -> 0xFF7B2CBFL
-        ID_MUBI -> 0xFF0038A8L
         else -> 0xFFE50914L
     }
 
@@ -638,9 +652,10 @@ object TmdbWatchProviderMap {
      * i `logo_path` ufficiali TMDB e mantenendo in testa Disney+, Paramount+, Prime Video e Netflix.
      */
     fun mergeAndSortProviders(liveProviders: List<TmdbWatchProviderDto>): List<TmdbWatchProviderDto> {
-        if (liveProviders.isEmpty()) return defaultProviders
+        val allowedLiveProviders = liveProviders.filterNot { isExcludedProvider(it) }
+        if (allowedLiveProviders.isEmpty()) return defaultProviders
 
-        val liveById = liveProviders
+        val liveById = allowedLiveProviders
             .filter { it.providerId > 0 && it.providerName.isNotBlank() }
             .associateBy { provider ->
                 if (provider.providerId == 9) ID_PRIME_VIDEO else provider.providerId
@@ -659,7 +674,7 @@ object TmdbWatchProviderMap {
         }
 
         val prioritizedIds = prioritized.map { it.providerId }.toSet()
-        val extraFromTmdb = liveProviders
+        val extraFromTmdb = allowedLiveProviders
             .filter { candidate ->
                 val normId = if (candidate.providerId == 9) ID_PRIME_VIDEO else candidate.providerId
                 normId !in prioritizedIds &&
