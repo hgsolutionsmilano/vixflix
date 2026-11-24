@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
@@ -470,6 +471,8 @@ internal fun PlayerCircularControlsRow(
     onTogglePlayPause: () -> Unit,
     onOpenAudioSelector: () -> Unit,
     onOpenVixLinkPanel: () -> Unit,
+    comfortFocusRequester: FocusRequester? = null,
+    onOpenComfortPanel: (() -> Unit)? = null,
     isSeries: Boolean = false,
     hasPreviousEpisode: Boolean = false,
     hasNextEpisode: Boolean = false,
@@ -481,14 +484,17 @@ internal fun PlayerCircularControlsRow(
 ) {
     val showPrevButton = isSeries && hasPreviousEpisode && previousEpisodeFocusRequester != null
     val showNextButton = isSeries && hasNextEpisode && nextEpisodeFocusRequester != null
+    val showComfortButton = comfortFocusRequester != null && onOpenComfortPanel != null
 
     val orderedRequesters = remember(
         showPrevButton,
         showNextButton,
+        showComfortButton,
         previousEpisodeFocusRequester,
         playPauseFocusRequester,
         nextEpisodeFocusRequester,
         audioFocusRequester,
+        comfortFocusRequester,
         vixLinkFocusRequester
     ) {
         buildList {
@@ -496,6 +502,7 @@ internal fun PlayerCircularControlsRow(
             add(playPauseFocusRequester)
             if (showNextButton && nextEpisodeFocusRequester != null) add(nextEpisodeFocusRequester)
             add(audioFocusRequester)
+            if (showComfortButton && comfortFocusRequester != null) add(comfortFocusRequester)
             add(vixLinkFocusRequester)
         }
     }
@@ -703,6 +710,55 @@ internal fun PlayerCircularControlsRow(
                     tint = NetflixWhite,
                     modifier = Modifier.size(24.dp)
                 )
+            }
+        }
+
+        // 2B. COMFORT PLAYER (FORMATO VIDEO & STILE SOTTOTITOLI)
+        if (showComfortButton && comfortFocusRequester != null && onOpenComfortPanel != null) {
+            val comfortLeft = leftNeighborOf(comfortFocusRequester)
+            val comfortRight = rightNeighborOf(comfortFocusRequester)
+            Surface(
+                color = NetflixCardSurface.copy(alpha = 0.88f),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, NetflixWhite.copy(alpha = 0.28f)),
+                modifier = Modifier
+                    .size(52.dp)
+                    .safeFocusRequester(comfortFocusRequester)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.key) {
+                                Key.DirectionUp -> upToTimeBarFocusRequester.safeRequestFocus()
+                                Key.DirectionLeft -> comfortLeft?.safeRequestFocus() ?: true
+                                Key.DirectionRight -> comfortRight?.safeRequestFocus() ?: true
+                                Key.DirectionDown -> true
+                                else -> false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    .focusProperties {
+                        upToTimeBarFocusRequester.takeIfAttached()?.let { up = it }
+                        comfortLeft.takeIfAttached()?.let { left = it }
+                        comfortRight.takeIfAttached()?.let { right = it }
+                    }
+                    .tvFocusableControl(
+                        shape = CircleShape,
+                        focusedBorderColor = NetflixWhite,
+                        focusedScale = 1.12f,
+                        focusTag = "player_comfort_button",
+                        onClick = onOpenComfortPanel
+                    )
+                    .testTag("player_comfort_button")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.AspectRatio,
+                        contentDescription = "Formato video e stile sottotitoli",
+                        tint = NetflixWhite,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
             }
         }
 

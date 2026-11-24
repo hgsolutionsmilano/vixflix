@@ -98,6 +98,10 @@ class AppPreferences(private val context: Context) {
         private val KEY_PLAYER_NEXT_COUNTDOWN_SEC = intPreferencesKey("player_next_episode_countdown_sec")
         private val KEY_PLAYER_CREDITS_DETECTION = booleanPreferencesKey("player_credits_detection_enabled")
         private val KEY_PLAYER_MANUAL_MOVIE_COMPLETE = booleanPreferencesKey("player_manual_movie_completion_enabled")
+        private val KEY_PLAYER_VIDEO_ASPECT_MODE = stringPreferencesKey("player_video_aspect_mode")
+        private val KEY_PLAYER_SUBTITLE_TEXT_SIZE = stringPreferencesKey("player_subtitle_text_size")
+        private val KEY_PLAYER_SUBTITLE_TEXT_COLOR = stringPreferencesKey("player_subtitle_text_color")
+        private val KEY_PLAYER_SUBTITLE_BG_STYLE = stringPreferencesKey("player_subtitle_bg_style")
     }
 
     val githubRepoFlow: Flow<String> = context.dataStore.data.map { prefs ->
@@ -165,6 +169,15 @@ class AppPreferences(private val context: Context) {
             nextEpisodeCountdownSec = validCountdown,
             creditsDetectionEnabled = prefs[KEY_PLAYER_CREDITS_DETECTION] ?: true,
             manualMovieCompletionEnabled = prefs[KEY_PLAYER_MANUAL_MOVIE_COMPLETE] ?: true
+        )
+    }
+
+    val playerComfortSettingsFlow: Flow<PlayerComfortSettings> = context.dataStore.data.map { prefs ->
+        PlayerComfortSettings(
+            videoAspectMode = VideoAspectMode.fromStorageKey(prefs[KEY_PLAYER_VIDEO_ASPECT_MODE]),
+            subtitleTextSize = SubtitleTextSize.fromStorageKey(prefs[KEY_PLAYER_SUBTITLE_TEXT_SIZE]),
+            subtitleTextColor = SubtitleTextColor.fromStorageKey(prefs[KEY_PLAYER_SUBTITLE_TEXT_COLOR]),
+            subtitleBackgroundStyle = SubtitleBackgroundStyle.fromStorageKey(prefs[KEY_PLAYER_SUBTITLE_BG_STYLE])
         )
     }
 
@@ -278,6 +291,30 @@ class AppPreferences(private val context: Context) {
     suspend fun setManualMovieCompletionEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_PLAYER_MANUAL_MOVIE_COMPLETE] = enabled
+        }
+    }
+
+    suspend fun setVideoAspectMode(mode: VideoAspectMode) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_VIDEO_ASPECT_MODE] = mode.storageKey
+        }
+    }
+
+    suspend fun setSubtitleTextSize(size: SubtitleTextSize) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_SUBTITLE_TEXT_SIZE] = size.storageKey
+        }
+    }
+
+    suspend fun setSubtitleTextColor(color: SubtitleTextColor) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_SUBTITLE_TEXT_COLOR] = color.storageKey
+        }
+    }
+
+    suspend fun setSubtitleBackgroundStyle(style: SubtitleBackgroundStyle) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PLAYER_SUBTITLE_BG_STYLE] = style.storageKey
         }
     }
 

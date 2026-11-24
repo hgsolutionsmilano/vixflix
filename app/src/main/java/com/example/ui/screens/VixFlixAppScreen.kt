@@ -210,6 +210,7 @@ fun VixFlixAppScreen(
     val autoCheckUpdates by viewModel.autoCheckUpdates.collectAsStateWithLifecycle()
     val backgroundPrefetchEnabled by viewModel.backgroundPrefetchEnabled.collectAsStateWithLifecycle()
     val playerAdvancedSettings by viewModel.playerAdvancedSettings.collectAsStateWithLifecycle()
+    val playerComfortSettings by viewModel.playerComfortSettings.collectAsStateWithLifecycle()
     val cacheStats by viewModel.cacheStats.collectAsStateWithLifecycle()
     val isBackgroundCatalogRefreshing by viewModel.isBackgroundCatalogRefreshing.collectAsStateWithLifecycle()
     val cacheClearedFeedbackNonce by viewModel.cacheClearedFeedbackNonce.collectAsStateWithLifecycle()
@@ -883,6 +884,11 @@ fun VixFlixAppScreen(
                                 onSetNextEpisodeCountdownSec = viewModel::setNextEpisodeCountdownSec,
                                 onSetCreditsDetectionEnabled = viewModel::setCreditsDetectionEnabled,
                                 onSetManualMovieCompletionEnabled = viewModel::setManualMovieCompletionEnabled,
+                                playerComfortSettings = playerComfortSettings,
+                                onSelectVideoAspectMode = viewModel::setVideoAspectMode,
+                                onSelectSubtitleTextSize = viewModel::setSubtitleTextSize,
+                                onSelectSubtitleTextColor = viewModel::setSubtitleTextColor,
+                                onSelectSubtitleBackgroundStyle = viewModel::setSubtitleBackgroundStyle,
                                 firstControlFocusRequester = sectionSettingsFirstFocus,
                                 navRailFocusRequester = navRailSelectedFocusRequester,
                                 upFocusRequester = activeTopBarFocusRequester,
@@ -1424,6 +1430,11 @@ fun VixFlixAppScreen(
                     onInvalidateAndRetryStream = viewModel::invalidateAndRetryCurrentStream,
                     onPreResolveNextEpisode = viewModel::preResolveNextEpisode,
                     advancedSettings = playerAdvancedSettings,
+                    comfortSettings = playerComfortSettings,
+                    onSelectVideoAspectMode = viewModel::setVideoAspectMode,
+                    onSelectSubtitleTextSize = viewModel::setSubtitleTextSize,
+                    onSelectSubtitleTextColor = viewModel::setSubtitleTextColor,
+                    onSelectSubtitleBackgroundStyle = viewModel::setSubtitleBackgroundStyle,
                     onCompleteMovieAndClose = viewModel::completeCurrentMovieAndClose,
                     onSaveIntroSegment = viewModel::saveCurrentEpisodeIntroSegment,
                     onScrobbleStart = viewModel::onPlayerScrobbleStart,

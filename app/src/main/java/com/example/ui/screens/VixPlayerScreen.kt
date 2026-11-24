@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -101,7 +102,12 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.VixFlixApplication
 import com.example.data.local.PlayerAdvancedSettings
+import com.example.data.local.PlayerComfortSettings
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.local.SubtitleBackgroundStyle
+import com.example.data.local.SubtitleTextColor
+import com.example.data.local.SubtitleTextSize
+import com.example.data.local.VideoAspectMode
 import com.example.data.local.formatVideoResolutionLabel
 import com.example.data.local.isIntroActiveAtPosition
 import com.example.data.local.resolveCreditsTrigger
@@ -128,6 +134,7 @@ private const val STANDARD_BACK_BUFFER_MS = 15_000
 private enum class PlayerFocusRestoreTarget {
     NONE,
     AUDIO_BUTTON,
+    COMFORT_BUTTON,
     VIX_LINK_BUTTON
 }
 
@@ -256,6 +263,11 @@ fun VixPlayerScreen(
     onInvalidateAndRetryStream: (() -> Unit)? = null,
     onPreResolveNextEpisode: () -> Unit = {},
     advancedSettings: PlayerAdvancedSettings = PlayerAdvancedSettings(),
+    comfortSettings: PlayerComfortSettings = PlayerComfortSettings(),
+    onSelectVideoAspectMode: (VideoAspectMode) -> Unit = {},
+    onSelectSubtitleTextSize: (SubtitleTextSize) -> Unit = {},
+    onSelectSubtitleTextColor: (SubtitleTextColor) -> Unit = {},
+    onSelectSubtitleBackgroundStyle: (SubtitleBackgroundStyle) -> Unit = {},
     onCompleteMovieAndClose: () -> Unit = onClose,
     initialDurationMsOverride: Long = 0L,
     initialReadyForTest: Boolean = false,
@@ -316,7 +328,10 @@ fun VixPlayerScreen(
     var focusTimeBarOnReveal by remember { mutableStateOf(false) }
     var wasControlsVisible by remember { mutableStateOf(false) }
     var showAudioSelector by remember { mutableStateOf(false) }
+    var showComfortPanel by remember { mutableStateOf(false) }
     var showVixLinkPanel by remember { mutableStateOf(false) }
+    var aspectToastNonce by remember { mutableIntStateOf(0) }
+    var aspectToastMode by remember { mutableStateOf<VideoAspectMode?>(null) }
     var pendingFocusRestore by remember { mutableStateOf(PlayerFocusRestoreTarget.NONE) }
     var tracksVersion by remember { mutableIntStateOf(0) }
     val videoWidthState = remember { mutableIntStateOf(0) }
@@ -356,6 +371,7 @@ fun VixPlayerScreen(
     val playPauseFocusRequester = remember { FocusRequester() }
     val nextEpisodeFocusRequester = remember { FocusRequester() }
     val audioButtonFocusRequester = remember { FocusRequester() }
+    val comfortButtonFocusRequester = remember { FocusRequester() }
     val vixLinkButtonFocusRequester = remember { FocusRequester() }
     val skipIntroFocusRequester = remember { FocusRequester() }
     val retryFocusRequester = remember { FocusRequester() }
@@ -471,6 +487,7 @@ fun VixPlayerScreen(
         !isRemoteScrubbing &&
         !isManualSeekInProgress &&
         !showAudioSelector &&
+        !showComfortPanel &&
         !showVixLinkPanel &&
         (playbackEnded || inCreditsWindow)
 
@@ -482,11 +499,12 @@ fun VixPlayerScreen(
         !isRemoteScrubbing &&
         !isManualSeekInProgress &&
         !showAudioSelector &&
+        !showComfortPanel &&
         !showVixLinkPanel &&
         (playbackEnded || inCreditsWindow)
 
     val anyBlockingPopupVisible = showAutoNext || showMovieEndedPopup
-    val anySubPanelVisible = showAudioSelector || showVixLinkPanel
+    val anySubPanelVisible = showAudioSelector || showComfortPanel || showVixLinkPanel
 
     // Usa OkHttpDataSource.Factory con l'interceptor VixSrc per gestire playlist HLS,
     // chiave AES-128 (/storage/enc.key) e segmenti MPEG-TS direttamente da vixsrc.to
@@ -556,6 +574,7 @@ fun VixPlayerScreen(
         isRemoteScrubbing = false
         isManualSeekInProgress = false
         showAudioSelector = false
+        showComfortPanel = false
         showVixLinkPanel = false
         playerErrorMessage = session.errorMessage
         hasAutoRetriedCachedStream = false
@@ -685,6 +704,12 @@ fun VixPlayerScreen(
         pendingFocusRestore = PlayerFocusRestoreTarget.AUDIO_BUTTON
     }
 
+    val closeComfortPanel: () -> Unit = {
+        showComfortPanel = false
+        interactionTick++
+        pendingFocusRestore = PlayerFocusRestoreTarget.COMFORT_BUTTON
+    }
+
     val closeVixLinkPanel: () -> Unit = {
         showVixLinkPanel = false
         interactionTick++
@@ -728,6 +753,7 @@ fun VixPlayerScreen(
     BackHandler {
         when {
             showAudioSelector -> closeAudioSelector()
+            showComfortPanel -> closeComfortPanel()
             showVixLinkPanel -> closeVixLinkPanel()
             isRemoteScrubbing -> {
                 isRemoteScrubbing = false
@@ -1093,16 +1119,25 @@ fun VixPlayerScreen(
         }
     }
 
-    // Ripristino deterministico del focus dopo la chiusura dei pannelli Audio o Link VixSrc
-    LaunchedEffect(pendingFocusRestore, showAudioSelector, showVixLinkPanel) {
-        if (pendingFocusRestore != PlayerFocusRestoreTarget.NONE && !showAudioSelector && !showVixLinkPanel) {
+    // Ripristino deterministico del focus dopo la chiusura dei pannelli Audio, Comfort o Link VixSrc
+    LaunchedEffect(pendingFocusRestore, showAudioSelector, showComfortPanel, showVixLinkPanel) {
+        if (pendingFocusRestore != PlayerFocusRestoreTarget.NONE && !showAudioSelector && !showComfortPanel && !showVixLinkPanel) {
             delay(50L)
             when (pendingFocusRestore) {
                 PlayerFocusRestoreTarget.AUDIO_BUTTON -> audioButtonFocusRequester.safeRequestFocus()
+                PlayerFocusRestoreTarget.COMFORT_BUTTON -> comfortButtonFocusRequester.safeRequestFocus()
                 PlayerFocusRestoreTarget.VIX_LINK_BUTTON -> vixLinkButtonFocusRequester.safeRequestFocus()
                 PlayerFocusRestoreTarget.NONE -> Unit
             }
             pendingFocusRestore = PlayerFocusRestoreTarget.NONE
+        }
+    }
+
+    // Nasconde automaticamente il banner di conferma cambio formato immagine dopo 2 secondi
+    LaunchedEffect(aspectToastNonce) {
+        if (aspectToastNonce > 0) {
+            delay(2_000L)
+            aspectToastMode = null
         }
     }
 
@@ -1297,6 +1332,7 @@ fun VixPlayerScreen(
                                 }
                                 when {
                                     showAudioSelector -> closeAudioSelector()
+                                    showComfortPanel -> closeComfortPanel()
                                     showVixLinkPanel -> closeVixLinkPanel()
                                     showMovieEndedPopup -> dismissMovieEndedPopup()
                                     showAutoNext -> {
@@ -1464,7 +1500,7 @@ fun VixPlayerScreen(
                         setKeepContentOnPlayerReset(true)
                         isFocusable = false
                         isFocusableInTouchMode = false
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        applyComfortSettingsToPlayerView(this, comfortSettings)
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
@@ -1478,6 +1514,7 @@ fun VixPlayerScreen(
                     if (view.keepScreenOn != keepScreenOnActive) {
                         view.keepScreenOn = keepScreenOnActive
                     }
+                    applyComfortSettingsToPlayerView(view, comfortSettings)
                 },
                 onRelease = { view ->
                     view.keepScreenOn = false
@@ -1491,6 +1528,7 @@ fun VixPlayerScreen(
                             onTap = {
                                 when {
                                     showAudioSelector -> closeAudioSelector()
+                                    showComfortPanel -> closeComfortPanel()
                                     showVixLinkPanel -> closeVixLinkPanel()
                                     else -> controlsVisible = !controlsVisible
                                 }
@@ -1692,12 +1730,21 @@ fun VixPlayerScreen(
                             upToTimeBarFocusRequester = timeBarFocusRequester,
                             onTogglePlayPause = togglePlayPause,
                             onOpenAudioSelector = {
+                                showComfortPanel = false
                                 showVixLinkPanel = false
                                 showAudioSelector = true
                                 interactionTick++
                             },
+                            comfortFocusRequester = comfortButtonFocusRequester,
+                            onOpenComfortPanel = {
+                                showAudioSelector = false
+                                showVixLinkPanel = false
+                                showComfortPanel = true
+                                interactionTick++
+                            },
                             onOpenVixLinkPanel = {
                                 showAudioSelector = false
+                                showComfortPanel = false
                                 showVixLinkPanel = true
                                 interactionTick++
                             },
@@ -1798,6 +1845,55 @@ fun VixPlayerScreen(
                     currentPositionMsProvider = { currentPositionMsState.longValue },
                     onSaveIntroSegment = onSaveIntroSegment
                 )
+            }
+
+            // Pannello Comfort Player (Formato Video / Zoom + Stile Sottotitoli live)
+            AnimatedVisibility(
+                visible = showComfortPanel && currentError == null && !showLoadingOverlay,
+                enter = fadeIn() + slideInVertically { it / 3 },
+                exit = fadeOut() + slideOutVertically { it / 3 },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 18.dp)
+            ) {
+                PlayerComfortPanel(
+                    settings = comfortSettings,
+                    onSelectAspectMode = { mode ->
+                        onSelectVideoAspectMode(mode)
+                        aspectToastMode = mode
+                        aspectToastNonce++
+                        interactionTick++
+                    },
+                    onSelectSubtitleSize = { size ->
+                        onSelectSubtitleTextSize(size)
+                        interactionTick++
+                    },
+                    onSelectSubtitleColor = { color ->
+                        onSelectSubtitleTextColor(color)
+                        interactionTick++
+                    },
+                    onSelectSubtitleBackground = { bg ->
+                        onSelectSubtitleBackgroundStyle(bg)
+                        interactionTick++
+                    },
+                    onDismiss = closeComfortPanel
+                )
+            }
+
+            // Feedback discreto in alto a destra al cambio formato immagine
+            AnimatedVisibility(
+                visible = aspectToastMode != null && currentError == null && !showLoadingOverlay,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 24.dp, end = 28.dp)
+            ) {
+                aspectToastMode?.let { mode ->
+                    VideoAspectToastBanner(aspectMode = mode)
+                }
             }
 
             // Pannello Link VixSrc (aperto dal pulsante circolare LINK VIXSRC in basso a sinistra)

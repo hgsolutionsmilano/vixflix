@@ -17,9 +17,14 @@ import com.example.data.local.IntroSegmentEntity
 import com.example.data.local.IntroSegmentSource
 import com.example.data.local.MAX_USER_PROFILES
 import com.example.data.local.PlayerAdvancedSettings
+import com.example.data.local.PlayerComfortSettings
 import com.example.data.local.PlayerSegmentKeys
 import com.example.data.local.ProfileCatalogDefaults
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.local.SubtitleBackgroundStyle
+import com.example.data.local.SubtitleTextColor
+import com.example.data.local.SubtitleTextSize
+import com.example.data.local.VideoAspectMode
 import com.example.data.local.UserProfileEntity
 import com.example.data.local.UserProfileUiState
 import com.example.data.local.VerifiedNextEpisode
@@ -367,6 +372,9 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     val playerAdvancedSettings: StateFlow<PlayerAdvancedSettings> = preferences.playerAdvancedSettingsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerAdvancedSettings())
+
+    val playerComfortSettings: StateFlow<PlayerComfortSettings> = preferences.playerComfortSettingsFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerComfortSettings())
 
     private val _cacheStats = MutableStateFlow(CacheStatsSummary())
     val cacheStats: StateFlow<CacheStatsSummary> = _cacheStats.asStateFlow()
@@ -2813,6 +2821,30 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun setManualMovieCompletionEnabled(enabled: Boolean) {
         viewModelScope.launch {
             preferences.setManualMovieCompletionEnabled(enabled)
+        }
+    }
+
+    fun setVideoAspectMode(mode: VideoAspectMode) {
+        viewModelScope.launch {
+            preferences.setVideoAspectMode(mode)
+        }
+    }
+
+    fun setSubtitleTextSize(size: SubtitleTextSize) {
+        viewModelScope.launch {
+            preferences.setSubtitleTextSize(size)
+        }
+    }
+
+    fun setSubtitleTextColor(color: SubtitleTextColor) {
+        viewModelScope.launch {
+            preferences.setSubtitleTextColor(color)
+        }
+    }
+
+    fun setSubtitleBackgroundStyle(style: SubtitleBackgroundStyle) {
+        viewModelScope.launch {
+            preferences.setSubtitleBackgroundStyle(style)
         }
     }
 

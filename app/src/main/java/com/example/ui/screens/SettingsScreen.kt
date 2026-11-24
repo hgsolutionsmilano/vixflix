@@ -38,6 +38,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentCopy
@@ -115,11 +116,18 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.res.stringResource
 import com.example.BuildConfig
+import com.example.R
 import com.example.data.local.CacheStatsSummary
 import com.example.data.local.PlayerAdvancedSettings
+import com.example.data.local.PlayerComfortSettings
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.local.SubtitleBackgroundStyle
+import com.example.data.local.SubtitleTextColor
+import com.example.data.local.SubtitleTextSize
 import com.example.data.local.UserProfileUiState
+import com.example.data.local.VideoAspectMode
 import com.example.data.remote.TmdbApiConfig
 import com.example.data.remote.simkl.SimklConnectionState
 import com.example.data.remote.simkl.SimklProfileUiState
@@ -203,6 +211,11 @@ fun SettingsScreen(
     onSetNextEpisodeCountdownSec: (Int) -> Unit = {},
     onSetCreditsDetectionEnabled: (Boolean) -> Unit = {},
     onSetManualMovieCompletionEnabled: (Boolean) -> Unit = {},
+    playerComfortSettings: PlayerComfortSettings = PlayerComfortSettings(),
+    onSelectVideoAspectMode: (VideoAspectMode) -> Unit = {},
+    onSelectSubtitleTextSize: (SubtitleTextSize) -> Unit = {},
+    onSelectSubtitleTextColor: (SubtitleTextColor) -> Unit = {},
+    onSelectSubtitleBackgroundStyle: (SubtitleBackgroundStyle) -> Unit = {},
     firstControlFocusRequester: FocusRequester? = null,
     navRailFocusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester? = null,
@@ -403,6 +416,11 @@ fun SettingsScreen(
                         onSetNextEpisodeCountdownSec = onSetNextEpisodeCountdownSec,
                         onSetCreditsDetectionEnabled = onSetCreditsDetectionEnabled,
                         onSetManualMovieCompletionEnabled = onSetManualMovieCompletionEnabled,
+                        playerComfortSettings = playerComfortSettings,
+                        onSelectVideoAspectMode = onSelectVideoAspectMode,
+                        onSelectSubtitleTextSize = onSelectSubtitleTextSize,
+                        onSelectSubtitleTextColor = onSelectSubtitleTextColor,
+                        onSelectSubtitleBackgroundStyle = onSelectSubtitleBackgroundStyle,
                         onRefreshCatalog = onRefreshCatalog,
                         firstControlFocusRequester = categoryPanelFirstFocus,
                         upToCategoryFocusRequester = categoryTabRequester,
@@ -706,6 +724,11 @@ private fun PlaybackSettingsPanel(
     onSetNextEpisodeCountdownSec: (Int) -> Unit,
     onSetCreditsDetectionEnabled: (Boolean) -> Unit,
     onSetManualMovieCompletionEnabled: (Boolean) -> Unit,
+    playerComfortSettings: PlayerComfortSettings,
+    onSelectVideoAspectMode: (VideoAspectMode) -> Unit,
+    onSelectSubtitleTextSize: (SubtitleTextSize) -> Unit,
+    onSelectSubtitleTextColor: (SubtitleTextColor) -> Unit,
+    onSelectSubtitleBackgroundStyle: (SubtitleBackgroundStyle) -> Unit,
     onRefreshCatalog: () -> Unit,
     firstControlFocusRequester: FocusRequester?,
     upToCategoryFocusRequester: FocusRequester?,
@@ -850,6 +873,85 @@ private fun PlaybackSettingsPanel(
                     onRememberContentFocus = onRememberContentFocus,
                     navRailFocusRequester = navRailFocusRequester,
                     testTagName = "settings_manual_movie_complete_switch"
+                )
+            }
+        }
+
+        SettingsSectionCard(
+            title = stringResource(R.string.settings_comfort_title),
+            subtitle = stringResource(R.string.settings_comfort_subtitle),
+            icon = Icons.Default.AspectRatio,
+            badgeText = playerComfortSettings.videoAspectMode.label.uppercase(),
+            badgeColor = NetflixMatchGreen
+        ) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.testTag("settings_comfort_section")
+            ) {
+                SubtitleStylePreviewBox(
+                    settings = playerComfortSettings,
+                    compact = false,
+                    modifier = Modifier.testTag("settings_subtitle_preview")
+                )
+
+                Text(
+                    text = stringResource(R.string.player_comfort_aspect_section),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite
+                )
+                SettingsChoiceRow(
+                    options = VideoAspectMode.entries.map { it.storageKey to it.label },
+                    selectedKey = playerComfortSettings.videoAspectMode.storageKey,
+                    onSelect = { key -> onSelectVideoAspectMode(VideoAspectMode.fromStorageKey(key)) },
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    tagPrefix = "settings_aspect"
+                )
+
+                Text(
+                    text = stringResource(R.string.player_subtitle_size_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite
+                )
+                SettingsChoiceRow(
+                    options = SubtitleTextSize.entries.map { it.storageKey to it.label },
+                    selectedKey = playerComfortSettings.subtitleTextSize.storageKey,
+                    onSelect = { key -> onSelectSubtitleTextSize(SubtitleTextSize.fromStorageKey(key)) },
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    tagPrefix = "settings_sub_size"
+                )
+
+                Text(
+                    text = stringResource(R.string.player_subtitle_color_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite
+                )
+                SettingsChoiceRow(
+                    options = SubtitleTextColor.entries.map { it.storageKey to it.label },
+                    selectedKey = playerComfortSettings.subtitleTextColor.storageKey,
+                    onSelect = { key -> onSelectSubtitleTextColor(SubtitleTextColor.fromStorageKey(key)) },
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    tagPrefix = "settings_sub_color"
+                )
+
+                Text(
+                    text = stringResource(R.string.player_subtitle_background_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NetflixWhite
+                )
+                SettingsChoiceRow(
+                    options = SubtitleBackgroundStyle.entries.map { it.storageKey to it.label },
+                    selectedKey = playerComfortSettings.subtitleBackgroundStyle.storageKey,
+                    onSelect = { key -> onSelectSubtitleBackgroundStyle(SubtitleBackgroundStyle.fromStorageKey(key)) },
+                    onRememberContentFocus = onRememberContentFocus,
+                    navRailFocusRequester = navRailFocusRequester,
+                    tagPrefix = "settings_sub_bg"
                 )
             }
         }

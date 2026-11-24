@@ -27,4 +27,15 @@
     <string name="splash_tagline">STREAMING CINEMA &amp; SERIE TV</string>
     <string name="splash_loading_catalog">Preparazione catalogo live…</string>
     <string name="splash_ready">Esperienza cinema pronta</string>
+    <string name="player_comfort_button_cd">Formato video e stile sottotitoli</string>
+    <string name="player_comfort_aspect_section">Formato Video</string>
+    <string name="player_comfort_subtitles_section">Stile Sottotitoli</string>
+    <string name="player_subtitle_size_label">Dimensione testo</string>
+    <string name="player_subtitle_color_label">Colore testo</string>
+    <string name="player_subtitle_background_label">Sfondo e contrasto</string>
+    <string name="player_subtitle_preview_badge">ANTEPRIMA TV</string>
+    <string name="player_subtitle_preview_sample">Stasera ci godiamo un gran film sul divano.</string>
+    <string name="player_aspect_toast_format">Formato: %1$s</string>
+    <string name="settings_comfort_title">Comfort Player &amp; Sottotitoli</string>
+    <string name="settings_comfort_subtitle">Personalizza formato schermo e leggibilità dei sottotitoli su TV</string>
 </resources>
