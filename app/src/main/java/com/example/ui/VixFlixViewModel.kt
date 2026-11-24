@@ -54,6 +54,7 @@ import com.example.data.remote.TmdbGenreMap
 import com.example.data.remote.TmdbSeasonSummaryDto
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
+import com.example.data.remote.VixSrcDiagnostics
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.repository.CatalogFeed
 import com.example.data.repository.VixFlixRepository
@@ -2381,10 +2382,12 @@ class VixFlixViewModel @JvmOverloads constructor(
         val existingStream = current.resolvedStream
         if (existingStream?.isDirectHls == true && existingStream.streamUrl == hlsUrl) return
 
+        val referer = existingStream?.embedUrl ?: "https://vixsrc.to/"
         val updatedStream = ResolvedStream(
             streamUrl = hlsUrl,
             embedUrl = existingStream?.embedUrl ?: hlsUrl,
-            referer = existingStream?.embedUrl ?: "https://vixsrc.to/",
+            referer = referer,
+            origin = VixSrcDiagnostics.extractOrigin(referer),
             startSeconds = current.startSeconds,
             startMinutes = current.startMinutes,
             subtitles = existingStream?.subtitles.orEmpty(),

@@ -69,7 +69,7 @@ import org.robolectric.annotation.Config
 
 @OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36], qualifiers = "w960dp-h540dp-television-notouch-dpad")
+@Config(sdk = [34], qualifiers = "w960dp-h540dp-television-notouch-dpad")
 class UiVixSrcAndPlayerUpdatesTest {
 
     @get:Rule
@@ -617,9 +617,16 @@ private class FakeVixAndTmdbHttpServer {
                     "text/html; charset=utf-8",
                     """
                     <html><script>
-                    window.masterPlaylist = { url: 'https://vixsrc.to/playlist/501.m3u8', params: { token: 'abc', expires: '9999999999' } };
+                    window.masterPlaylist = { url: 'http://127.0.0.1:$port/playlist/501.m3u8', params: { token: 'abc', expires: '9999999999' } };
                     </script></html>
                     """.trimIndent()
+                )
+            }
+            path == "/playlist/501.m3u8" -> {
+                Triple(
+                    "200 OK",
+                    "application/vnd.apple.mpegurl",
+                    "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2500000\n/playlist/501/1080p.m3u8\n"
                 )
             }
             path == "/api/movie/502" || path == "/embed/movie/502" -> {

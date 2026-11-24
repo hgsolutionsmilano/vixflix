@@ -46,6 +46,7 @@ import com.example.data.remote.TmdbTrailerResolver
 import com.example.data.remote.TmdbVideoDto
 import com.example.data.remote.TmdbWatchProviderDto
 import com.example.data.remote.TmdbWatchProviderMap
+import com.example.data.remote.VixSrcDiagnostics
 import com.example.data.remote.VixSrcStreamResolver
 import com.example.data.remote.YouTubeTrailerCandidate
 import com.example.data.remote.toDomain
@@ -2244,6 +2245,7 @@ class VixFlixRepository(
                     streamUrl = cachedEntity.streamUrl,
                     embedUrl = cachedEntity.embedUrl,
                     referer = cachedEntity.referer,
+                    origin = VixSrcDiagnostics.extractOrigin(cachedEntity.referer),
                     userAgent = cachedEntity.userAgent,
                     startSeconds = startSeconds,
                     startMinutes = startMinutes,

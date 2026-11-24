@@ -47,7 +47,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class CacheSystemTest {
 
     private lateinit var context: Context
@@ -586,13 +586,9 @@ class CacheSystemTest {
                         writeResponse(s, 200, "application/json", json.toByteArray(), method == "HEAD")
                     }
 
-                    // VixSrc endpoints (rewritten via /api/list/..%2f..%2f...)
-                    path.contains("api%2fmovie%2f120") -> {
+                    // VixSrc official endpoints (clean paths without traversal)
+                    path.startsWith("/movie/120") -> {
                         vixApiCalls.incrementAndGet()
-                        writeResponse(s, 200, "application/json", """{"src":"/embed/170360?lang=it"}""".toByteArray(), method == "HEAD")
-                    }
-
-                    path.contains("embed%2f170360") -> {
                         val exp = vixExpiresValue.get()
                         val html = """
                             <html><script>
@@ -603,6 +599,34 @@ class CacheSystemTest {
                             </script></html>
                         """.trimIndent()
                         writeResponse(s, 200, "text/html", html.toByteArray(), method == "HEAD")
+                    }
+
+                    path.startsWith("/api/movie/120") -> {
+                        vixApiCalls.incrementAndGet()
+                        writeResponse(s, 200, "application/json", """{"src":"/embed/170360?lang=it"}""".toByteArray(), method == "HEAD")
+                    }
+
+                    path.startsWith("/embed/170360") -> {
+                        val exp = vixExpiresValue.get()
+                        val html = """
+                            <html><script>
+                            window.masterPlaylist = {
+                                params: { 'token': 'tok_cached', 'expires': '$exp' },
+                                url: 'http://vixsrc.to:$port/playlist/170360'
+                            };
+                            </script></html>
+                        """.trimIndent()
+                        writeResponse(s, 200, "text/html", html.toByteArray(), method == "HEAD")
+                    }
+
+                    path.startsWith("/playlist/170360") -> {
+                        val m3u8 = """
+                            #EXTM3U
+                            #EXT-X-VERSION:3
+                            #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1920x1080
+                            http://vixsrc.to:$port/playlist/170360/index.m3u8
+                        """.trimIndent()
+                        writeResponse(s, 200, "application/vnd.apple.mpegurl", m3u8.toByteArray(), method == "HEAD")
                     }
 
                     else -> {

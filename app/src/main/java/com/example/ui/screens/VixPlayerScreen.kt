@@ -83,12 +83,14 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.ParserException
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -112,7 +114,13 @@ import com.example.data.local.formatVideoResolutionLabel
 import com.example.data.local.isIntroActiveAtPosition
 import com.example.data.local.resolveCreditsTrigger
 import com.example.data.remote.ResolvedStream
+import com.example.data.remote.VixSrcDiagnosticEvent
+import com.example.data.remote.VixSrcDiagnostics
+import com.example.data.remote.VixSrcErrorCategory
+import com.example.data.remote.VixSrcResolutionPhase
 import com.example.data.remote.VixSrcStreamResolver
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import com.example.ui.PlaybackSession
 import com.example.ui.components.DpadFocusObserverRegistry
 import com.example.ui.components.DpadFocusScope
@@ -506,12 +514,14 @@ fun VixPlayerScreen(
     val anyBlockingPopupVisible = showAutoNext || showMovieEndedPopup
     val anySubPanelVisible = showAudioSelector || showComfortPanel || showVixLinkPanel
 
-    // Usa OkHttpDataSource.Factory con l'interceptor VixSrc per gestire playlist HLS,
-    // chiave AES-128 (/storage/enc.key) e segmenti MPEG-TS direttamente da vixsrc.to
-    val okHttpDataSourceFactory = remember(vixSrcResolver, resolvedStream?.referer) {
+    // Usa OkHttpDataSource.Factory con client VixSrc (cookie jar + interceptor coerente) per
+    // playlist HLS, chiave AES-128 e segmenti MPEG-TS mantenendo Referer/Origin dinamici della sorgente
+    val okHttpDataSourceFactory = remember(vixSrcResolver, resolvedStream?.referer, resolvedStream?.origin) {
+        val referer = resolvedStream?.referer ?: "https://vixsrc.to/"
+        val origin = resolvedStream?.origin ?: VixSrcDiagnostics.extractOrigin(referer)
         val headers = mapOf(
-            "Referer" to (resolvedStream?.referer ?: "https://vixsrc.to/"),
-            "Origin" to "https://vixsrc.to"
+            "Referer" to referer,
+            "Origin" to origin
         )
         OkHttpDataSource.Factory(vixSrcResolver.exoOkHttpClient)
             .setUserAgent(resolvedStream?.userAgent ?: ResolvedStream.DEFAULT_USER_AGENT)
@@ -1007,7 +1017,10 @@ fun VixPlayerScreen(
                 isBuffering = false
                 isPlaying = false
                 playWhenReadyState = false
-                playerErrorMessage = "Errore stream VixSrc: ${error.errorCodeName} (${error.localizedMessage ?: "connessione interrotta"})"
+                playerErrorMessage = formatVixSrcPlaybackError(
+                    error = error,
+                    streamUrl = latestResolvedStream?.streamUrl
+                )
             }
         }
         exoPlayer.addListener(listener)
@@ -2004,4 +2017,133 @@ fun VixPlayerScreen(
             }
         }
     }
+}
+
+/**
+ * Classifica un [PlaybackException] di Media3 distinguendo con precisione:
+ * - errori HTTP dal server VixSrc/CDN (400/401/403/404/410/429/5xx),
+ * - errori di rete o timeout,
+ * - errori di parsing del manifest HLS/media,
+ * - errori interni del decoder/player ExoPlayer.
+ * Registra inoltre un evento diagnostico sanitizzato (senza token né cookie).
+ */
+@OptIn(UnstableApi::class)
+internal fun formatVixSrcPlaybackError(
+    error: PlaybackException,
+    streamUrl: String? = null
+): String {
+    var cause: Throwable? = error.cause
+    var depth = 0
+    var httpResponseException: HttpDataSource.InvalidResponseCodeException? = null
+    var httpDataSourceException: HttpDataSource.HttpDataSourceException? = null
+    var timeoutException: SocketTimeoutException? = null
+    var unknownHostException: UnknownHostException? = null
+    var parserException: ParserException? = null
+
+    while (cause != null && depth < 8) {
+        when (cause) {
+            is HttpDataSource.InvalidResponseCodeException -> {
+                if (httpResponseException == null) httpResponseException = cause
+            }
+            is SocketTimeoutException -> {
+                if (timeoutException == null) timeoutException = cause
+            }
+            is UnknownHostException -> {
+                if (unknownHostException == null) unknownHostException = cause
+            }
+            is HttpDataSource.HttpDataSourceException -> {
+                if (httpDataSourceException == null) httpDataSourceException = cause
+            }
+            is ParserException -> {
+                if (parserException == null) parserException = cause
+            }
+        }
+        cause = cause.cause
+        depth++
+    }
+
+    val sanitizedTarget = VixSrcDiagnostics.sanitizeUrl(
+        httpResponseException?.dataSpec?.uri?.toString()
+            ?: httpDataSourceException?.dataSpec?.uri?.toString()
+            ?: streamUrl.orEmpty()
+    )
+
+    if (httpResponseException != null) {
+        val code = httpResponseException.responseCode
+        val message = VixSrcDiagnostics.formatHttpUserMessage(code, VixSrcResolutionPhase.PLAYER_PLAYBACK)
+        VixSrcDiagnostics.logEvent(
+            VixSrcDiagnosticEvent(
+                phase = VixSrcResolutionPhase.PLAYER_PLAYBACK,
+                method = "GET",
+                sanitizedUrl = sanitizedTarget,
+                httpStatusCode = code,
+                category = VixSrcDiagnostics.classifyHttpStatus(code),
+                errorDetail = error.errorCodeName
+            )
+        )
+        return message
+    }
+
+    if (timeoutException != null) {
+        VixSrcDiagnostics.logEvent(
+            VixSrcDiagnosticEvent(
+                phase = VixSrcResolutionPhase.PLAYER_PLAYBACK,
+                method = "GET",
+                sanitizedUrl = sanitizedTarget,
+                category = VixSrcErrorCategory.NETWORK_TIMEOUT,
+                errorDetail = error.errorCodeName
+            )
+        )
+        return "Timeout di rete durante la riproduzione dello stream VixSrc (${error.errorCodeName}). Verifica la connessione e riprova."
+    }
+
+    if (unknownHostException != null) {
+        VixSrcDiagnostics.logEvent(
+            VixSrcDiagnosticEvent(
+                phase = VixSrcResolutionPhase.PLAYER_PLAYBACK,
+                method = "GET",
+                sanitizedUrl = sanitizedTarget,
+                category = VixSrcErrorCategory.NETWORK_ERROR,
+                errorDetail = error.errorCodeName
+            )
+        )
+        return "Impossibile raggiungere il server streaming VixSrc (errore DNS/rete)."
+    }
+
+    if (httpDataSourceException != null) {
+        VixSrcDiagnostics.logEvent(
+            VixSrcDiagnosticEvent(
+                phase = VixSrcResolutionPhase.PLAYER_PLAYBACK,
+                method = "GET",
+                sanitizedUrl = sanitizedTarget,
+                category = VixSrcErrorCategory.NETWORK_ERROR,
+                errorDetail = error.errorCodeName
+            )
+        )
+        return "Errore di connessione HTTP durante la riproduzione dello stream VixSrc (${error.errorCodeName})."
+    }
+
+    if (parserException != null) {
+        VixSrcDiagnostics.logEvent(
+            VixSrcDiagnosticEvent(
+                phase = VixSrcResolutionPhase.PLAYER_PLAYBACK,
+                method = "GET",
+                sanitizedUrl = sanitizedTarget,
+                category = VixSrcErrorCategory.INVALID_PLAYLIST_MANIFEST,
+                errorDetail = error.errorCodeName
+            )
+        )
+        return "Manifest HLS o formato multimediale VixSrc non valido (${error.errorCodeName})."
+    }
+
+    VixSrcDiagnostics.logEvent(
+        VixSrcDiagnosticEvent(
+            phase = VixSrcResolutionPhase.PLAYER_PLAYBACK,
+            method = "PLAY",
+            sanitizedUrl = sanitizedTarget,
+            category = VixSrcErrorCategory.PLAYER_PLAYBACK_ERROR,
+            errorDetail = error.errorCodeName
+        )
+    )
+    return "Errore player video (${error.errorCodeName}): ${error.localizedMessage ?: "riproduzione interrotta"}"
 }
