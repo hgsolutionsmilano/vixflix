@@ -64,11 +64,17 @@ data class SimklActivitiesResponse(
     @param:Json(name = "anime") val anime: SimklActivityBucketDto? = null
 ) {
     val moviesPlaybackTimestamp: String?
-        get() = listOfNotNull(movies?.playback, movies?.all).maxOrNull()
+        get() = movies?.playback?.takeIf { it.isNotBlank() } ?: movies?.all?.takeIf { it.isNotBlank() }
     val showsPlaybackTimestamp: String?
-        get() = listOfNotNull(shows?.playback, tvShows?.playback, shows?.all, tvShows?.all).maxOrNull()
+        get() = listOfNotNull(
+            shows?.playback?.takeIf { it.isNotBlank() },
+            tvShows?.playback?.takeIf { it.isNotBlank() }
+        ).maxOrNull() ?: listOfNotNull(
+            shows?.all?.takeIf { it.isNotBlank() },
+            tvShows?.all?.takeIf { it.isNotBlank() }
+        ).maxOrNull()
     val animePlaybackTimestamp: String?
-        get() = listOfNotNull(anime?.playback, anime?.all).maxOrNull()
+        get() = anime?.playback?.takeIf { it.isNotBlank() } ?: anime?.all?.takeIf { it.isNotBlank() }
     val moviesWatchedTimestamp: String?
         get() = listOfNotNull(movies?.watchedAt, movies?.completed, movies?.all).maxOrNull()
     val showsWatchedTimestamp: String?

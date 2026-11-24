@@ -32,7 +32,7 @@ import com.example.data.local.simkl.SimklProfileSyncMetaEntity
         SimklPlaybackBaselineEntity::class,
         SimklPendingScrobbleEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class VixFlixDatabase : RoomDatabase() {
@@ -571,6 +571,14 @@ abstract class VixFlixDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `simkl_profile_sync_meta` ADD COLUMN `lastAnimePlaybackTs` TEXT")
+                db.execSQL("ALTER TABLE `simkl_profile_sync_meta` ADD COLUMN `lastAnimeWatchedTs` TEXT")
+                db.execSQL("ALTER TABLE `simkl_profile_sync_meta` ADD COLUMN `lastFullReconcileAtMs` INTEGER")
+            }
+        }
+
         fun getInstance(context: Context): VixFlixDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -587,7 +595,8 @@ abstract class VixFlixDatabase : RoomDatabase() {
                         MIGRATION_5_6,
                         MIGRATION_6_7,
                         MIGRATION_7_8,
-                        MIGRATION_8_9
+                        MIGRATION_8_9,
+                        MIGRATION_9_10
                     )
                     .fallbackToDestructiveMigration()
                     .build()

@@ -1440,6 +1440,7 @@ fun VixFlixAppScreen(
                     onScrobbleStart = viewModel::onPlayerScrobbleStart,
                     onScrobblePause = viewModel::onPlayerScrobblePause,
                     onScrobbleStop = viewModel::onPlayerScrobbleStop,
+                    onPlaybackCheckpoint = viewModel::onPlayerPlaybackCheckpoint,
                     onManualNextEpisode = viewModel::playNextEpisodeManual
                 )
             }

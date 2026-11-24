@@ -22,7 +22,8 @@ object SimklLibraryJsonParser {
         val shows: List<SimklLibraryParsedItem> = emptyList(),
         val movies: List<SimklLibraryParsedItem> = emptyList(),
         val anime: List<SimklLibraryParsedItem> = emptyList(),
-        val errors: List<SimklSyncErrorEntry> = emptyList()
+        val errors: List<SimklSyncErrorEntry> = emptyList(),
+        val isFatalPayloadError: Boolean = false
     )
 
     fun parseAllItemsPayload(
@@ -31,8 +32,20 @@ object SimklLibraryJsonParser {
         forcedStatus: String? = null
     ): ParseResult {
         val trimmed = rawJson?.trim().orEmpty()
-        if (trimmed.isEmpty() || trimmed == "null" || trimmed == "{}" || trimmed == "[]") {
+        if (trimmed == "{}" || trimmed == "[]") {
             return ParseResult()
+        }
+        if (trimmed.isEmpty() || trimmed == "null") {
+            return ParseResult(
+                errors = listOf(
+                    SimklSyncErrorEntry(
+                        source = defaultCategory ?: "all-items",
+                        errorType = "EMPTY_PAYLOAD",
+                        message = "Risposta Simkl vuota o nulla: snapshot precedente conservato."
+                    )
+                ),
+                isFatalPayloadError = true
+            )
         }
 
         val shows = ArrayList<SimklLibraryParsedItem>()
@@ -47,10 +60,10 @@ object SimklLibraryJsonParser {
                 SimklSyncErrorEntry(
                     source = defaultCategory ?: "all-items",
                     errorType = "JSON_PARSE",
-                    message = "Risposta JSON Simkl non valida (${e.javaClass.simpleName})."
+                    message = "Risposta JSON Simkl non valida o troncata (${e.javaClass.simpleName})."
                 )
             )
-            return ParseResult(errors = errors)
+            return ParseResult(errors = errors, isFatalPayloadError = true)
         }
 
         when (parsedRoot) {
@@ -87,6 +100,7 @@ object SimklLibraryJsonParser {
                         message = "Formato radice JSON inatteso da Simkl."
                     )
                 )
+                return ParseResult(errors = errors, isFatalPayloadError = true)
             }
         }
 
@@ -94,7 +108,8 @@ object SimklLibraryJsonParser {
             shows = shows,
             movies = movies,
             anime = anime,
-            errors = errors
+            errors = errors,
+            isFatalPayloadError = false
         )
     }
 
@@ -310,8 +325,16 @@ object SimklLibraryJsonParser {
             hasWatchedAt = !explicitWatchedAt.isNullOrBlank()
         )
 
-        val tmdbMediaType = if (category == CATEGORY_MOVIES) "movie" else "tv"
-        val hasSeasonsField = category != CATEGORY_MOVIES && itemObj.has("seasons") && !itemObj.isNull("seasons")
+        val animeType = if (category == CATEGORY_ANIME) {
+            (optNonBlankString(itemObj, "anime_type")
+                ?: optNonBlankString(metaObj, "anime_type")
+                ?: optNonBlankString(itemObj, "type"))?.lowercase()
+        } else {
+            null
+        }
+        val isAnimeMovie = category == CATEGORY_ANIME && animeType == "movie"
+        val tmdbMediaType = if (category == CATEGORY_MOVIES || isAnimeMovie) "movie" else "tv"
+        val hasSeasonsField = tmdbMediaType != "movie" && itemObj.has("seasons") && !itemObj.isNull("seasons")
         val parsedSeasons = if (hasSeasonsField) {
             parseSeasons(itemObj.opt("seasons"))
         } else {

@@ -450,7 +450,8 @@ class SimklSyncSystemTest {
                 VixFlixDatabase.MIGRATION_5_6,
                 VixFlixDatabase.MIGRATION_6_7,
                 VixFlixDatabase.MIGRATION_7_8,
-                VixFlixDatabase.MIGRATION_8_9
+                VixFlixDatabase.MIGRATION_8_9,
+                VixFlixDatabase.MIGRATION_9_10
             )
             .allowMainThreadQueries()
             .build()
@@ -693,14 +694,14 @@ class SimklSyncSystemTest {
         assertEquals(playbackCallsBefore, playbackCallsAfter)
     }
 
-    // 22, 23, 24. Conflict resolution (remote wins, local wins, clock-skew tie-breaker)
+    // 22, 23, 24. Conflict resolution: Simkl is always authoritative source of truth
     @Test
-    fun `22_24 conflict resolution picks newer side and resolves clock skew using furthest progress`() = runBlocking {
+    fun `22_24 conflict resolution picks Simkl as authoritative source of truth`() = runBlocking {
         val manager = buildManager()
         val olderMs = 1_700_000_000_000L
         val newerMs = olderMs + 60_000L
 
-        // Remote newer -> remote wins
+        // Remote newer -> Simkl wins
         assertTrue(
             manager.shouldRemoteWin(
                 remotePct = 40.0,
@@ -711,8 +712,8 @@ class SimklSyncSystemTest {
                 baseline = SimklPlaybackBaselineEntity(DEFAULT_PRIMARY_PROFILE_ID, "movie_1", 1, "movie", localDirty = true)
             )
         )
-        // Local significantly newer -> local wins
-        assertFalse(
+        // Local offline newer -> Simkl still wins (confirmed policy: Simkl prevale sempre)
+        assertTrue(
             manager.shouldRemoteWin(
                 remotePct = 55.0,
                 remotePausedAtMs = olderMs,
@@ -722,11 +723,11 @@ class SimklSyncSystemTest {
                 baseline = SimklPlaybackBaselineEntity(DEFAULT_PRIMARY_PROFILE_ID, "movie_1", 1, "movie", localDirty = true)
             )
         )
-        // Clock skew within 5s -> higher % wins
-        assertTrue(
+        // Empty remote playback with existing local -> local preserved
+        assertFalse(
             manager.shouldRemoteWin(
-                remotePct = 70.0,
-                remotePausedAtMs = olderMs + 2_000L,
+                remotePct = 0.0,
+                remotePausedAtMs = 0L,
                 localExists = true,
                 localPct = 30.0,
                 localUpdatedAtMs = olderMs,
@@ -2913,7 +2914,7 @@ class SimklSyncSystemTest {
             isSeriesCompleted = false,
             today = CalendarDate(2026, 10, 10)
         )
-        assertEquals("15/05/2099", badge)
+        assertEquals("15 MAG 2099", badge)
 
         // Sync ripetuta: ZERO duplicati in Continua a guardare e in simkl_library_item
         assertTrue(managerSync(mgr, profileId, SimklSyncTrigger.MANUAL))

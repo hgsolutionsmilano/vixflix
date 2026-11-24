@@ -289,6 +289,7 @@ fun VixPlayerScreen(
     onScrobbleStart: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
     onScrobblePause: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
     onScrobbleStop: (positionMs: Long, durationMs: Long, isCompleted: Boolean) -> Unit = { _, _, _ -> },
+    onPlaybackCheckpoint: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
     onManualNextEpisode: ((positionMs: Long, durationMs: Long) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -561,6 +562,7 @@ fun VixPlayerScreen(
     val latestOnScrobbleStart by rememberUpdatedState(onScrobbleStart)
     val latestOnScrobblePause by rememberUpdatedState(onScrobblePause)
     val latestOnScrobbleStop by rememberUpdatedState(onScrobbleStop)
+    val latestOnPlaybackCheckpoint by rememberUpdatedState(onPlaybackCheckpoint)
     val latestOnManualNextEpisode by rememberUpdatedState(onManualNextEpisode)
 
     // Reset deterministico e completo dello stato al cambio episodio/contenuto:
@@ -1068,6 +1070,9 @@ fun VixPlayerScreen(
                     if (pos > 0L) {
                         if (tick % 10 == 0) {
                             latestOnProgressUpdate(pos, dur)
+                        }
+                        if (tick > 0 && tick % 60 == 0) {
+                            latestOnPlaybackCheckpoint(pos, dur)
                         }
                         if (!hasPreResolvedNext && latestHasVerifiedNextEpisode && dur > 120_000L && pos >= (dur - 90_000L)) {
                             hasPreResolvedNext = true

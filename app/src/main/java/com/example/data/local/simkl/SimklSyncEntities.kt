@@ -24,8 +24,10 @@ data class SimklProfileSyncMetaEntity(
     val lastActivitiesAll: String? = null,
     val lastMoviesPlaybackTs: String? = null,
     val lastShowsPlaybackTs: String? = null,
+    val lastAnimePlaybackTs: String? = null,
     val lastMoviesWatchedTs: String? = null,
     val lastShowsWatchedTs: String? = null,
+    val lastAnimeWatchedTs: String? = null,
     val lastShowsAllTs: String? = null,
     val lastMoviesAllTs: String? = null,
     val lastAnimeAllTs: String? = null,
@@ -33,6 +35,7 @@ data class SimklProfileSyncMetaEntity(
     val lastRemovedMoviesTs: String? = null,
     val lastRemovedAnimeTs: String? = null,
     val initialFullImportDone: Boolean = false,
+    val lastFullReconcileAtMs: Long? = null,
     val lastSyncAtMs: Long? = null,
     val lastErrorMessage: String? = null,
     val updatedAtMs: Long = System.currentTimeMillis()

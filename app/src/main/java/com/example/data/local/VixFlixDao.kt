@@ -342,6 +342,9 @@ interface VixFlixDao {
     @Query("DELETE FROM simkl_playback_baseline WHERE profileId = :profileId AND contentKey = :contentKey")
     suspend fun deleteSimklBaseline(profileId: String, contentKey: String)
 
+    @Query("DELETE FROM simkl_playback_baseline WHERE profileId = :profileId AND tmdbId = :tmdbId AND mediaType = :mediaType")
+    suspend fun deleteSimklBaselinesForMedia(profileId: String, tmdbId: Int, mediaType: String)
+
     @Query("SELECT COUNT(*) FROM simkl_pending_scrobble WHERE profileId = :profileId")
     fun observeSimklPendingCount(profileId: String): Flow<Int>
 

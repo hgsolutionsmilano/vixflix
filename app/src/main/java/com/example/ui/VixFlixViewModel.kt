@@ -37,6 +37,7 @@ import com.example.data.local.simkl.SimklSecureTokenStore
 import com.example.data.remote.ActorDetails
 import com.example.data.remote.simkl.SimklAuthFlowMode
 import com.example.data.remote.simkl.SimklConfig
+import com.example.data.remote.simkl.SimklLibraryJsonParser
 import com.example.data.remote.simkl.SimklProfileUiState
 import com.example.data.remote.simkl.SimklQrDialogState
 import com.example.data.remote.simkl.SimklSyncManager
@@ -320,7 +321,32 @@ class VixFlixViewModel @JvmOverloads constructor(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val continueWatching: StateFlow<List<WatchProgressEntity>> = _activeProfileId
-        .flatMapLatest { profileId -> repository.observeContinueWatching(profileId) }
+        .flatMapLatest { profileId ->
+            combine(
+                repository.observeContinueWatching(profileId),
+                repository.localDao.observeSimklLibraryForProfile(profileId)
+            ) { progressList, simklLibrary ->
+                if (simklLibrary.isEmpty()) {
+                    progressList
+                } else {
+                    val excludedKeys = HashSet<String>()
+                    for (lib in simklLibrary) {
+                        val tmdbId = lib.tmdbId ?: continue
+                        val excluded = lib.status == SimklLibraryJsonParser.STATUS_HOLD ||
+                            lib.status == SimklLibraryJsonParser.STATUS_DROPPED ||
+                            (lib.tmdbMediaType == "movie" && lib.status == SimklLibraryJsonParser.STATUS_COMPLETED)
+                        if (excluded) {
+                            excludedKeys.add("${lib.tmdbMediaType}_$tmdbId")
+                        }
+                    }
+                    if (excludedKeys.isEmpty()) {
+                        progressList
+                    } else {
+                        progressList.filter { it.id !in excludedKeys }
+                    }
+                }
+            }
+        }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -914,6 +940,19 @@ class VixFlixViewModel @JvmOverloads constructor(
             positionMs = positionMs,
             durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L),
             isExplicitCompletion = isCompleted
+        )
+    }
+
+    fun onPlayerPlaybackCheckpoint(positionMs: Long, durationMs: Long) {
+        val session = _playbackSession.value ?: return
+        simklSyncManager.recordPlaybackCrashCheckpoint(
+            profileId = _activeProfileId.value,
+            item = session.mediaItem,
+            seasonNumber = session.seasonNumber,
+            episodeNumber = session.episodeNumber,
+            episodeTitle = session.episodeTitle,
+            positionMs = positionMs,
+            durationMs = durationMs.takeIf { it > 0L } ?: (session.metadataDurationMs ?: 0L)
         )
     }
 
@@ -1745,7 +1784,10 @@ class VixFlixViewModel @JvmOverloads constructor(
         val completed = linkedSetOf<Int>()
         val validSelectedEpNums = selectedSeasonEpisodes
             .asSequence()
-            .filter { it.seasonNumber == selectedSeason && it.episodeNumber > 0 }
+            .filter {
+                it.seasonNumber == selectedSeason &&
+                    (if (selectedSeason == 0) it.episodeNumber >= 0 else it.episodeNumber > 0)
+            }
             .map { it.episodeNumber }
             .toSet()
 
@@ -1916,7 +1958,7 @@ class VixFlixViewModel @JvmOverloads constructor(
         val knownSeasons = currentDetail.details?.seasons.orEmpty()
         val resolvedNumbers = episodeNumbers.ifEmpty {
             currentEpisodes.map { it.episodeNumber }
-        }.filter { it > 0 }.distinct()
+        }.filter { if (seasonNumber == 0) it >= 0 else it > 0 }.distinct()
         if (resolvedNumbers.isEmpty()) return
         updateTopDetail { top ->
             val updatedWatched = if (top.selectedSeason == seasonNumber) {
@@ -2730,9 +2772,15 @@ class VixFlixViewModel @JvmOverloads constructor(
     fun toggleWatchlist(item: MediaItem) {
         val currentProfileId = _activeProfileId.value
         viewModelScope.launch {
-            val isInList = watchlist.value.any { it.id == item.uniqueKey }
-            repository.toggleWatchlist(item, isInList, currentProfileId)
-            if (isInList) {
+            val isInLocalList = watchlist.value.any { it.id == item.uniqueKey }
+            val isInSimklPlanToWatch = simklPlanToWatch.value.any {
+                it.tmdbId == item.id && it.tmdbMediaType == item.mediaType
+            }
+            val isCurrentlySaved = isInLocalList || isInSimklPlanToWatch
+            if (isInLocalList || !isCurrentlySaved) {
+                repository.toggleWatchlist(item, isInLocalList, currentProfileId)
+            }
+            if (isCurrentlySaved) {
                 simklSyncManager.enqueueRemoveFromPlanToWatch(
                     profileId = currentProfileId,
                     item = item

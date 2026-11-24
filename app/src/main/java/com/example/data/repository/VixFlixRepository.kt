@@ -1404,13 +1404,48 @@ class VixFlixRepository(
         if (existing.seasonNumber != seasonNumber || existing.episodeNumber != episodeNumber) {
             return@withContext
         }
-        if (existing.durationMs == resolvedDurationMs) return@withContext
-        dao.upsertWatchProgress(existing.copy(durationMs = resolvedDurationMs))
+        val contentKey = if (existing.mediaType == "tv" && seasonNumber != null && episodeNumber != null) {
+            "tv_${existing.tmdbId}_s${seasonNumber}_e${episodeNumber}"
+        } else {
+            "${existing.mediaType}_${existing.tmdbId}"
+        }
+        val recomputedPositionMs = if (existing.durationMs <= 0L) {
+            val baselinePct = dao.getSimklBaseline(profileId, contentKey)
+                ?.lastSyncedProgressPercent
+                ?.takeIf { it > 0.0 && it < 100.0 }
+            if (baselinePct != null) {
+                Math.round((resolvedDurationMs * baselinePct) / 100.0)
+                    .coerceIn(3_000L, (resolvedDurationMs - 1_000L).coerceAtLeast(3_000L))
+            } else {
+                existing.positionMs
+            }
+        } else {
+            existing.positionMs
+        }
+
+        if (existing.durationMs == resolvedDurationMs && existing.positionMs == recomputedPositionMs) {
+            return@withContext
+        }
+        dao.upsertWatchProgress(
+            existing.copy(
+                positionMs = recomputedPositionMs,
+                durationMs = resolvedDurationMs
+            )
+        )
         if (existing.mediaType == "tv" && seasonNumber != null && episodeNumber != null) {
-            val epKey = "tv_${existing.tmdbId}_s${seasonNumber}_e${episodeNumber}"
-            val epExisting = dao.getEpisodeProgress(epKey, profileId)
+            val epExisting = dao.getEpisodeProgress(contentKey, profileId)
             if (epExisting != null) {
-                dao.upsertEpisodeProgress(epExisting.copy(durationMs = resolvedDurationMs))
+                val epRecomputedPos = if (epExisting.durationMs <= 0L && recomputedPositionMs != existing.positionMs) {
+                    recomputedPositionMs
+                } else {
+                    epExisting.positionMs
+                }
+                dao.upsertEpisodeProgress(
+                    epExisting.copy(
+                        positionMs = epRecomputedPos,
+                        durationMs = resolvedDurationMs
+                    )
+                )
             }
         }
     }
