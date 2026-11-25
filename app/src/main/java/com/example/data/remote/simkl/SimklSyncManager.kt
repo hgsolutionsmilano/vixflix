@@ -159,7 +159,14 @@ class SimklSyncManager(
     private val rateLimitUntilMsByProfile = ConcurrentHashMap<String, Long>()
     private val deferredPlaybackMoviesProfiles = ConcurrentHashMap.newKeySet<String>()
     private val deferredPlaybackEpisodesProfiles = ConcurrentHashMap.newKeySet<String>()
+    private val deferredLibrarySeriesByProfile = ConcurrentHashMap<String, MutableSet<Int>>()
     private val lastSentScrobbleByProfileKey = ConcurrentHashMap<String, Triple<String, Double, Long>>()
+    private val excludedContinueWatchingStatuses = setOf(
+        SimklLibraryJsonParser.STATUS_HOLD,
+        SimklLibraryJsonParser.STATUS_DROPPED,
+        SimklLibraryJsonParser.STATUS_COMPLETED,
+        SimklLibraryJsonParser.STATUS_PLAN_TO_WATCH
+    )
 
     private fun trackWriteJob(profileId: String, job: Job) {
         val set = activeWriteJobsByProfile.getOrPut(profileId) {
@@ -225,7 +232,25 @@ class SimklSyncManager(
     }
 
     fun clearActivePlaybackTarget() {
+        val prev = activePlaybackTarget
         activePlaybackTarget = null
+        if (prev != null && prev.mediaType == "tv") {
+            val wasDeferred = deferredLibrarySeriesByProfile[prev.profileId]?.remove(prev.tmdbId) == true
+            if (wasDeferred) {
+                scope.launch {
+                    reconcileTvContinueWatchingInvariant(prev.profileId, setOf(prev.tmdbId))
+                    _syncRevision.update { it + 1L }
+                }
+            }
+        }
+    }
+
+    private fun markDeferredLibrarySeries(profileId: String, tmdbId: Int) {
+        if (tmdbId <= 0) return
+        val set = deferredLibrarySeriesByProfile.getOrPut(profileId) {
+            java.util.Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
+        }
+        set.add(tmdbId)
     }
 
     internal fun isActivePlaybackTarget(
@@ -1313,6 +1338,7 @@ class SimklSyncManager(
         rateLimitUntilMsByProfile.remove(profileId)
         deferredPlaybackMoviesProfiles.remove(profileId)
         deferredPlaybackEpisodesProfiles.remove(profileId)
+        deferredLibrarySeriesByProfile.remove(profileId)
         lastSentScrobbleByProfileKey.keys.removeIf { it.startsWith("$profileId|") }
         dao.deleteSimklPendingForProfile(profileId)
         dao.deleteSimklBaselinesForProfile(profileId)
@@ -1333,6 +1359,7 @@ class SimklSyncManager(
         rateLimitUntilMsByProfile.remove(profileId)
         deferredPlaybackMoviesProfiles.remove(profileId)
         deferredPlaybackEpisodesProfiles.remove(profileId)
+        deferredLibrarySeriesByProfile.remove(profileId)
         lastSentScrobbleByProfileKey.keys.removeIf { it.startsWith("$profileId|") }
         if (_qrDialogState.value?.profileId == profileId) {
             _qrDialogState.value = null
@@ -2250,6 +2277,10 @@ class SimklSyncManager(
                     )
                 }
 
+                // 5b. Rete di sicurezza finale: garantisce che nessuna scheda serie TV in "Continua a guardare"
+                // punti a un episodio ormai marcato VISTO o a una serie in stato escluso.
+                reconcileTvContinueWatchingInvariant(profileId)
+
                 // 6. Invia verso Simkl SOLO la coda offline residua non in conflitto
                 flushPendingQueueInternal(profileId)
                 val finalPending = dao.getSimklPendingScrobbles(profileId).size
@@ -2466,15 +2497,50 @@ class SimklSyncManager(
                 val remoteNewerOrDifferent = remoteLastWatchedMs >= entry.updatedAtMs || statusChangedOnSimkl
 
                 if (isPlaybackAction) {
+                    val isCompletionStop = entry.action == "stop" && entry.progressPercent >= entry.minProgress.toDouble()
                     if (remoteStatusTerminal && (remoteLib.status != SimklLibraryJsonParser.STATUS_PLAN_TO_WATCH || statusChangedOnSimkl)) {
                         conflictReason = "remote_status_${remoteLib.status}"
-                    } else if (entry.mediaType == "tv" && entry.seasonNumber != null && entry.episodeNumber != null && remoteLib.hasSeasonsField) {
-                        val remoteEp = remoteLib.seasons
-                            .firstOrNull { it.seasonNumber == entry.seasonNumber }
-                            ?.episodes
-                            ?.firstOrNull { it.episodeNumber == entry.episodeNumber }
-                        if (remoteEp?.watched == true && entry.action != "stop") {
-                            conflictReason = "remote_episode_already_watched"
+                    } else if (entry.mediaType == "tv" && entry.seasonNumber != null && entry.episodeNumber != null && !isCompletionStop) {
+                        val entryPair = entry.seasonNumber to entry.episodeNumber
+                        if (remoteLib.hasSeasonsField) {
+                            val remoteEp = remoteLib.seasons
+                                .firstOrNull { it.seasonNumber == entry.seasonNumber }
+                                ?.episodes
+                                ?.firstOrNull { it.episodeNumber == entry.episodeNumber }
+                            val hasNewerRemoteEpWatched = entry.seasonNumber > 0 && remoteLib.seasons.any { s ->
+                                s.seasonNumber > 0 && s.episodes.any { ep ->
+                                    ep.watched && compareEpisodePairs(entryPair, s.seasonNumber to ep.episodeNumber) < 0
+                                }
+                            }
+                            if (remoteEp?.watched == true) {
+                                conflictReason = "remote_episode_already_watched"
+                            } else if (hasNewerRemoteEpWatched && remoteLastWatchedMs >= entry.updatedAtMs) {
+                                conflictReason = "remote_episode_superseded"
+                            }
+                        } else {
+                            val remoteNext = if (remoteLib.nextToWatchSeason != null && remoteLib.nextToWatchEpisode != null) {
+                                remoteLib.nextToWatchSeason to remoteLib.nextToWatchEpisode
+                            } else {
+                                parseEpisodeCode(remoteLib.nextToWatch)
+                            }
+                            val remoteLast = parseEpisodeCode(remoteLib.lastWatchedEpisodeCode)
+                            val supersededByRemoteCode = entry.seasonNumber > 0 && remoteLastWatchedMs >= entry.updatedAtMs && (
+                                (remoteNext != null && remoteNext.first > 0 && compareEpisodePairs(entryPair, remoteNext) < 0) ||
+                                    (remoteLast != null && remoteLast.first > 0 && compareEpisodePairs(entryPair, remoteLast) <= 0)
+                                )
+                            val alreadyWatchedLocally = (
+                                dao.getSimklEpisodeState(profileId, entry.tmdbId, entry.seasonNumber, entry.episodeNumber)?.watched == true ||
+                                    dao.getCompletedMedia(
+                                        PlayerSegmentKeys.completedMediaKey(entry.tmdbId, "tv", entry.seasonNumber, entry.episodeNumber),
+                                        profileId
+                                    ) != null
+                                ) && remoteLastWatchedMs >= entry.updatedAtMs
+                            if (supersededByRemoteCode || alreadyWatchedLocally) {
+                                conflictReason = "remote_episode_superseded"
+                            }
+                        }
+                        if (conflictReason == null && entry.contentKey in remotePlaybackKeys) {
+                            conflictReason = "remote_playback_authoritative"
                         }
                     } else if (entry.contentKey in remotePlaybackKeys) {
                         conflictReason = "remote_playback_authoritative"
@@ -3771,12 +3837,6 @@ class SimklSyncManager(
         val libraryByMedia = dao.getSimklLibraryForProfile(profileId)
             .filter { it.tmdbId != null && it.tmdbId > 0 }
             .associateBy { it.tmdbMediaType to it.tmdbId!! }
-        val excludedContinueWatchingStatuses = setOf(
-            SimklLibraryJsonParser.STATUS_HOLD,
-            SimklLibraryJsonParser.STATUS_DROPPED,
-            SimklLibraryJsonParser.STATUS_COMPLETED,
-            SimklLibraryJsonParser.STATUS_PLAN_TO_WATCH
-        )
         val seenRemoteKeys = HashSet<String>()
         var deferredMovieUpdate = false
         var deferredEpisodeUpdate = false
@@ -3828,7 +3888,10 @@ class SimklSyncManager(
         }
 
         // Episodi da Simkl: esclude serie in Hold/Dropped/Completed/PlanToWatch ed episodi già visti prima di scegliere il più recente
+        val seriesNeedingContinueWatchingCheck = LinkedHashSet<Int>()
         if (reconcileEpisodes) {
+            val episodeStatesBySeries = HashMap<Int, List<SimklEpisodeStateEntity>>()
+            val completedPairsBySeries = HashMap<Int, Set<Pair<Int, Int>>>()
             val resolvedEpisodes = ArrayList<Triple<MediaItem, SimklPlaybackItemDto, Pair<Int, Int>>>()
             for (dto in remoteEpisodes) {
                 val show = dto.show ?: continue
@@ -3851,25 +3914,59 @@ class SimklSyncManager(
                         dao.deleteSimklBaseline(profileId, epKey)
                     } else {
                         deferredEpisodeUpdate = true
+                        markDeferredLibrarySeries(profileId, mediaItem.id)
                     }
                     seenRemoteKeys.add(epKey)
                     continue
                 }
 
                 val remotePausedMs = parseIsoUtcMillis(dto.pausedAt)
-                val epState = dao.getSimklEpisodeState(profileId, mediaItem.id, seasonNum, epNum)
-                val completedEp = dao.getCompletedMedia(
-                    contentKey = PlayerSegmentKeys.completedMediaKey(mediaItem.id, "tv", seasonNum, epNum),
-                    profileId = profileId
+                val seriesStates = episodeStatesBySeries.getOrPut(mediaItem.id) {
+                    dao.getSimklEpisodeStatesByTmdb(profileId, mediaItem.id)
+                }
+                val seriesCompletedPairs = completedPairsBySeries.getOrPut(mediaItem.id) {
+                    dao.getCompletedEpisodesForSeries(mediaItem.id, profileId)
+                        .map { it.seasonNumber to it.episodeNumber }
+                        .toSet()
+                }
+                val epState = seriesStates.firstOrNull { it.seasonNumber == seasonNum && it.episodeNumber == epNum }
+                val completedEp = if ((seasonNum to epNum) in seriesCompletedPairs) {
+                    dao.getCompletedMedia(
+                        contentKey = PlayerSegmentKeys.completedMediaKey(mediaItem.id, "tv", seasonNum, epNum),
+                        profileId = profileId
+                    )
+                } else {
+                    null
+                }
+                val isEpWatched = epState?.watched == true || completedEp != null
+                val hasNewerWatchedEpisode = seasonNum > 0 && (
+                    seriesStates.any { it.watched && it.seasonNumber > 0 && compareEpisodePairs(seasonNum to epNum, it.seasonNumber to it.episodeNumber) < 0 } ||
+                        seriesCompletedPairs.any { it.first > 0 && compareEpisodePairs(seasonNum to epNum, it) < 0 }
+                    )
+                val libNextPair = parseEpisodeCode(libItem?.nextToWatch)
+                val isBehindLibNext = seasonNum > 0 && libNextPair != null && libNextPair.first > 0 &&
+                    compareEpisodePairs(seasonNum to epNum, libNextPair) < 0
+                val maxSeriesWatchedMs = maxOf(
+                    epState?.watchedAtMs ?: 0L,
+                    completedEp?.completedAtMs ?: 0L,
+                    libItem?.lastWatchedAtMs ?: 0L,
+                    seriesStates.filter { it.watched }.maxOfOrNull { it.watchedAtMs } ?: 0L
                 )
-                val alreadyWatchedOnSimkl = (epState?.watched == true && (epState.watchedAtMs == 0L || remotePausedMs <= epState.watchedAtMs)) ||
-                    (completedEp != null && (remotePausedMs <= 0L || completedEp.completedAtMs >= remotePausedMs))
+                val isGenuineRewatch = isEpWatched &&
+                    !hasNewerWatchedEpisode &&
+                    !isBehindLibNext &&
+                    remotePausedMs > 0L &&
+                    maxSeriesWatchedMs > 0L &&
+                    remotePausedMs > maxSeriesWatchedMs + 60_000L
+                val alreadyWatchedOnSimkl = isEpWatched && !isGenuineRewatch
                 if (alreadyWatchedOnSimkl) {
                     if (!isActivePlaybackTarget(profileId, "tv", mediaItem.id, seasonNum, epNum)) {
                         dao.deleteEpisodeProgress(epKey, profileId)
                         dao.deleteSimklBaseline(profileId, epKey)
+                        seriesNeedingContinueWatchingCheck.add(mediaItem.id)
                     } else {
                         deferredEpisodeUpdate = true
+                        markDeferredLibrarySeries(profileId, mediaItem.id)
                     }
                     seenRemoteKeys.add(epKey)
                     continue
@@ -3888,8 +3985,9 @@ class SimklSyncManager(
                     isActivePlaybackSeries(profileId, mediaItem.id)
                 ) {
                     deferredEpisodeUpdate = true
+                    markDeferredLibrarySeries(profileId, mediaItem.id)
                 }
-                reconcileSingleEpisodeProgress(
+                val epCompletedViaRemote = reconcileSingleEpisodeProgress(
                     profileId = profileId,
                     contentKey = contentKey,
                     mediaItem = mediaItem,
@@ -3898,6 +3996,9 @@ class SimklSyncManager(
                     remoteDto = dto,
                     baseline = baselines[contentKey]
                 )
+                if (epCompletedViaRemote) {
+                    seriesNeedingContinueWatchingCheck.add(mediaItem.id)
+                }
                 val pausedMs = parseIsoUtcMillis(dto.pausedAt)
                 val prev = latestPerSeries[mediaItem.id]
                 if (prev == null || pausedMs >= parseIsoUtcMillis(prev.second.pausedAt)) {
@@ -3914,16 +4015,30 @@ class SimklSyncManager(
                 val localMain = dao.getWatchProgress(mainKey, profileId) ?: localWatchMap[mainKey]
                 val libItem = libraryByMedia["tv" to seriesId]
                 val remotePausedMs = parseIsoUtcMillis(dto.pausedAt)
-                val isStalePausedBehindNewerWatched = libItem != null &&
+                val seriesStates = episodeStatesBySeries[seriesId].orEmpty()
+                val seriesCompletedPairs = completedPairsBySeries[seriesId].orEmpty()
+                val maxSeriesWatchedMs = maxOf(
+                    libItem?.lastWatchedAtMs ?: 0L,
+                    seriesStates.filter { it.watched }.maxOfOrNull { it.watchedAtMs } ?: 0L
+                )
+                val hasNewerWatchedEp = seasonNum > 0 && (
+                    seriesStates.any { it.watched && it.seasonNumber > 0 && compareEpisodePairs(se, it.seasonNumber to it.episodeNumber) < 0 } ||
+                        seriesCompletedPairs.any { it.first > 0 && compareEpisodePairs(se, it) < 0 }
+                    )
+                val isStalePausedBehindNewerWatched = (libItem != null &&
                     libItem.lastWatchedAtMs > 0L &&
                     remotePausedMs > 0L &&
                     libItem.lastWatchedAtMs > remotePausedMs + 2_000L &&
-                    localMain != null &&
-                    (localMain.seasonNumber != seasonNum || localMain.episodeNumber != epNum)
+                    (localMain == null || localMain.seasonNumber != seasonNum || localMain.episodeNumber != epNum)) ||
+                    (hasNewerWatchedEp && (remotePausedMs <= 0L || maxSeriesWatchedMs <= 0L || remotePausedMs <= maxSeriesWatchedMs + 60_000L))
                 if (isStalePausedBehindNewerWatched) {
+                    if (!isActivePlaybackTarget(profileId, "tv", seriesId, seasonNum, epNum)) {
+                        dao.deleteSimklBaseline(profileId, contentKey)
+                    }
+                    seriesNeedingContinueWatchingCheck.add(seriesId)
                     continue
                 }
-                reconcileSingleItem(
+                val itemCompletedViaRemote = reconcileSingleItem(
                     profileId = profileId,
                     contentKey = contentKey,
                     mediaItem = mediaItem,
@@ -3933,6 +4048,9 @@ class SimklSyncManager(
                     baseline = baselines[contentKey],
                     localMain = localMain
                 )
+                if (itemCompletedViaRemote) {
+                    seriesNeedingContinueWatchingCheck.add(seriesId)
+                }
             }
             if (deferredEpisodeUpdate) {
                 deferredPlaybackEpisodesProfiles.add(profileId)
@@ -3950,7 +4068,10 @@ class SimklSyncManager(
             if (baseline.simklPlaybackId == null && baseline.lastSyncedProgressPercent <= 0.0) continue
             if (isActivePlaybackTarget(profileId, baseline.mediaType, baseline.tmdbId, baseline.seasonNumber, baseline.episodeNumber)) {
                 if (baseline.mediaType == "movie") deferredPlaybackMoviesProfiles.add(profileId)
-                else deferredPlaybackEpisodesProfiles.add(profileId)
+                else {
+                    deferredPlaybackEpisodesProfiles.add(profileId)
+                    markDeferredLibrarySeries(profileId, baseline.tmdbId)
+                }
                 continue
             }
 
@@ -3982,13 +4103,21 @@ class SimklSyncManager(
                 (baseline.mediaType == "movie" ||
                     isStatusTerminal ||
                     (localMain.seasonNumber == baseline.seasonNumber && localMain.episodeNumber == baseline.episodeNumber))
-            if (matchesLocalMain) {
+            if (baseline.mediaType == "tv") {
+                if (isStatusTerminal && matchesLocalMain) {
+                    dao.deleteWatchProgress(mainId, profileId)
+                } else if (isNowCompleted) {
+                    seriesNeedingContinueWatchingCheck.add(baseline.tmdbId)
+                }
+                dao.deleteEpisodeProgress(contentKey, profileId)
+            } else if (matchesLocalMain) {
                 dao.deleteWatchProgress(mainId, profileId)
             }
-            if (baseline.mediaType == "tv") {
-                dao.deleteEpisodeProgress(contentKey, profileId)
-            }
             dao.deleteSimklBaseline(profileId, contentKey)
+        }
+
+        if (seriesNeedingContinueWatchingCheck.isNotEmpty()) {
+            reconcileTvContinueWatchingInvariant(profileId, seriesNeedingContinueWatchingCheck)
         }
     }
 
@@ -4000,9 +4129,9 @@ class SimklSyncManager(
         episodeNumber: Int,
         remoteDto: SimklPlaybackItemDto,
         baseline: SimklPlaybackBaselineEntity?
-    ) {
+    ): Boolean {
         if (isActivePlaybackTarget(profileId, "tv", mediaItem.id, seasonNumber, episodeNumber)) {
-            return
+            return false
         }
         val remotePct = remoteDto.progress.coerceIn(0.0, 100.0)
         val remotePausedMs = parseIsoUtcMillis(remoteDto.pausedAt)
@@ -4011,7 +4140,7 @@ class SimklSyncManager(
             profileId = profileId
         )
         if (existingCompleted != null && (remotePausedMs <= 0L || existingCompleted.completedAtMs >= remotePausedMs)) {
-            return
+            return false
         }
         val localEp = dao.getEpisodeProgress(contentKey, profileId)
         val epDurationMs = localEp?.durationMs?.takeIf { it > 0L }
@@ -4057,7 +4186,7 @@ class SimklSyncManager(
             )
             dao.deleteEpisodeProgress(contentKey, profileId)
             dao.deleteSimklBaseline(profileId, contentKey)
-            return
+            return true
         }
 
         if (remoteWins && remotePct > 0.0) {
@@ -4067,7 +4196,7 @@ class SimklSyncManager(
                 eps?.firstOrNull { it.episodeNumber == episodeNumber }
             }.getOrNull()
             if (com.example.ui.UpcomingEpisodeBadgeFormatter.isUpcomingAirDate(epDtoForAirDate?.airDate)) {
-                return
+                return false
             }
             val posMs = if (epDurationMs > 0L) {
                 ((epDurationMs * remotePct) / 100.0).roundToLong().coerceAtLeast(3_000L)
@@ -4105,6 +4234,7 @@ class SimklSyncManager(
                 )
             )
         }
+        return false
     }
 
     private suspend fun reconcileSingleItem(
@@ -4116,11 +4246,11 @@ class SimklSyncManager(
         remoteDto: SimklPlaybackItemDto,
         baseline: SimklPlaybackBaselineEntity?,
         localMain: WatchProgressEntity?
-    ) {
+    ): Boolean {
         if (isActivePlaybackTarget(profileId, mediaItem.mediaType, mediaItem.id, seasonNumber, episodeNumber) ||
             (mediaItem.isSeries && isActivePlaybackSeries(profileId, mediaItem.id))
         ) {
-            return
+            return false
         }
         val remotePct = remoteDto.progress.coerceIn(0.0, 100.0)
         val remotePausedMs = parseIsoUtcMillis(remoteDto.pausedAt)
@@ -4132,7 +4262,7 @@ class SimklSyncManager(
             profileId = profileId
         )
         if (existingCompleted != null && (remotePausedMs <= 0L || existingCompleted.completedAtMs >= remotePausedMs)) {
-            return
+            return false
         }
 
         val resolvedDetails = runCatching {
@@ -4203,7 +4333,7 @@ class SimklSyncManager(
                 )
             }
             dao.deleteSimklBaseline(profileId, contentKey)
-            return
+            return mediaItem.isSeries
         }
 
         val isUpcomingEpisode = mediaItem.isSeries &&
@@ -4252,6 +4382,7 @@ class SimklSyncManager(
                 )
             )
         }
+        return false
     }
 
     /**
@@ -5976,13 +6107,6 @@ class SimklSyncManager(
             dao.upsertCompletedMediaList(newCompletedEntities)
         }
 
-        for ((seasonNum, epNum) in episodeMerge.watchedPairs) {
-            if (!isActivePlaybackTarget(profileId, "tv", tmdbId, seasonNum, epNum)) {
-                val epKey = "tv_${tmdbId}_s${seasonNum}_e${epNum}"
-                dao.deleteEpisodeProgress(epKey, profileId)
-            }
-        }
-
         // 2) Propaga episodi segnati come NON visti (unwatch) su Simkl rimuovendoli da completed_media,
         // episode_progress e simkl_playback_baseline, così che lo stato locale sia totalmente allineato.
         val authoritativeWatchedReset = item.hasSeasonsField ||
@@ -6006,9 +6130,23 @@ class SimklSyncManager(
             }
         }
 
+        val currentCompletedAfterUpdate = dao.getCompletedEpisodesForSeries(tmdbId, profileId)
+            .map { it.seasonNumber to it.episodeNumber }
+            .toSet()
+        val allWatchedPairs = (episodeMerge.watchedPairs + currentCompletedAfterUpdate) - completedToDelete
+
+        for ((seasonNum, epNum) in allWatchedPairs) {
+            if (!isActivePlaybackTarget(profileId, "tv", tmdbId, seasonNum, epNum)) {
+                val epKey = "tv_${tmdbId}_s${seasonNum}_e${epNum}"
+                dao.deleteEpisodeProgress(epKey, profileId)
+                dao.deleteSimklBaseline(profileId, epKey)
+            }
+        }
+
         // 3) Aggiorna "Continua a guardare" (watch_progress) in modo autorevole da Simkl.
-        // Mai interferire con il player se l'utente sta guardando attivamente questa serie.
+        // Mai interferire con il player se l'utente sta guardando attivamente questa serie: differisci a fine riproduzione.
         if (isActivePlaybackSeries(profileId, tmdbId)) {
+            markDeferredLibrarySeries(profileId, tmdbId)
             return
         }
 
@@ -6031,54 +6169,50 @@ class SimklSyncManager(
         if (item.status == SimklLibraryJsonParser.STATUS_WATCHING ||
             item.status == SimklLibraryJsonParser.STATUS_SEEN
         ) {
-            val explicitNextTarget = if (item.nextToWatchSeason != null && item.nextToWatchEpisode != null) {
-                item.nextToWatchSeason to item.nextToWatchEpisode
-            } else {
-                parseEpisodeCode(item.nextToWatch)
-            }?.takeIf { it !in episodeMerge.watchedPairs }
-
-            val seasonsNextTarget = findNextUnwatchedEpisodeFromSeasons(episodeMerge.mergedSeasons)
-            val nextTarget = when {
-                completedToDelete.isNotEmpty() && seasonsNextTarget != null -> seasonsNextTarget
-                else -> explicitNextTarget
-                    ?: seasonsNextTarget
-                    ?: inferNextEpisodeAfterWatched(tmdbId, item, episodeMerge.watchedPairs, item.lastWatchedEpisodeCode)
-                    ?: if (episodeMerge.watchedPairs.isEmpty()) {
-                        resolveFirstAvailableEpisodeFromTmdb(tmdbId, item, existingMain)
-                    } else {
-                        null
-                    }
-            }
-
-            if (nextTarget == null) {
-                // Tutti gli episodi noti sono già stati visti (stagione/serie conclusa senza episodio successivo):
-                // rimuove la scheda se punta a un episodio ormai completato.
-                val existingMainPair = if (existingMain?.seasonNumber != null && existingMain.episodeNumber != null) {
-                    existingMain.seasonNumber to existingMain.episodeNumber
-                } else {
-                    null
-                }
-                if (existingMain != null && !hasPendingForMedia &&
-                    (existingMainPair == null || existingMainPair in episodeMerge.watchedPairs)
-                ) {
-                    dao.deleteWatchProgress(mainKey, profileId)
-                }
-                return
-            }
-
-            val (nextSeason, nextEp) = nextTarget
-            val nextCompletedKey = PlayerSegmentKeys.completedMediaKey(tmdbId, "tv", nextSeason, nextEp)
-            val isNextAlreadyCompleted = dao.getCompletedMedia(nextCompletedKey, profileId) != null
-            if (isNextAlreadyCompleted) {
-                return
-            }
+            val nextTarget = resolveAuthoritativeNextSeriesEpisode(
+                profileId = profileId,
+                tmdbId = tmdbId,
+                title = item.title,
+                year = item.year,
+                mergedSeasons = episodeMerge.mergedSeasons,
+                allWatchedPairs = allWatchedPairs,
+                unwatchedPairs = completedToDelete,
+                rawNextSeason = item.nextToWatchSeason,
+                rawNextEpisode = item.nextToWatchEpisode,
+                rawNextCode = item.nextToWatch,
+                lastWatchedCode = item.lastWatchedEpisodeCode,
+                existingMain = existingMain
+            )
 
             val existingMainPair = if (existingMain?.seasonNumber != null && existingMain.episodeNumber != null) {
                 existingMain.seasonNumber to existingMain.episodeNumber
             } else {
                 null
             }
-            val existingMainIsNowWatchedOnSimkl = existingMainPair != null && existingMainPair in episodeMerge.watchedPairs
+            val existingMainIsWatched = existingMainPair != null && existingMainPair in allWatchedPairs
+
+            if (nextTarget == null) {
+                // Tutti gli episodi noti sono già stati visti (stagione/serie conclusa senza episodio successivo):
+                // rimuove la scheda se punta a un episodio ormai completato (senza mai lasciare un episodio già visto).
+                if (existingMain != null && (existingMainIsWatched || !hasPendingForMedia)) {
+                    if (existingMainPair == null || existingMainPair in allWatchedPairs) {
+                        dao.deleteWatchProgress(mainKey, profileId)
+                    }
+                }
+                return
+            }
+
+            val (nextSeason, nextEp) = nextTarget
+            val seriesPending = pendingEntries.filter { it.tmdbId == tmdbId && it.mediaType == "tv" }
+            val hasPendingForExistingMainEp = existingMainPair != null && seriesPending.any {
+                it.action in setOf("start", "pause", "stop") &&
+                    it.seasonNumber == existingMainPair.first &&
+                    it.episodeNumber == existingMainPair.second
+            }
+            val hasPendingPlaybackOrHistory = seriesPending.any {
+                it.action in setOf("start", "pause", "stop", "history_add", "history_remove")
+            }
+
             val existingMainWasUnwatched = existingMainPair != null && existingMainPair in completedToDelete
             val existingMainWasUnwatchedAndMovedBack = existingMainPair != null &&
                 existingMainPair != nextTarget &&
@@ -6087,85 +6221,293 @@ class SimklSyncManager(
 
             val shouldUpdateMain = when {
                 existingMain == null -> true
-                existingMainIsNowWatchedOnSimkl -> true
-                !hasPendingForMedia && existingMainWasUnwatched && existingMain.positionMs > 0L -> true
-                !hasPendingForMedia && existingMainWasUnwatchedAndMovedBack -> true
-                !hasPendingForMedia && existingPointsToDifferentEp -> true
+                existingMainIsWatched -> true
+                !hasPendingForExistingMainEp && existingMainWasUnwatched && existingMain.positionMs > 0L -> true
+                !hasPendingForExistingMainEp && existingMainWasUnwatchedAndMovedBack -> true
+                !hasPendingPlaybackOrHistory && existingPointsToDifferentEp -> true
                 else -> false
             }
 
             if (shouldUpdateMain) {
-                val baseMedia = MediaItem(
-                    id = tmdbId,
-                    mediaType = "tv",
-                    title = item.title,
-                    overview = existingMain?.overview.orEmpty(),
-                    posterPath = existingMain?.posterPath,
-                    backdropPath = existingMain?.backdropPath,
-                    voteAverage = existingMain?.voteAverage ?: 0.0,
-                    releaseYear = item.year?.toString().orEmpty()
-                )
-                val enrichedItem = runCatching {
-                    repository.getCachedMediaDetails(baseMedia)?.value?.item
-                        ?: repository.fetchMediaDetails(baseMedia).getOrNull()?.item
-                }.getOrNull() ?: baseMedia
-                val epDto = runCatching {
-                    val eps = repository.getCachedSeasonEpisodes(tmdbId, nextSeason)?.value
-                        ?: repository.fetchSeasonEpisodes(tmdbId, nextSeason).getOrNull()
-                    eps?.firstOrNull { it.episodeNumber == nextEp }
-                }.getOrNull()
-                val epKey = "tv_${tmdbId}_s${nextSeason}_e${nextEp}"
-                val savedNextEpProgress = dao.getEpisodeProgress(epKey, profileId)
-                val epDurationMs = savedNextEpProgress?.durationMs?.takeIf { it > 0L }
-                    ?: ((epDto?.runtime?.takeIf { it in 1..600 }?.toLong() ?: 0L) * 60_000L)
-                val isUpcomingNextEp = com.example.ui.UpcomingEpisodeBadgeFormatter.isUpcomingAirDate(epDto?.airDate)
-                val wasTargetUnwatched = (nextSeason to nextEp) in completedToDelete
-                val preservedPositionMs = if (isUpcomingNextEp || wasTargetUnwatched) {
-                    0L
-                } else {
-                    savedNextEpProgress?.positionMs?.coerceAtLeast(0L) ?: 0L
+                if (existingMainIsWatched && existingMainPair != null) {
+                    val staleEpKey = "tv_${tmdbId}_s${existingMainPair.first}_e${existingMainPair.second}"
+                    dao.deleteEpisodeProgress(staleEpKey, profileId)
+                    dao.deleteSimklBaseline(profileId, staleEpKey)
                 }
-                val effectiveUpdatedAt = maxOf(
-                    completedTimestamp,
-                    if (existingMain != null && (existingMainIsNowWatchedOnSimkl || existingMainWasUnwatchedAndMovedBack || existingMainWasUnwatched)) {
-                        existingMain.updatedAt + 1L
-                    } else {
-                        0L
-                    }
-                )
-                dao.upsertWatchProgress(
-                    WatchProgressEntity(
-                        id = mainKey,
-                        tmdbId = tmdbId,
-                        mediaType = "tv",
-                        title = enrichedItem.title.ifBlank { item.title },
-                        overview = enrichedItem.overview,
-                        posterPath = enrichedItem.posterPath ?: existingMain?.posterPath,
-                        backdropPath = enrichedItem.backdropPath ?: existingMain?.backdropPath,
-                        voteAverage = if (enrichedItem.voteAverage > 0.0) enrichedItem.voteAverage else (existingMain?.voteAverage ?: 0.0),
-                        releaseYear = enrichedItem.releaseYear.ifBlank { item.year?.toString().orEmpty() },
-                        seasonNumber = nextSeason,
-                        episodeNumber = nextEp,
-                        episodeTitle = epDto?.name?.takeIf { it.isNotBlank() },
-                        positionMs = preservedPositionMs,
-                        durationMs = epDurationMs,
-                        updatedAt = effectiveUpdatedAt,
-                        profileId = profileId
+                upsertSeriesContinueWatchingTarget(
+                    profileId = profileId,
+                    tmdbId = tmdbId,
+                    title = item.title,
+                    year = item.year,
+                    nextSeason = nextSeason,
+                    nextEp = nextEp,
+                    existingMain = existingMain,
+                    resetPosition = (nextSeason to nextEp) in completedToDelete,
+                    updatedAtFloorMs = maxOf(
+                        completedTimestamp,
+                        if (existingMain != null && (existingMainIsWatched || existingMainWasUnwatchedAndMovedBack || existingMainWasUnwatched || existingPointsToDifferentEp)) {
+                            existingMain.updatedAt + 1L
+                        } else {
+                            0L
+                        }
                     )
                 )
             }
         }
     }
 
+    internal suspend fun reconcileTvContinueWatchingInvariant(
+        profileId: String,
+        candidateSeriesIds: Set<Int>? = null
+    ) {
+        val tvWatchEntries = dao.getWatchProgressListForProfile(profileId)
+            .filter { it.mediaType == "tv" && (candidateSeriesIds == null || it.tmdbId in candidateSeriesIds) }
+        if (tvWatchEntries.isEmpty()) return
+
+        val pendingEntries = dao.getSimklPendingScrobbles(profileId)
+        for (entry in tvWatchEntries) {
+            if (isActivePlaybackSeries(profileId, entry.tmdbId)) {
+                markDeferredLibrarySeries(profileId, entry.tmdbId)
+                continue
+            }
+            val libItem = dao.getSimklLibraryByTmdb(profileId, entry.tmdbId, "tv").firstOrNull()
+            if (libItem != null && libItem.status in excludedContinueWatchingStatuses) {
+                val hasPending = pendingEntries.any {
+                    it.tmdbId == entry.tmdbId && it.mediaType == "tv" &&
+                        it.action in setOf("start", "pause", "stop")
+                }
+                if (!hasPending) {
+                    dao.deleteWatchProgress(entry.id, profileId)
+                    dao.deleteSimklBaselinesForMedia(profileId, entry.tmdbId, "tv")
+                }
+                continue
+            }
+
+            val completedPairs = dao.getCompletedEpisodesForSeries(entry.tmdbId, profileId)
+                .map { it.seasonNumber to it.episodeNumber }
+                .toSet()
+            val epStates = dao.getSimklEpisodeStatesByTmdb(profileId, entry.tmdbId)
+            val epWatchedPairs = epStates.filter { it.watched }.map { it.seasonNumber to it.episodeNumber }.toSet()
+            val allWatchedPairs = completedPairs + epWatchedPairs
+
+            val curPair = if (entry.seasonNumber != null && entry.episodeNumber != null) {
+                entry.seasonNumber to entry.episodeNumber
+            } else {
+                null
+            }
+            val curEpIsWatched = curPair != null && curPair in allWatchedPairs
+            val isExplicitCandidate = candidateSeriesIds != null && entry.tmdbId in candidateSeriesIds
+            if (!curEpIsWatched && !isExplicitCandidate) {
+                continue
+            }
+
+            // Ripulisci qualsiasi progresso episodico obsoleto relativo a episodi ormai completati
+            for ((s, e) in allWatchedPairs) {
+                if (!isActivePlaybackTarget(profileId, "tv", entry.tmdbId, s, e)) {
+                    val staleEpKey = "tv_${entry.tmdbId}_s${s}_e${e}"
+                    dao.deleteEpisodeProgress(staleEpKey, profileId)
+                    dao.deleteSimklBaseline(profileId, staleEpKey)
+                }
+            }
+
+            val mergedSeasons = if (epStates.isNotEmpty()) {
+                epStates.groupBy { it.seasonNumber }
+                    .toSortedMap()
+                    .map { (seasonNum, eps) ->
+                        SimklParsedSeason(
+                            seasonNumber = seasonNum,
+                            episodes = eps.map { st ->
+                                SimklParsedEpisode(
+                                    seasonNumber = st.seasonNumber,
+                                    episodeNumber = st.episodeNumber,
+                                    watched = st.watched || (st.seasonNumber to st.episodeNumber) in allWatchedPairs,
+                                    watchedAt = st.watchedAt,
+                                    simklEpisodeId = st.simklEpisodeId
+                                )
+                            }
+                        )
+                    }
+            } else {
+                SimklLibraryJsonParser.deserializeSeasonsJson(libItem?.seasonsJson)
+            }
+
+            val parsedLibNext = parseEpisodeCode(libItem?.nextToWatch)
+            val nextTarget = resolveAuthoritativeNextSeriesEpisode(
+                profileId = profileId,
+                tmdbId = entry.tmdbId,
+                title = libItem?.title ?: entry.title,
+                year = libItem?.year ?: entry.releaseYear.take(4).toIntOrNull(),
+                mergedSeasons = mergedSeasons,
+                allWatchedPairs = allWatchedPairs,
+                unwatchedPairs = emptySet(),
+                rawNextSeason = parsedLibNext?.first,
+                rawNextEpisode = parsedLibNext?.second,
+                rawNextCode = libItem?.nextToWatch,
+                lastWatchedCode = libItem?.lastWatchedEpisodeCode,
+                existingMain = entry,
+                anchorHint = curPair
+            )
+
+            if (nextTarget == null) {
+                if (curPair == null || curEpIsWatched) {
+                    dao.deleteWatchProgress(entry.id, profileId)
+                }
+                continue
+            }
+
+            if (nextTarget != curPair || curEpIsWatched) {
+                upsertSeriesContinueWatchingTarget(
+                    profileId = profileId,
+                    tmdbId = entry.tmdbId,
+                    title = libItem?.title ?: entry.title,
+                    year = libItem?.year ?: entry.releaseYear.take(4).toIntOrNull(),
+                    nextSeason = nextTarget.first,
+                    nextEp = nextTarget.second,
+                    existingMain = entry,
+                    resetPosition = false,
+                    updatedAtFloorMs = maxOf(entry.updatedAt + 1L, libItem?.lastWatchedAtMs ?: 0L, clockMs())
+                )
+            }
+        }
+    }
+
+    private suspend fun resolveAuthoritativeNextSeriesEpisode(
+        profileId: String,
+        tmdbId: Int,
+        title: String,
+        year: Int?,
+        mergedSeasons: List<SimklParsedSeason>,
+        allWatchedPairs: Set<Pair<Int, Int>>,
+        unwatchedPairs: Set<Pair<Int, Int>>,
+        rawNextSeason: Int?,
+        rawNextEpisode: Int?,
+        rawNextCode: String?,
+        lastWatchedCode: String?,
+        existingMain: WatchProgressEntity?,
+        anchorHint: Pair<Int, Int>? = null
+    ): Pair<Int, Int>? {
+        val checkedWatchedPairs = HashSet(allWatchedPairs)
+        val explicitNextTarget = if (rawNextSeason != null && rawNextEpisode != null) {
+            rawNextSeason to rawNextEpisode
+        } else {
+            parseEpisodeCode(rawNextCode)
+        }?.takeIf { it !in checkedWatchedPairs }
+
+        val seasonsNextTarget = findNextUnwatchedEpisodeFromSeasons(mergedSeasons, checkedWatchedPairs)
+
+        var candidate = when {
+            unwatchedPairs.isNotEmpty() && seasonsNextTarget != null -> seasonsNextTarget
+            else -> explicitNextTarget
+                ?: seasonsNextTarget
+                ?: inferNextEpisodeAfterWatched(tmdbId, title, year, checkedWatchedPairs, lastWatchedCode, anchorHint)
+                ?: if (checkedWatchedPairs.isEmpty()) {
+                    resolveFirstAvailableEpisodeFromTmdb(
+                        tmdbId = tmdbId,
+                        title = title,
+                        year = year,
+                        existingMain = existingMain
+                    )
+                } else {
+                    null
+                }
+        }
+
+        // Mai accettare un target già completato in completed_media o simkl_episode_state
+        var guard = 0
+        while (candidate != null && guard < 8) {
+            guard++
+            val candidateKey = PlayerSegmentKeys.completedMediaKey(tmdbId, "tv", candidate.first, candidate.second)
+            if (candidate !in checkedWatchedPairs && dao.getCompletedMedia(candidateKey, profileId) == null) {
+                return candidate
+            }
+            checkedWatchedPairs.add(candidate)
+            candidate = findNextUnwatchedEpisodeFromSeasons(mergedSeasons, checkedWatchedPairs)
+                ?: inferNextEpisodeAfterWatched(tmdbId, title, year, checkedWatchedPairs, lastWatchedCode, candidate)
+        }
+        return null
+    }
+
+    private suspend fun upsertSeriesContinueWatchingTarget(
+        profileId: String,
+        tmdbId: Int,
+        title: String,
+        year: Int?,
+        nextSeason: Int,
+        nextEp: Int,
+        existingMain: WatchProgressEntity?,
+        resetPosition: Boolean,
+        updatedAtFloorMs: Long
+    ) {
+        val mainKey = "tv_$tmdbId"
+        val baseMedia = MediaItem(
+            id = tmdbId,
+            mediaType = "tv",
+            title = title,
+            overview = existingMain?.overview.orEmpty(),
+            posterPath = existingMain?.posterPath,
+            backdropPath = existingMain?.backdropPath,
+            voteAverage = existingMain?.voteAverage ?: 0.0,
+            releaseYear = year?.toString().orEmpty()
+        )
+        val enrichedItem = runCatching {
+            repository.getCachedMediaDetails(baseMedia)?.value?.item
+                ?: repository.fetchMediaDetails(baseMedia).getOrNull()?.item
+        }.getOrNull() ?: baseMedia
+        val epDto = runCatching {
+            val eps = repository.getCachedSeasonEpisodes(tmdbId, nextSeason)?.value
+                ?: repository.fetchSeasonEpisodes(tmdbId, nextSeason).getOrNull()
+            eps?.firstOrNull { it.episodeNumber == nextEp }
+        }.getOrNull()
+        val epKey = "tv_${tmdbId}_s${nextSeason}_e${nextEp}"
+        val savedNextEpProgress = dao.getEpisodeProgress(epKey, profileId)
+            ?.takeIf { it.seasonNumber == nextSeason && it.episodeNumber == nextEp }
+        val epDurationMs = savedNextEpProgress?.durationMs?.takeIf { it > 0L }
+            ?: ((epDto?.runtime?.takeIf { it in 1..600 }?.toLong() ?: 0L) * 60_000L)
+        val isUpcomingNextEp = com.example.ui.UpcomingEpisodeBadgeFormatter.isUpcomingAirDate(epDto?.airDate)
+        val preservedPositionMs = if (isUpcomingNextEp || resetPosition) {
+            0L
+        } else {
+            savedNextEpProgress?.positionMs?.coerceAtLeast(0L) ?: 0L
+        }
+        dao.upsertWatchProgress(
+            WatchProgressEntity(
+                id = mainKey,
+                tmdbId = tmdbId,
+                mediaType = "tv",
+                title = enrichedItem.title.ifBlank { title },
+                overview = enrichedItem.overview,
+                posterPath = enrichedItem.posterPath ?: existingMain?.posterPath,
+                backdropPath = enrichedItem.backdropPath ?: existingMain?.backdropPath,
+                voteAverage = if (enrichedItem.voteAverage > 0.0) enrichedItem.voteAverage else (existingMain?.voteAverage ?: 0.0),
+                releaseYear = enrichedItem.releaseYear.ifBlank { year?.toString().orEmpty() },
+                seasonNumber = nextSeason,
+                episodeNumber = nextEp,
+                episodeTitle = epDto?.name?.takeIf { it.isNotBlank() },
+                positionMs = preservedPositionMs,
+                durationMs = epDurationMs,
+                updatedAt = updatedAtFloorMs,
+                profileId = profileId
+            )
+        )
+    }
+
     private suspend fun inferNextEpisodeAfterWatched(
         tmdbId: Int,
-        item: SimklLibraryParsedItem,
+        title: String,
+        year: Int?,
         watchedPairs: Set<Pair<Int, Int>>,
-        lastWatchedCode: String?
+        lastWatchedCode: String?,
+        anchorHint: Pair<Int, Int>? = null
     ): Pair<Int, Int>? {
         val regularWatched = watchedPairs.filter { it.first > 0 }
-        val anchor = parseEpisodeCode(lastWatchedCode)
-            ?: regularWatched.maxWithOrNull(compareBy<Pair<Int, Int>> { it.first }.thenBy { it.second })
+        val candidateAnchors = buildList {
+            addAll(regularWatched)
+            parseEpisodeCode(lastWatchedCode)?.takeIf { it.first > 0 }?.let { add(it) }
+            anchorHint?.takeIf { it.first > 0 }?.let { add(it) }
+        }
+        val anchor = candidateAnchors.maxWithOrNull(compareBy<Pair<Int, Int>> { it.first }.thenBy { it.second })
+            ?: parseEpisodeCode(lastWatchedCode)
+            ?: anchorHint
             ?: return null
         val (anchorSeason, anchorEp) = anchor
         val seasonEps = runCatching {
@@ -6183,12 +6525,12 @@ class SimklSyncManager(
             val probeMedia = MediaItem(
                 id = tmdbId,
                 mediaType = "tv",
-                title = item.title,
+                title = title,
                 overview = "",
                 posterPath = null,
                 backdropPath = null,
                 voteAverage = 0.0,
-                releaseYear = item.year?.toString().orEmpty()
+                releaseYear = year?.toString().orEmpty()
             )
             val details = runCatching {
                 repository.getCachedMediaDetails(probeMedia)?.value
@@ -6247,18 +6589,19 @@ class SimklSyncManager(
      */
     private suspend fun resolveFirstAvailableEpisodeFromTmdb(
         tmdbId: Int,
-        item: SimklLibraryParsedItem,
+        title: String,
+        year: Int?,
         existingMain: WatchProgressEntity?
     ): Pair<Int, Int>? {
         val probeMedia = MediaItem(
             id = tmdbId,
             mediaType = "tv",
-            title = item.title,
+            title = title,
             overview = existingMain?.overview.orEmpty(),
             posterPath = existingMain?.posterPath,
             backdropPath = existingMain?.backdropPath,
             voteAverage = existingMain?.voteAverage ?: 0.0,
-            releaseYear = item.year?.toString().orEmpty()
+            releaseYear = year?.toString().orEmpty()
         )
         val details = runCatching {
             repository.getCachedMediaDetails(probeMedia)?.value
@@ -6396,13 +6739,21 @@ class SimklSyncManager(
         return season to episode
     }
 
-    private fun findNextUnwatchedEpisodeFromSeasons(seasons: List<SimklParsedSeason>): Pair<Int, Int>? {
+    private fun compareEpisodePairs(a: Pair<Int, Int>, b: Pair<Int, Int>): Int {
+        if (a.first != b.first) return a.first.compareTo(b.first)
+        return a.second.compareTo(b.second)
+    }
+
+    private fun findNextUnwatchedEpisodeFromSeasons(
+        seasons: List<SimklParsedSeason>,
+        excludedPairs: Set<Pair<Int, Int>> = emptySet()
+    ): Pair<Int, Int>? {
         // Privilegia le stagioni regolari (> 0) prima degli speciali (stagione 0)
         val ordered = seasons.sortedWith(compareBy<SimklParsedSeason> { it.seasonNumber == 0 }.thenBy { it.seasonNumber })
         for (season in ordered) {
             val firstUnwatched = season.episodes
                 .sortedBy { it.episodeNumber }
-                .firstOrNull { !it.watched }
+                .firstOrNull { !it.watched && (season.seasonNumber to it.episodeNumber) !in excludedPairs }
             if (firstUnwatched != null) {
                 return season.seasonNumber to firstUnwatched.episodeNumber
             }
