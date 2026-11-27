@@ -13,6 +13,8 @@ import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -303,6 +305,9 @@ fun VixPlayerScreen(
     var isPlaying by remember { mutableStateOf(session.errorMessage == null) }
     var playWhenReadyState by remember { mutableStateOf(session.errorMessage == null) }
     var isBuffering by remember(initialReadyForTest) { mutableStateOf(!initialReadyForTest && session.errorMessage == null) }
+    var hasCompletedInitialStreamLaunch by remember(initialReadyForTest) {
+        mutableStateOf(initialReadyForTest || session.errorMessage != null)
+    }
     var isAppInBackground by remember { mutableStateOf(false) }
     var playerErrorMessage by remember { mutableStateOf(session.errorMessage) }
     LaunchedEffect(session.errorMessage) {
@@ -425,6 +430,14 @@ fun VixPlayerScreen(
     // senza alterare la gestione tecnica di isBuffering, sync o errori reali del player.
     val suppressSeekLoadingUi = isRemoteScrubbing || isManualSeekInProgress
     val showLoadingOverlay = currentError == null && (isBuffering || session.isResolvingStream) && !suppressSeekLoadingUi
+    LaunchedEffect(session.isResolvingStream, currentError, initialReadyForTest) {
+        if (initialReadyForTest) {
+            hasCompletedInitialStreamLaunch = true
+        } else if (session.isResolvingStream && currentError == null) {
+            hasCompletedInitialStreamLaunch = false
+        }
+    }
+    val showLaunchPosterBackdrop = showLoadingOverlay && !hasCompletedInitialStreamLaunch
 
     val showSkipIntro by remember(
         session.mediaItem.id,
@@ -591,6 +604,7 @@ fun VixPlayerScreen(
         scrobblePausedSinceStart = false
         scrobbleStoppedForEpisode = false
         val hasSessionError = session.errorMessage != null
+        hasCompletedInitialStreamLaunch = initialReadyForTest || hasSessionError
         isPlaying = !hasSessionError
         playWhenReadyState = !hasSessionError
         videoWidthState.intValue = 0
@@ -892,6 +906,7 @@ fun VixPlayerScreen(
                 }
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
+                    hasCompletedInitialStreamLaunch = true
                     playerErrorMessage = null
                     playbackEnded = false
                     if (!latestIsRemoteScrubbing) {
@@ -971,6 +986,12 @@ fun VixPlayerScreen(
                 }
             }
 
+            override fun onRenderedFirstFrame() {
+                if (exoPlayer.currentMediaItem?.mediaId == latestEpisodeKey) {
+                    hasCompletedInitialStreamLaunch = true
+                }
+            }
+
             override fun onIsPlayingChanged(playing: Boolean) {
                 if (exoPlayer.currentMediaItem?.mediaId != latestEpisodeKey) return
                 isPlaying = playing
@@ -1008,6 +1029,7 @@ fun VixPlayerScreen(
                 isManualSeekInProgress = false
                 if (latestResolvedStream?.fromCache == true && !hasAutoRetriedCachedStream && latestOnInvalidateAndRetryStream != null) {
                     hasAutoRetriedCachedStream = true
+                    hasCompletedInitialStreamLaunch = false
                     isBuffering = true
                     playerErrorMessage = null
                     latestOnInvalidateAndRetryStream?.invoke()
@@ -1552,7 +1574,23 @@ fun VixPlayerScreen(
                     }
             )
 
-            // Stato errore stream o loading (stesso popup di avvio streaming)
+            // 2. SFONDO CINEMATOGRAFICO A TUTTO SCHERMO (solo in fase di avvio streaming, sotto al popup di attesa)
+            AnimatedVisibility(
+                visible = showLaunchPosterBackdrop,
+                enter = EnterTransition.None,
+                exit = fadeOut(tween(180)),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .focusProperties { canFocus = false }
+            ) {
+                VixStreamLaunchPosterBackdrop(
+                    mediaItem = session.mediaItem,
+                    isLowRamDevice = isLowRamDevice,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            // 3. Stato errore stream o loading (stesso popup di avvio streaming, invariato in primo piano)
             if (currentError != null && !session.isResolvingStream) {
                 VixStreamLaunchErrorPopup(
                     session = session,
@@ -1561,6 +1599,7 @@ fun VixPlayerScreen(
                     retryFocusRequester = retryFocusRequester,
                     onRetry = {
                         playerErrorMessage = null
+                        hasCompletedInitialStreamLaunch = false
                         isBuffering = true
                         playWhenReadyState = true
                         retryNonce++

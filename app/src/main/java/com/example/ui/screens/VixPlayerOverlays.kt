@@ -1,10 +1,13 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -45,21 +48,27 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.data.local.StreamingBufferPreset
+import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbEpisodeDto
 import com.example.ui.PlaybackSession
 import com.example.ui.components.ImageTargetSizes
@@ -309,6 +318,134 @@ internal fun VixAutoNextEpisodeCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * Risolve l'URL della locandina da usare nello sfondo a tutto schermo durante l'avvio dello streaming.
+ * Per film e serie TV riutilizza direttamente la locandina principale già presente nei metadati/cache
+ * (preferendo sempre la locandina della serie TV anche quando si avvia un singolo episodio),
+ * senza generare alcuna chiamata API aggiuntiva.
+ */
+internal fun resolveLaunchBackgroundPosterUrl(mediaItem: MediaItem): String? {
+    val rawPoster = mediaItem.posterPath?.trim()?.takeIf { it.isNotBlank() }
+    if (rawPoster != null) {
+        return if (rawPoster.startsWith("http://") || rawPoster.startsWith("https://")) {
+            rawPoster
+        } else {
+            "https://image.tmdb.org/t/p/w500$rawPoster"
+        }
+    }
+    return mediaItem.backdropUrl?.takeIf { it.isNotBlank() }
+}
+
+/**
+ * Sfondo cinematografico a tutto schermo visualizzato sotto al popup di attesa durante l'avvio
+ * dello streaming. Copre l'intera area disponibile (cover / ContentScale.Crop) con un overlay
+ * scuro a più livelli (scurimento generale, gradiente verticale verso il basso e leggera vignettatura)
+ * e gestisce in modo elegante stati di caricamento, assenza o errore senza interferire con focus o ExoPlayer.
+ */
+@Composable
+internal fun VixStreamLaunchPosterBackdrop(
+    mediaItem: MediaItem,
+    isLowRamDevice: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val posterUrl = remember(mediaItem.id, mediaItem.mediaType, mediaItem.posterPath, mediaItem.backdropPath) {
+        resolveLaunchBackgroundPosterUrl(mediaItem)
+    }
+
+    var isPosterReady by remember(posterUrl) { mutableStateOf(false) }
+    var isPosterFailed by remember(posterUrl) { mutableStateOf(false) }
+    val imageAlpha by animateFloatAsState(
+        targetValue = if (posterUrl != null && isPosterReady && !isPosterFailed) 1f else 0f,
+        animationSpec = tween(durationMillis = 220),
+        label = "stream_launch_poster_alpha"
+    )
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .background(NetflixBlack)
+            .focusProperties { canFocus = false }
+            .testTag("stream_launch_poster_backdrop")
+    ) {
+        if (posterUrl != null) {
+            val rawWidthPx = with(density) { maxWidth.roundToPx().coerceAtLeast(48) }
+            val rawHeightPx = with(density) { maxHeight.roundToPx().coerceAtLeast(48) }
+            val maxDimensionCapPx = if (isLowRamDevice) 720 else 1080
+            val largestSidePx = maxOf(rawWidthPx, rawHeightPx)
+            val downscale = if (largestSidePx > maxDimensionCapPx) {
+                maxDimensionCapPx.toFloat() / largestSidePx.toFloat()
+            } else {
+                1f
+            }
+            val targetWidthPx = (rawWidthPx * downscale).toInt().coerceAtLeast(48)
+            val targetHeightPx = (rawHeightPx * downscale).toInt().coerceAtLeast(48)
+
+            val backdropRequest = remember(context, posterUrl, targetWidthPx, targetHeightPx) {
+                ImageTargetSizes.buildRequest(
+                    context = context,
+                    url = posterUrl,
+                    widthPx = targetWidthPx,
+                    heightPx = targetHeightPx,
+                    allowRgb565 = true
+                )
+            }
+
+            AsyncImage(
+                model = backdropRequest,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                alignment = Alignment.Center,
+                onSuccess = {
+                    isPosterFailed = false
+                    isPosterReady = true
+                },
+                onError = {
+                    isPosterReady = false
+                    isPosterFailed = true
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = imageAlpha }
+                    .testTag("stream_launch_poster_image")
+            )
+        }
+
+        // Overlay cinematografico a più livelli:
+        // 1) Scurimento generale discreto
+        // 2) Gradiente verticale più intenso verso il basso
+        // 3) Leggera vignettatura radiale sui bordi
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(NetflixBlack.copy(alpha = 0.52f))
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to NetflixBlack.copy(alpha = 0.42f),
+                        0.36f to NetflixBlack.copy(alpha = 0.20f),
+                        0.72f to NetflixBlack.copy(alpha = 0.64f),
+                        1.0f to NetflixBlack.copy(alpha = 0.92f)
+                    )
+                )
+                .drawBehind {
+                    val radius = (maxOf(size.width, size.height) * 0.72f).coerceAtLeast(1f)
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            0.0f to Color.Transparent,
+                            0.55f to NetflixBlack.copy(alpha = 0.16f),
+                            1.0f to NetflixBlack.copy(alpha = 0.62f),
+                            center = center,
+                            radius = radius
+                        )
+                    )
+                }
+                .focusProperties { canFocus = false }
+                .testTag("stream_launch_poster_overlay")
+        )
     }
 }
 
