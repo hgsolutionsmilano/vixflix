@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.width
 import coil.Coil
 import coil.ImageLoader
 import coil.decode.DataSource
+import coil.request.ErrorResult
 import coil.request.ImageRequest
 import coil.request.ImageResult
 import coil.request.SuccessResult
@@ -37,16 +38,13 @@ import com.example.data.remote.VixSrcStreamResolver
 import com.example.ui.PlaybackSession
 import com.example.ui.screens.CinematicBackdropBlurTransformation
 import com.example.ui.screens.VixPlayerScreen
-import com.example.ui.screens.computeFittedPosterLayout
-import com.example.ui.screens.resolveLaunchBackgroundPosterUrl
+import com.example.ui.screens.resolveLaunchContinueWatchingBackdropUrl
 import com.example.ui.theme.MyApplicationTheme
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.abs
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -68,32 +66,43 @@ class StreamLaunchBackdropTest {
         Coil.reset()
     }
 
-    private val movieWithPoster = MediaItem(
+    private val movieWithContinueWatchingBackdrop = MediaItem(
         id = 550,
         mediaType = "movie",
         title = "Fight Club",
         overview = "Sinossi film",
-        posterPath = "/movie_poster.jpg",
-        backdropPath = "/movie_backdrop.jpg",
+        posterPath = "/movie_poster_vertical.jpg",
+        backdropPath = "/movie_cw_backdrop.jpg",
         voteAverage = 8.8,
         releaseYear = "1999"
     )
 
-    private val seriesWithPoster = MediaItem(
+    private val seriesWithContinueWatchingBackdrop = MediaItem(
         id = 1399,
         mediaType = "tv",
         title = "House of the Dragon",
         overview = "Sinossi serie TV",
-        posterPath = "/series_poster.jpg",
-        backdropPath = "/series_backdrop.jpg",
+        posterPath = "/series_poster_vertical.jpg",
+        backdropPath = "/series_cw_backdrop.jpg",
         voteAverage = 8.4,
         releaseYear = "2022"
+    )
+
+    private val itemWithVerticalPosterOnly = MediaItem(
+        id = 888,
+        mediaType = "movie",
+        title = "Solo Poster Verticale",
+        overview = "",
+        posterPath = "/only_vertical_poster.jpg",
+        backdropPath = null,
+        voteAverage = 7.4,
+        releaseYear = "2023"
     )
 
     private val itemWithoutImages = MediaItem(
         id = 999,
         mediaType = "movie",
-        title = "Senza Locandina",
+        title = "Senza Immagini",
         overview = "",
         posterPath = null,
         backdropPath = null,
@@ -101,16 +110,18 @@ class StreamLaunchBackdropTest {
         releaseYear = "2024"
     )
 
-    private fun installFakePosterImageLoader(
+    private fun installFakeBackdropImageLoader(
         context: Context,
-        widthPx: Int,
-        heightPx: Int
+        widthPx: Int = 780,
+        heightPx: Int = 439,
+        shouldFail: Boolean = false,
+        capturedUrls: MutableList<String>? = null
     ) {
         val sampleBitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888).apply {
             val canvas = Canvas(this)
-            canvas.drawColor(AndroidColor.rgb(32, 64, 112))
+            canvas.drawColor(AndroidColor.rgb(24, 52, 92))
             val accentPaint = Paint().apply { color = AndroidColor.rgb(220, 40, 48) }
-            canvas.drawRect(0f, 0f, widthPx.toFloat(), heightPx * 0.25f, accentPaint)
+            canvas.drawRect(0f, 0f, widthPx * 0.45f, heightPx * 0.4f, accentPaint)
         }
         val fakeLoader = object : ImageLoader {
             override val defaults = coil.request.DefaultRequestOptions()
@@ -119,10 +130,17 @@ class StreamLaunchBackdropTest {
             override val diskCache = null
 
             override fun enqueue(request: ImageRequest): coil.request.Disposable {
+                capturedUrls?.add(request.data.toString())
                 val result = runBlocking { execute(request) }
-                if (result is SuccessResult) {
-                    request.target?.onSuccess(result.drawable)
-                    request.listener?.onSuccess(request, result)
+                when (result) {
+                    is SuccessResult -> {
+                        request.target?.onSuccess(result.drawable)
+                        request.listener?.onSuccess(request, result)
+                    }
+                    is ErrorResult -> {
+                        request.target?.onError(result.drawable)
+                        request.listener?.onError(request, result)
+                    }
                 }
                 return object : coil.request.Disposable {
                     override val isDisposed = true
@@ -132,6 +150,13 @@ class StreamLaunchBackdropTest {
             }
 
             override suspend fun execute(request: ImageRequest): ImageResult {
+                if (shouldFail) {
+                    return ErrorResult(
+                        drawable = null,
+                        request = request,
+                        throwable = IllegalStateException("Simulated image error")
+                    )
+                }
                 val transformed = request.transformations.fold(sampleBitmap) { acc, t ->
                     t.transform(acc, Size.ORIGINAL)
                 }
@@ -149,19 +174,23 @@ class StreamLaunchBackdropTest {
     }
 
     @Test
-    fun movieLaunch_rendersTwoLayerCinematicPosterOnAndroidTvLandscapeWithoutZoomOrCrop() {
-        installFakePosterImageLoader(composeRule.activity, widthPx = 500, heightPx = 750)
+    fun movieLaunch_usesContinueWatchingHorizontalW780UrlAndFillsTvLandscapeWithoutAlterationsToPopup() {
+        val capturedUrls = mutableListOf<String>()
+        installFakeBackdropImageLoader(
+            context = composeRule.activity,
+            widthPx = 780,
+            heightPx = 439,
+            capturedUrls = capturedUrls
+        )
         val session = PlaybackSession(
-            mediaItem = movieWithPoster,
+            mediaItem = movieWithContinueWatchingBackdrop,
             isResolvingStream = true,
             resolvedStream = null,
             sessionToken = 11L
         )
 
-        assertEquals(
-            "https://image.tmdb.org/t/p/w500/movie_poster.jpg",
-            resolveLaunchBackgroundPosterUrl(movieWithPoster)
-        )
+        val expectedCwUrl = "https://image.tmdb.org/t/p/w780/movie_cw_backdrop.jpg"
+        assertEquals(expectedCwUrl, resolveLaunchContinueWatchingBackdropUrl(movieWithContinueWatchingBackdrop))
 
         composeRule.setContent {
             MyApplicationTheme {
@@ -181,34 +210,24 @@ class StreamLaunchBackdropTest {
         }
         composeRule.waitForIdle()
 
-        // Livello 1: sfondo esteso sfocato riempie 100% dello schermo TV landscape 16:9
+        assertTrue(
+            "Lo sfondo deve caricare esattamente l'URL orizzontale w780 di Continua a guardare",
+            capturedUrls.contains(expectedCwUrl)
+        )
+
         val backdrop = composeRule.onNodeWithTag("stream_launch_poster_backdrop")
         backdrop.assertIsDisplayed()
         val backdropBounds = backdrop.getUnclippedBoundsInRoot()
         assertEquals(960.dp, backdropBounds.width)
         assertEquals(540.dp, backdropBounds.height)
 
-        val blurBgBounds = composeRule.onNodeWithTag("stream_launch_poster_blur_bg").getUnclippedBoundsInRoot()
-        assertEquals(960.dp, blurBgBounds.width)
-        assertEquals(540.dp, blurBgBounds.height)
+        val cwImage = composeRule.onNodeWithTag("stream_launch_backdrop_image")
+        cwImage.assertIsDisplayed()
+        val cwBounds = cwImage.getUnclippedBoundsInRoot()
+        assertEquals(960.dp, cwBounds.width)
+        assertEquals(540.dp, cwBounds.height)
 
-        // Livello 2: locandina principale completa (2:3), centrata e interamente visibile senza zoom/tagli
-        val posterNode = composeRule.onNodeWithTag("stream_launch_poster_image")
-        posterNode.assertIsDisplayed()
-        val posterBounds = posterNode.getUnclippedBoundsInRoot()
-        assertTrue("La locandina non deve uscire a sinistra/destra", posterBounds.left > 0.dp && posterBounds.right < 960.dp)
-        assertTrue("La locandina non deve uscire sopra/sotto", posterBounds.top > 0.dp && posterBounds.bottom < 540.dp)
-        assertTrue("In landscape la locandina 2:3 non deve allargarsi a tutta larghezza TV", posterBounds.width < 500.dp)
-
-        val renderedAspect = posterBounds.width.value / posterBounds.height.value
-        assertEquals("Il rapporto d'aspetto 2:3 deve restare invariato", 2f / 3f, renderedAspect, 0.02f)
-
-        val centerDeltaX = abs(((posterBounds.left + posterBounds.right) / 2f).value - 480f)
-        val centerDeltaY = abs(((posterBounds.top + posterBounds.bottom) / 2f).value - 270f)
-        assertTrue("Centratura orizzontale esatta (delta=$centerDeltaX)", centerDeltaX <= 1.5f)
-        assertTrue("Centratura verticale esatta (delta=$centerDeltaY)", centerDeltaY <= 1.5f)
-
-        // Livello 3 + Popup originale invariato in primo piano
+        // Overlay scuro e popup originale invariato in primo piano
         composeRule.onNodeWithTag("stream_launch_poster_overlay").assertIsDisplayed()
         composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
         composeRule.onNodeWithText("Fight Club").assertIsDisplayed()
@@ -217,10 +236,10 @@ class StreamLaunchBackdropTest {
 
     @Test
     @Config(sdk = [34], qualifiers = "w1280dp-h800dp-land")
-    fun tablet16by10Landscape_rendersCompletePosterCenteredWithBlurredBackdrop() {
-        installFakePosterImageLoader(composeRule.activity, widthPx = 600, heightPx = 800) // 3:4
+    fun tablet16by10Landscape_rendersFullScreenContinueWatchingHorizontalBackdrop() {
+        installFakeBackdropImageLoader(composeRule.activity, widthPx = 780, heightPx = 439)
         val session = PlaybackSession(
-            mediaItem = movieWithPoster,
+            mediaItem = movieWithContinueWatchingBackdrop,
             isResolvingStream = true,
             resolvedStream = null,
             sessionToken = 15L
@@ -244,24 +263,19 @@ class StreamLaunchBackdropTest {
         }
         composeRule.waitForIdle()
 
-        val blurBounds = composeRule.onNodeWithTag("stream_launch_poster_blur_bg").getUnclippedBoundsInRoot()
-        assertEquals(1280.dp, blurBounds.width)
-        assertEquals(800.dp, blurBounds.height)
-
-        val posterBounds = composeRule.onNodeWithTag("stream_launch_poster_image").getUnclippedBoundsInRoot()
-        assertTrue(posterBounds.left > 0.dp && posterBounds.right < 1280.dp)
-        assertTrue(posterBounds.top > 0.dp && posterBounds.bottom < 800.dp)
-        assertEquals(3f / 4f, posterBounds.width.value / posterBounds.height.value, 0.02f)
-
+        val cwBounds = composeRule.onNodeWithTag("stream_launch_backdrop_image").getUnclippedBoundsInRoot()
+        assertEquals(1280.dp, cwBounds.width)
+        assertEquals(800.dp, cwBounds.height)
+        composeRule.onNodeWithTag("stream_launch_poster_overlay").assertIsDisplayed()
         composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
     }
 
     @Test
     @Config(sdk = [34], qualifiers = "w360dp-h780dp-port")
-    fun smartphonePortrait_keepsFullPosterUnclippedAndPopupIntact() {
-        installFakePosterImageLoader(composeRule.activity, widthPx = 500, heightPx = 750)
+    fun smartphonePortrait_fillsScreenWithHorizontalBackdropAndKeepsPopupIntact() {
+        installFakeBackdropImageLoader(composeRule.activity, widthPx = 780, heightPx = 439)
         val session = PlaybackSession(
-            mediaItem = movieWithPoster,
+            mediaItem = movieWithContinueWatchingBackdrop,
             isResolvingStream = true,
             resolvedStream = null,
             sessionToken = 16L
@@ -285,23 +299,18 @@ class StreamLaunchBackdropTest {
         }
         composeRule.waitForIdle()
 
-        val blurBounds = composeRule.onNodeWithTag("stream_launch_poster_blur_bg").getUnclippedBoundsInRoot()
-        assertEquals(360.dp, blurBounds.width)
-        assertEquals(780.dp, blurBounds.height)
-
-        val posterBounds = composeRule.onNodeWithTag("stream_launch_poster_image").getUnclippedBoundsInRoot()
-        assertTrue(posterBounds.left > 0.dp && posterBounds.right < 360.dp)
-        assertTrue(posterBounds.top > 0.dp && posterBounds.bottom < 780.dp)
-        assertEquals(2f / 3f, posterBounds.width.value / posterBounds.height.value, 0.02f)
+        val cwBounds = composeRule.onNodeWithTag("stream_launch_backdrop_image").getUnclippedBoundsInRoot()
+        assertEquals(360.dp, cwBounds.width)
+        assertEquals(780.dp, cwBounds.height)
         composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
     }
 
     @Test
     @Config(sdk = [34], qualifiers = "w780dp-h360dp-land")
-    fun smartphoneLandscape_rendersFullPosterInsideCompactHeight() {
-        installFakePosterImageLoader(composeRule.activity, widthPx = 600, heightPx = 600) // 1:1 square
+    fun smartphoneLandscape_fillsWideViewportWithHorizontalBackdrop() {
+        installFakeBackdropImageLoader(composeRule.activity, widthPx = 780, heightPx = 439)
         val session = PlaybackSession(
-            mediaItem = movieWithPoster,
+            mediaItem = movieWithContinueWatchingBackdrop,
             isResolvingStream = true,
             resolvedStream = null,
             sessionToken = 17L
@@ -325,72 +334,48 @@ class StreamLaunchBackdropTest {
         }
         composeRule.waitForIdle()
 
-        val posterBounds = composeRule.onNodeWithTag("stream_launch_poster_image").getUnclippedBoundsInRoot()
-        assertTrue(posterBounds.left > 0.dp && posterBounds.right < 780.dp)
-        assertTrue(posterBounds.top > 0.dp && posterBounds.bottom < 360.dp)
-        assertEquals(1.0f, posterBounds.width.value / posterBounds.height.value, 0.02f)
+        val cwBounds = composeRule.onNodeWithTag("stream_launch_backdrop_image").getUnclippedBoundsInRoot()
+        assertEquals(780.dp, cwBounds.width)
+        assertEquals(360.dp, cwBounds.height)
         composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
     }
 
     @Test
-    fun computeFittedPosterLayout_preservesFullImageAcrossTv720p1080p4kTabletsAndPhones() {
-        val viewports = listOf(
-            "Phone Portrait" to (360f to 780f),
-            "Phone Landscape" to (780f to 360f),
-            "Tablet Landscape" to (1024f to 768f),
-            "Tablet 16:10 Landscape" to (1280f to 800f),
-            "Android TV / Fire TV 720p" to (1280f to 720f),
-            "Android TV / Google TV 1080p" to (1920f to 1080f),
-            "Android TV / Fire TV 4K" to (3840f to 2160f)
-        )
-        val posterRatios = listOf(2f / 3f, 3f / 4f, 1f, 16f / 9f)
-
-        for ((label, dims) in viewports) {
-            val (w, h) = dims
-            for (aspect in posterRatios) {
-                val layout = computeFittedPosterLayout(
-                    availableWidthDp = w,
-                    availableHeightDp = h,
-                    imageAspectRatio = aspect
-                )
-                assertTrue(
-                    "$label aspect=$aspect: width ${layout.widthDp} exceeded container ${layout.containerWidthDp}",
-                    layout.widthDp <= layout.containerWidthDp + 0.01f
-                )
-                assertTrue(
-                    "$label aspect=$aspect: height ${layout.heightDp} exceeded container ${layout.containerHeightDp}",
-                    layout.heightDp <= layout.containerHeightDp + 0.01f
-                )
-                assertEquals(
-                    "$label aspect=$aspect: proportion mismatch",
-                    aspect,
-                    layout.widthDp / layout.heightDp,
-                    0.01f
-                )
-            }
-        }
-    }
-
-    @Test
-    fun cinematicBlurTransformation_downscalesAndBlursSafelyAcrossAllApiLevels() = runBlocking {
-        val input = Bitmap.createBitmap(500, 750, Bitmap.Config.ARGB_8888).apply {
+    fun cinematicBlurTransformation_keepsHorizontalBackdropRecognizableAndCompactInRam() = runBlocking {
+        val input = Bitmap.createBitmap(780, 439, Bitmap.Config.ARGB_8888).apply {
             val canvas = Canvas(this)
-            canvas.drawColor(AndroidColor.BLACK)
-            val whitePaint = Paint().apply { color = AndroidColor.WHITE }
-            canvas.drawRect(200f, 300f, 300f, 450f, whitePaint)
+            canvas.drawColor(AndroidColor.rgb(18, 28, 48))
+            val accentPaint = Paint().apply { color = AndroidColor.rgb(220, 180, 60) }
+            canvas.drawRect(300f, 140f, 480f, 300f, accentPaint)
         }
-        val transformation = CinematicBackdropBlurTransformation()
-        val output = transformation.transform(input, Size(216, 216))
+        val transformation = CinematicBackdropBlurTransformation(
+            maxSidePx = 540,
+            blurRadius = 2,
+            passes = 1
+        )
+        val output = transformation.transform(input, Size(540, 304))
 
-        assertTrue("L'immagine sfocata deve restare compatta in RAM", maxOf(output.width, output.height) <= 144)
-        assertNotEquals("La sfocatura deve ammorbidire i bordi netti", input.width, output.width)
-        val edgePixel = output.getPixel(output.width / 2, output.height / 2)
-        assertTrue("Il pixel centrale resta valido", (edgePixel ushr 24) == 0xFF)
+        assertTrue("L'immagine sfocata resta entro 540px di lato massimo", maxOf(output.width, output.height) <= 540)
+        assertEquals("Il rapporto 16:9 orizzontale è preservato", 780f / 439f, output.width.toFloat() / output.height.toFloat(), 0.02f)
+
+        val centerPixel = output.getPixel(output.width / 2, output.height / 2)
+        val centerRed = (centerPixel ushr 16) and 0xFF
+        val centerGreen = (centerPixel ushr 8) and 0xFF
+        assertTrue(
+            "La sfocatura leggera mantiene i colori e i dettagli centrali ben riconoscibili (r=$centerRed, g=$centerGreen)",
+            centerRed > 180 && centerGreen > 140
+        )
     }
 
     @Test
-    fun seriesEpisodeLaunch_usesSeriesPosterAndPreservesDpadFocusAndCancel() {
-        installFakePosterImageLoader(composeRule.activity, widthPx = 500, heightPx = 750)
+    fun seriesEpisodeLaunch_usesSeriesContinueWatchingBackdropAndPreservesDpadFocusAndCancel() {
+        val capturedUrls = mutableListOf<String>()
+        installFakeBackdropImageLoader(
+            context = composeRule.activity,
+            widthPx = 780,
+            heightPx = 439,
+            capturedUrls = capturedUrls
+        )
         val closeCalls = AtomicInteger(0)
         val episodeStillDto = TmdbEpisodeDto(
             id = 5001,
@@ -399,7 +384,7 @@ class StreamLaunchBackdropTest {
             stillPath = "/episode_4_still_only.jpg"
         )
         val session = PlaybackSession(
-            mediaItem = seriesWithPoster,
+            mediaItem = seriesWithContinueWatchingBackdrop,
             seasonNumber = 2,
             episodeNumber = 4,
             episodeTitle = episodeStillDto.name,
@@ -409,10 +394,8 @@ class StreamLaunchBackdropTest {
             sessionToken = 22L
         )
 
-        assertEquals(
-            "https://image.tmdb.org/t/p/w500/series_poster.jpg",
-            resolveLaunchBackgroundPosterUrl(session.mediaItem)
-        )
+        val expectedSeriesCwUrl = "https://image.tmdb.org/t/p/w780/series_cw_backdrop.jpg"
+        assertEquals(expectedSeriesCwUrl, resolveLaunchContinueWatchingBackdropUrl(session.mediaItem))
 
         composeRule.setContent {
             MyApplicationTheme {
@@ -432,9 +415,12 @@ class StreamLaunchBackdropTest {
         }
         composeRule.waitForIdle()
 
+        assertTrue(
+            "Per gli episodi serie TV lo sfondo usa l'immagine orizzontale della serie (Continua a guardare)",
+            capturedUrls.contains(expectedSeriesCwUrl)
+        )
         composeRule.onNodeWithTag("stream_launch_poster_backdrop").assertIsDisplayed()
-        composeRule.onNodeWithTag("stream_launch_poster_blur_bg").assertIsDisplayed()
-        composeRule.onNodeWithTag("stream_launch_poster_image").assertIsDisplayed()
+        composeRule.onNodeWithTag("stream_launch_backdrop_image").assertIsDisplayed()
         composeRule.onNodeWithTag("stream_launch_poster_overlay").assertIsDisplayed()
         composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
         composeRule.onNodeWithText("House of the Dragon").assertIsDisplayed()
@@ -456,11 +442,18 @@ class StreamLaunchBackdropTest {
     }
 
     @Test
-    fun missingPoster_fallsBackGracefullyToCinematicDarkBackgroundWithoutCrash() {
-        assertNull(resolveLaunchBackgroundPosterUrl(itemWithoutImages))
+    fun missingHorizontalBackdrop_neverFallsBackToVerticalPosterAndShowsDarkBackground() {
+        val capturedUrls = mutableListOf<String>()
+        installFakeBackdropImageLoader(
+            context = composeRule.activity,
+            capturedUrls = capturedUrls
+        )
+        // Anche se posterPath è valorizzato, senza backdropPath orizzontale NON deve usare il poster verticale
+        assertNull(resolveLaunchContinueWatchingBackdropUrl(itemWithVerticalPosterOnly))
+        assertNull(resolveLaunchContinueWatchingBackdropUrl(itemWithoutImages))
 
         val session = PlaybackSession(
-            mediaItem = itemWithoutImages,
+            mediaItem = itemWithVerticalPosterOnly,
             isResolvingStream = true,
             resolvedStream = null,
             sessionToken = 33L
@@ -484,20 +477,59 @@ class StreamLaunchBackdropTest {
         }
         composeRule.waitForIdle()
 
+        assertTrue(
+            "La locandina verticale non deve mai essere caricata come sfondo principale",
+            capturedUrls.none { it.contains("only_vertical_poster") }
+        )
         composeRule.onNodeWithTag("stream_launch_poster_backdrop").assertIsDisplayed()
-        composeRule.onNodeWithTag("stream_launch_poster_blur_bg").assertDoesNotExist()
-        composeRule.onNodeWithTag("stream_launch_poster_image").assertDoesNotExist()
+        composeRule.onNodeWithTag("stream_launch_backdrop_image").assertDoesNotExist()
         composeRule.onNodeWithTag("stream_launch_poster_overlay").assertIsDisplayed()
         composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
-        composeRule.onNodeWithText("Senza Locandina").assertIsDisplayed()
+        composeRule.onNodeWithText("Solo Poster Verticale").assertIsDisplayed()
+    }
+
+    @Test
+    fun backdropLoadError_fallsBackGracefullyToDarkBackgroundWithoutCrash() {
+        installFakeBackdropImageLoader(
+            context = composeRule.activity,
+            shouldFail = true
+        )
+        val session = PlaybackSession(
+            mediaItem = movieWithContinueWatchingBackdrop,
+            isResolvingStream = true,
+            resolvedStream = null,
+            sessionToken = 34L
+        )
+
+        composeRule.setContent {
+            MyApplicationTheme {
+                VixPlayerScreen(
+                    session = session,
+                    streamLang = "it",
+                    vixSrcResolver = VixSrcStreamResolver(OkHttpClient()),
+                    onDynamicHlsFound = {},
+                    onTogglePlayerMode = {},
+                    onToggleLanguage = {},
+                    onProgressUpdate = { _, _ -> },
+                    onNextEpisode = {},
+                    onClose = {},
+                    initialReadyForTest = false
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("stream_launch_poster_backdrop").assertIsDisplayed()
+        composeRule.onNodeWithTag("stream_launch_poster_overlay").assertIsDisplayed()
+        composeRule.onNodeWithTag("video_loading_popup").assertIsDisplayed()
     }
 
     @Test
     fun backdropHidesCleanlyWhenLaunchFailsOrPlayerOpens() {
-        installFakePosterImageLoader(composeRule.activity, widthPx = 500, heightPx = 750)
+        installFakeBackdropImageLoader(composeRule.activity, widthPx = 780, heightPx = 439)
         var currentSession by mutableStateOf(
             PlaybackSession(
-                mediaItem = movieWithPoster,
+                mediaItem = movieWithContinueWatchingBackdrop,
                 isResolvingStream = true,
                 resolvedStream = null,
                 sessionToken = 44L
@@ -523,6 +555,7 @@ class StreamLaunchBackdropTest {
         }
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("stream_launch_poster_backdrop").assertIsDisplayed()
+        composeRule.onNodeWithTag("stream_launch_backdrop_image").assertIsDisplayed()
 
         // Quando l'avvio fallisce, lo sfondo sparisce e lascia spazio al popup errore
         currentSession = currentSession.copy(
