@@ -6345,7 +6345,7 @@ class SimklSyncManager(
                 rawNextCode = libItem?.nextToWatch,
                 lastWatchedCode = libItem?.lastWatchedEpisodeCode,
                 existingMain = entry,
-                anchorHint = curPair
+                anchorHint = curPair?.takeIf { curEpIsWatched }
             )
 
             if (nextTarget == null) {
@@ -6387,19 +6387,46 @@ class SimklSyncManager(
         anchorHint: Pair<Int, Int>? = null
     ): Pair<Int, Int>? {
         val checkedWatchedPairs = HashSet(allWatchedPairs)
+        val maxWatchedRegularPair = checkedWatchedPairs
+            .filter { it.first > 0 }
+            .maxWithOrNull(compareBy<Pair<Int, Int>> { it.first }.thenBy { it.second })
+
         val explicitNextTarget = if (rawNextSeason != null && rawNextEpisode != null) {
             rawNextSeason to rawNextEpisode
         } else {
             parseEpisodeCode(rawNextCode)
-        }?.takeIf { it !in checkedWatchedPairs }
+        }?.takeIf { target ->
+            target !in checkedWatchedPairs &&
+                (unwatchedPairs.isNotEmpty() ||
+                    maxWatchedRegularPair == null ||
+                    target.first == 0 ||
+                    compareEpisodePairs(target, maxWatchedRegularPair) > 0)
+        }
 
         val seasonsNextTarget = findNextUnwatchedEpisodeFromSeasons(mergedSeasons, checkedWatchedPairs)
+            ?.takeIf { target ->
+                unwatchedPairs.isNotEmpty() ||
+                    maxWatchedRegularPair == null ||
+                    target.first == 0 ||
+                    compareEpisodePairs(target, maxWatchedRegularPair) > 0
+            }
+
+        val existingValidNextTarget = existingMain
+            ?.takeIf { it.seasonNumber != null && it.episodeNumber != null }
+            ?.let { it.seasonNumber!! to it.episodeNumber!! }
+            ?.takeIf { target ->
+                target !in checkedWatchedPairs &&
+                    (maxWatchedRegularPair == null ||
+                        target.first == 0 ||
+                        compareEpisodePairs(target, maxWatchedRegularPair) > 0)
+            }
 
         var candidate = when {
             unwatchedPairs.isNotEmpty() && seasonsNextTarget != null -> seasonsNextTarget
             else -> explicitNextTarget
                 ?: seasonsNextTarget
                 ?: inferNextEpisodeAfterWatched(tmdbId, title, year, checkedWatchedPairs, lastWatchedCode, anchorHint)
+                ?: existingValidNextTarget
                 ?: if (checkedWatchedPairs.isEmpty()) {
                     resolveFirstAvailableEpisodeFromTmdb(
                         tmdbId = tmdbId,

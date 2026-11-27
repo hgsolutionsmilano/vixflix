@@ -10,6 +10,7 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Scale
+import coil.transform.Transformation
 import kotlin.math.roundToInt
 
 /**
@@ -53,19 +54,28 @@ object ImageTargetSizes {
         allowRgb565: Boolean = true,
         memoryCachePolicy: CachePolicy = CachePolicy.ENABLED,
         scale: Scale = Scale.FILL,
-        crossfadeMs: Int = 0
+        crossfadeMs: Int = 0,
+        allowHardware: Boolean = true,
+        memoryCacheKey: String? = null,
+        transformations: List<Transformation> = emptyList()
     ): ImageRequest {
         return ImageRequest.Builder(context)
             .data(url)
             .size(widthPx.coerceAtLeast(48), heightPx.coerceAtLeast(48))
             .precision(Precision.INEXACT)
             .scale(scale)
-            .allowHardware(true)
+            .allowHardware(allowHardware)
             .allowRgb565(allowRgb565)
             .memoryCachePolicy(memoryCachePolicy)
             .diskCachePolicy(CachePolicy.ENABLED)
             .networkCachePolicy(CachePolicy.ENABLED)
             .apply {
+                if (!memoryCacheKey.isNullOrBlank()) {
+                    memoryCacheKey(memoryCacheKey)
+                }
+                if (transformations.isNotEmpty()) {
+                    transformations(transformations)
+                }
                 if (crossfadeMs > 0) crossfade(crossfadeMs) else crossfade(false)
             }
             .build()

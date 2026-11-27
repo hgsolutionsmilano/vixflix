@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.graphics.Bitmap
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -12,14 +13,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -49,10 +53,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -67,6 +75,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.size.Scale
+import coil.size.Size
+import coil.transform.Transformation
 import com.example.data.local.StreamingBufferPreset
 import com.example.data.remote.MediaItem
 import com.example.data.remote.TmdbEpisodeDto
@@ -340,10 +351,190 @@ internal fun resolveLaunchBackgroundPosterUrl(mediaItem: MediaItem): String? {
 }
 
 /**
- * Sfondo cinematografico a tutto schermo visualizzato sotto al popup di attesa durante l'avvio
- * dello streaming. Copre l'intera area disponibile (cover / ContentScale.Crop) con un overlay
- * scuro a più livelli (scurimento generale, gradiente verticale verso il basso e leggera vignettatura)
- * e gestisce in modo elegante stati di caricamento, assenza o errore senza interferire con focus o ExoPlayer.
+ * Geometria calcolata dinamicamente per visualizzare la locandina principale intera (fitCenter)
+ * nello spazio disponibile dopo gli inset di sistema/safe-area, senza dimensioni fisse né ritagli.
+ */
+internal data class PosterFrameLayout(
+    val widthDp: Float,
+    val heightDp: Float,
+    val containerWidthDp: Float,
+    val containerHeightDp: Float
+)
+
+internal fun computeFittedPosterLayout(
+    availableWidthDp: Float,
+    availableHeightDp: Float,
+    imageAspectRatio: Float
+): PosterFrameLayout {
+    val safeAvailW = availableWidthDp.coerceAtLeast(1f)
+    val safeAvailH = availableHeightDp.coerceAtLeast(1f)
+    val isLandscape = safeAvailW > safeAvailH
+
+    // Respiro visivo proporzionale allo schermo disponibile: evita che la locandina tocchi i bordi
+    // su Android TV, Fire TV Stick, tablet e smartphone mantenendo sempre lo spazio massimo utile.
+    val horizontalPad = if (isLandscape) {
+        (safeAvailW * 0.06f).coerceIn(16f, 72f)
+    } else {
+        (safeAvailW * 0.06f).coerceIn(12f, 36f)
+    }
+    val verticalPad = if (isLandscape) {
+        (safeAvailH * 0.05f).coerceIn(12f, 44f)
+    } else {
+        (safeAvailH * 0.045f).coerceIn(14f, 48f)
+    }
+
+    val maxPosterW = (safeAvailW - horizontalPad * 2f).coerceAtLeast(1f)
+    val maxPosterH = (safeAvailH - verticalPad * 2f).coerceAtLeast(1f)
+    val safeAspect = imageAspectRatio.takeIf { it.isFinite() && it > 0.05f } ?: (2f / 3f)
+
+    val containerAspect = maxPosterW / maxPosterH
+    val (fittedW, fittedH) = if (containerAspect > safeAspect) {
+        // Finestra più larga della locandina (es. landscape TV/tablet): vincolo sull'altezza
+        (maxPosterH * safeAspect) to maxPosterH
+    } else {
+        // Finestra più stretta della locandina (es. portrait mobile o locandina 16:9): vincolo sulla larghezza
+        maxPosterW to (maxPosterW / safeAspect)
+    }
+
+    return PosterFrameLayout(
+        widthDp = fittedW,
+        heightDp = fittedH,
+        containerWidthDp = maxPosterW,
+        containerHeightDp = maxPosterH
+    )
+}
+
+/**
+ * Trasformazione Coil pura Kotlin compatibile con tutte le API (minSdk 24+ / Fire OS 7-8 / Android TV 9-14)
+ * che ridimensiona una copia a bassa risoluzione della locandina e applica una sfocatura morbida multi-pass
+ * con consumo di memoria minimo (~60 KB), garantendo identica resa su emulatori e dispositivi fisici.
+ */
+internal class CinematicBackdropBlurTransformation(
+    private val maxSidePx: Int = 144,
+    private val blurRadius: Int = 8,
+    private val passes: Int = 2
+) : Transformation {
+
+    override val cacheKey: String = "vix_cinematic_blur_${maxSidePx}_r${blurRadius}_p${passes}"
+
+    override suspend fun transform(input: Bitmap, size: Size): Bitmap {
+        val srcW = input.width.coerceAtLeast(1)
+        val srcH = input.height.coerceAtLeast(1)
+        val scale = (maxSidePx.toFloat() / maxOf(srcW, srcH).toFloat()).coerceAtMost(1f)
+        val dstW = (srcW * scale).toInt().coerceAtLeast(2)
+        val dstH = (srcH * scale).toInt().coerceAtLeast(2)
+
+        val scaled = Bitmap.createScaledBitmap(input, dstW, dstH, true)
+        val working = if (scaled.config == Bitmap.Config.ARGB_8888 && scaled.isMutable) {
+            scaled
+        } else {
+            val copy = scaled.copy(Bitmap.Config.ARGB_8888, true)
+            if (scaled !== input) {
+                scaled.recycle()
+            }
+            copy
+        } ?: return input
+
+        val effectiveRadius = blurRadius.coerceIn(1, (minOf(dstW, dstH) - 1).coerceAtLeast(1))
+        applyFastBoxBlur(working, dstW, dstH, effectiveRadius, passes.coerceIn(1, 3))
+        return working
+    }
+
+    private fun applyFastBoxBlur(
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        radius: Int,
+        passes: Int
+    ) {
+        val pixels = IntArray(width * height)
+        val scratch = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        val div = radius * 2 + 1
+        repeat(passes) {
+            // Passaggio orizzontale
+            for (y in 0 until height) {
+                val rowOffset = y * width
+                var rSum = 0
+                var gSum = 0
+                var bSum = 0
+                for (i in -radius..radius) {
+                    val c = pixels[rowOffset + i.coerceIn(0, width - 1)]
+                    rSum += (c ushr 16) and 0xFF
+                    gSum += (c ushr 8) and 0xFF
+                    bSum += c and 0xFF
+                }
+                for (x in 0 until width) {
+                    val out = (0xFF shl 24) or
+                        ((rSum / div) shl 16) or
+                        ((gSum / div) shl 8) or
+                        (bSum / div)
+                    scratch[rowOffset + x] = out
+                    val removeIdx = rowOffset + (x - radius).coerceIn(0, width - 1)
+                    val addIdx = rowOffset + (x + radius + 1).coerceIn(0, width - 1)
+                    val oldPx = pixels[removeIdx]
+                    val newPx = pixels[addIdx]
+                    rSum += ((newPx ushr 16) and 0xFF) - ((oldPx ushr 16) and 0xFF)
+                    gSum += ((newPx ushr 8) and 0xFF) - ((oldPx ushr 8) and 0xFF)
+                    bSum += (newPx and 0xFF) - (oldPx and 0xFF)
+                }
+            }
+
+            // Passaggio verticale
+            for (x in 0 until width) {
+                var rSum = 0
+                var gSum = 0
+                var bSum = 0
+                for (i in -radius..radius) {
+                    val c = scratch[i.coerceIn(0, height - 1) * width + x]
+                    rSum += (c ushr 16) and 0xFF
+                    gSum += (c ushr 8) and 0xFF
+                    bSum += c and 0xFF
+                }
+                for (y in 0 until height) {
+                    val out = (0xFF shl 24) or
+                        ((rSum / div) shl 16) or
+                        ((gSum / div) shl 8) or
+                        (bSum / div)
+                    pixels[y * width + x] = out
+                    val removeIdx = (y - radius).coerceIn(0, height - 1) * width + x
+                    val addIdx = (y + radius + 1).coerceIn(0, height - 1) * width + x
+                    val oldPx = scratch[removeIdx]
+                    val newPx = scratch[addIdx]
+                    rSum += ((newPx ushr 16) and 0xFF) - ((oldPx ushr 16) and 0xFF)
+                    gSum += ((newPx ushr 8) and 0xFF) - ((oldPx ushr 8) and 0xFF)
+                    bSum += (newPx and 0xFF) - (oldPx and 0xFF)
+                }
+            }
+        }
+
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+    }
+}
+
+private fun buildMutedCinematicColorFilter(): ColorFilter {
+    val contrast = 0.78f
+    val translate = (1f - contrast) * 127.5f - 10f
+    val matrix = ColorMatrix().apply {
+        setToSaturation(0.28f)
+    }
+    for (row in 0..2) {
+        matrix[row, 0] = matrix[row, 0] * contrast
+        matrix[row, 1] = matrix[row, 1] * contrast
+        matrix[row, 2] = matrix[row, 2] * contrast
+        matrix[row, 4] = translate
+    }
+    return ColorFilter.colorMatrix(matrix)
+}
+
+/**
+ * Sfondo cinematografico a due livelli mostrato sotto al popup di attesa durante l'avvio
+ * dello streaming:
+ * 1) Livello sfondo esteso a tutto schermo (ContentScale.Crop) sfocato, desaturato e sensibilmente oscurato;
+ * 2) Livello locandina principale completa e nitida (ContentScale.Fit) centrata dinamicamente nello
+ *    spazio utile post-inset, senza zoom o tagli su tablet, Android TV, Google TV, Fire TV e smartphone;
+ * 3) Leggero overlay armonizzante tra la locandina e il popup originale in primo piano.
  */
 @Composable
 internal fun VixStreamLaunchPosterBackdrop(
@@ -356,88 +547,185 @@ internal fun VixStreamLaunchPosterBackdrop(
     val posterUrl = remember(mediaItem.id, mediaItem.mediaType, mediaItem.posterPath, mediaItem.backdropPath) {
         resolveLaunchBackgroundPosterUrl(mediaItem)
     }
+    val mutedBackdropColorFilter = remember { buildMutedCinematicColorFilter() }
+    val blurTransformation = remember { listOf(CinematicBackdropBlurTransformation()) }
 
+    var isBackdropReady by remember(posterUrl) { mutableStateOf(false) }
+    var isBackdropFailed by remember(posterUrl) { mutableStateOf(false) }
     var isPosterReady by remember(posterUrl) { mutableStateOf(false) }
     var isPosterFailed by remember(posterUrl) { mutableStateOf(false) }
-    val imageAlpha by animateFloatAsState(
+    var posterAspectRatio by remember(posterUrl) { mutableStateOf<Float?>(null) }
+
+    val backdropAlpha by animateFloatAsState(
+        targetValue = if (posterUrl != null && isBackdropReady && !isBackdropFailed) 1f else 0f,
+        animationSpec = tween(durationMillis = 220),
+        label = "stream_launch_blur_backdrop_alpha"
+    )
+    val posterAlpha by animateFloatAsState(
         targetValue = if (posterUrl != null && isPosterReady && !isPosterFailed) 1f else 0f,
         animationSpec = tween(durationMillis = 220),
         label = "stream_launch_poster_alpha"
     )
 
-    BoxWithConstraints(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(NetflixBlack)
             .focusProperties { canFocus = false }
             .testTag("stream_launch_poster_backdrop")
     ) {
+        // LIVELLO 1: Sfondo esteso a tutta schermata (cover), sfocato, desaturato e sensibilmente oscurato
         if (posterUrl != null) {
-            val rawWidthPx = with(density) { maxWidth.roundToPx().coerceAtLeast(48) }
-            val rawHeightPx = with(density) { maxHeight.roundToPx().coerceAtLeast(48) }
-            val maxDimensionCapPx = if (isLowRamDevice) 720 else 1080
-            val largestSidePx = maxOf(rawWidthPx, rawHeightPx)
-            val downscale = if (largestSidePx > maxDimensionCapPx) {
-                maxDimensionCapPx.toFloat() / largestSidePx.toFloat()
-            } else {
-                1f
-            }
-            val targetWidthPx = (rawWidthPx * downscale).toInt().coerceAtLeast(48)
-            val targetHeightPx = (rawHeightPx * downscale).toInt().coerceAtLeast(48)
-
-            val backdropRequest = remember(context, posterUrl, targetWidthPx, targetHeightPx) {
+            val blurredBackdropRequest = remember(context, posterUrl) {
                 ImageTargetSizes.buildRequest(
                     context = context,
                     url = posterUrl,
-                    widthPx = targetWidthPx,
-                    heightPx = targetHeightPx,
-                    allowRgb565 = true
+                    widthPx = 216,
+                    heightPx = 216,
+                    allowRgb565 = false,
+                    scale = Scale.FILL,
+                    allowHardware = false,
+                    memoryCacheKey = "${posterUrl}_cinematic_bg_blur",
+                    transformations = blurTransformation
                 )
             }
 
             AsyncImage(
-                model = backdropRequest,
+                model = blurredBackdropRequest,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 alignment = Alignment.Center,
+                colorFilter = mutedBackdropColorFilter,
                 onSuccess = {
-                    isPosterFailed = false
-                    isPosterReady = true
+                    isBackdropFailed = false
+                    isBackdropReady = true
                 },
                 onError = {
-                    isPosterReady = false
-                    isPosterFailed = true
+                    isBackdropReady = false
+                    isBackdropFailed = true
                 },
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = imageAlpha }
-                    .testTag("stream_launch_poster_image")
+                    .graphicsLayer { alpha = backdropAlpha }
+                    .testTag("stream_launch_poster_blur_bg")
             )
         }
 
-        // Overlay cinematografico a più livelli:
-        // 1) Scurimento generale discreto
-        // 2) Gradiente verticale più intenso verso il basso
-        // 3) Leggera vignettatura radiale sui bordi
+        // Scurimento forte + vignettatura sopra allo sfondo sfocato per renderlo discreto ed elegante
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(NetflixBlack.copy(alpha = 0.52f))
-                .background(
-                    Brush.verticalGradient(
-                        0.0f to NetflixBlack.copy(alpha = 0.42f),
-                        0.36f to NetflixBlack.copy(alpha = 0.20f),
-                        0.72f to NetflixBlack.copy(alpha = 0.64f),
-                        1.0f to NetflixBlack.copy(alpha = 0.92f)
-                    )
-                )
+                .background(NetflixBlack.copy(alpha = 0.62f))
                 .drawBehind {
                     val radius = (maxOf(size.width, size.height) * 0.72f).coerceAtLeast(1f)
                     drawRect(
                         brush = Brush.radialGradient(
                             0.0f to Color.Transparent,
-                            0.55f to NetflixBlack.copy(alpha = 0.16f),
-                            1.0f to NetflixBlack.copy(alpha = 0.62f),
+                            0.48f to NetflixBlack.copy(alpha = 0.24f),
+                            1.0f to NetflixBlack.copy(alpha = 0.72f),
+                            center = center,
+                            radius = radius
+                        )
+                    )
+                }
+                .focusProperties { canFocus = false }
+        )
+
+        // LIVELLO 2: Locandina principale completa e nitida (ContentScale.Fit), centrata e adattata
+        // dinamicamente allo spazio disponibile dopo le safe-area / inset di sistema
+        if (posterUrl != null) {
+            BoxWithConstraints(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .focusProperties { canFocus = false }
+                    .testTag("stream_launch_poster_safe_container")
+            ) {
+                val fittedLayout = remember(maxWidth, maxHeight, posterAspectRatio) {
+                    computeFittedPosterLayout(
+                        availableWidthDp = maxWidth.value,
+                        availableHeightDp = maxHeight.value,
+                        imageAspectRatio = posterAspectRatio ?: (2f / 3f)
+                    )
+                }
+                val maxDecodeCapPx = if (isLowRamDevice) 900 else 1440
+                val rawTargetW = with(density) { fittedLayout.containerWidthDp.dp.roundToPx().coerceAtLeast(48) }
+                val rawTargetH = with(density) { fittedLayout.containerHeightDp.dp.roundToPx().coerceAtLeast(48) }
+                val targetPosterW = rawTargetW.coerceAtMost(maxDecodeCapPx)
+                val targetPosterH = rawTargetH.coerceAtMost(maxDecodeCapPx)
+
+                val foregroundPosterRequest = remember(context, posterUrl, targetPosterW, targetPosterH) {
+                    ImageTargetSizes.buildRequest(
+                        context = context,
+                        url = posterUrl,
+                        widthPx = targetPosterW,
+                        heightPx = targetPosterH,
+                        allowRgb565 = true,
+                        scale = Scale.FIT
+                    )
+                }
+
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(
+                            width = fittedLayout.widthDp.dp,
+                            height = fittedLayout.heightDp.dp
+                        )
+                        .graphicsLayer { alpha = posterAlpha }
+                        .shadow(
+                            elevation = 16.dp,
+                            shape = RectangleShape,
+                            clip = false,
+                            ambientColor = Color.Black.copy(alpha = 0.75f),
+                            spotColor = Color.Black.copy(alpha = 0.85f)
+                        )
+                ) {
+                    AsyncImage(
+                        model = foregroundPosterRequest,
+                        contentDescription = mediaItem.title,
+                        contentScale = ContentScale.Fit,
+                        alignment = Alignment.Center,
+                        onSuccess = { success ->
+                            val intrinsic = success.painter.intrinsicSize
+                            if (intrinsic.width > 0f && intrinsic.height > 0f) {
+                                posterAspectRatio = intrinsic.width / intrinsic.height
+                            }
+                            isPosterFailed = false
+                            isPosterReady = true
+                        },
+                        onError = {
+                            isPosterReady = false
+                            isPosterFailed = true
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("stream_launch_poster_image")
+                    )
+                }
+            }
+        }
+
+        // LIVELLO 3: Overlay leggero di armonizzazione tra la locandina completa e il popup di attesa
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to NetflixBlack.copy(alpha = 0.34f),
+                        0.32f to NetflixBlack.copy(alpha = 0.12f),
+                        0.68f to NetflixBlack.copy(alpha = 0.18f),
+                        1.0f to NetflixBlack.copy(alpha = 0.54f)
+                    )
+                )
+                .drawBehind {
+                    val radius = (maxOf(size.width, size.height) * 0.76f).coerceAtLeast(1f)
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            0.0f to Color.Transparent,
+                            0.62f to NetflixBlack.copy(alpha = 0.10f),
+                            1.0f to NetflixBlack.copy(alpha = 0.42f),
                             center = center,
                             radius = radius
                         )

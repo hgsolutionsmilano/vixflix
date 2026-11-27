@@ -1,8 +1,10 @@
 package com.example
 
 import android.app.Application
+import android.os.Looper
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import org.robolectric.Shadows
 import com.example.data.local.CompletedMediaEntity
 import com.example.data.local.DEFAULT_PRIMARY_PROFILE_ID
 import com.example.data.local.EpisodeProgressEntity
@@ -204,9 +206,11 @@ class SimklContinueWatchingSyncFixTest {
     private suspend fun waitUntil(timeoutMs: Long = 4_000L, predicate: suspend () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
             if (predicate()) return
             delay(20L)
         }
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
         assertTrue("Timeout nell'attesa della condizione prevista", predicate())
     }
 
@@ -636,7 +640,7 @@ class SimklContinueWatchingSyncFixTest {
     // SCENARIO 7 & 8: Persistenza dopo riavvio DB + aggiornamento reattivo UI StateFlow + playback attivo differito
     // -------------------------------------------------------------------------
     @Test
-    fun `07_08 ViewModel continueWatching updates reactively after sync handles deferred active playback and persists across restart`() = runBlocking {
+    fun `07_08 ViewModel continueWatching updates reactively after sync handles deferred active playback and persists across restart`() = runBlocking<Unit> {
         val dbDir = File(app.cacheDir, "cw_persist_db_${System.nanoTime()}").apply { mkdirs() }
         val dbFile = File(dbDir, "vixflix_persist.db")
         val series = seedStandardThreeSeasonSeries(tmdbId = 55009, title = "Reactive Persist Series")
